@@ -160,10 +160,11 @@ class RiskEngine:
                 "HWM_DRAWDOWN_WITHIN_LIMIT",
                 hwm_drawdown_pct(ctx.account) < cfg.high_water_mark_drawdown_halt_pct,
             )
-            margin_ok = (
-                ctx.account.margin == 0
-                or ctx.account.margin_level is None
-                or ctx.account.margin_level >= cfg.min_margin_level_pct
+            # With open margin, an unknown margin level is a failure, not a
+            # pass: a missing snapshot value must never approve new risk.
+            margin_ok = ctx.account.margin == 0 or (
+                ctx.account.margin_level is not None
+                and ctx.account.margin_level >= cfg.min_margin_level_pct
             )
             check("MARGIN_BUFFER", margin_ok)
 

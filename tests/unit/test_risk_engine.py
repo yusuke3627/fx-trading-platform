@@ -131,6 +131,26 @@ def test_reduced_event_mode_halves_size():
     assert decision.approved_quantity == Decimal(2000)
 
 
+def test_unknown_margin_level_with_open_margin_rejected():
+    # A missing snapshot value must never approve new risk.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(account=make_snapshot("1000000", margin="50000")),
+    )
+    assert not decision.approved
+    assert "MARGIN_BUFFER" in decision.reject_codes
+
+
+def test_margin_level_above_threshold_passes():
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(
+            account=make_snapshot("1000000", margin="50000", margin_level="500")
+        ),
+    )
+    assert decision.approved, decision.reject_codes
+
+
 def test_stale_quote_rejected():
     decision = engine(enabled_config()).evaluate(
         make_intent(),

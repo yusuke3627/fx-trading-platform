@@ -68,6 +68,10 @@ def test_preflight_passes_on_matching_hedging_demo():
     spec_step = step(report, "instrument_spec")
     assert Decimal(spec_step.measured["volume_min_units"]) == 1000
     assert Decimal(spec_step.measured["pip_size"]) == Decimal("0.01")
+    # Unperformed verifications are reported as pending, never as passed steps.
+    pending = [m["name"] for m in report.manual_pending]
+    assert "trade_cycle" in pending
+    assert "restart_reconciliation" in pending
 
 
 def test_account_mode_mismatch_disables_execution():
@@ -89,6 +93,5 @@ def test_trade_cycle_refuses_non_demo_account():
 
 def test_trade_cycle_skipped_by_default():
     report = run(FakeMT5())
-    cycle_step = step(report, "trade_cycle")
-    assert cycle_step.passed is True
-    assert "skipped" in (cycle_step.detail or "")
+    assert "trade_cycle" not in [s.name for s in report.steps]
+    assert "trade_cycle" in [m["name"] for m in report.manual_pending]

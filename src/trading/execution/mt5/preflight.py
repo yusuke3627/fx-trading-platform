@@ -42,11 +42,17 @@ class StepResult:
 class PreflightReport:
     started_at: datetime
     steps: list[StepResult] = field(default_factory=list)
+    # Verifications that were NOT performed in this run (skipped trade cycle,
+    # restart reconciliation). Listed separately so they can never read as
+    # "verified": `passed` covers executed checks only.
+    manual_pending: list[dict[str, str]] = field(default_factory=list)
     execution_disabled: bool = False
     finished_at: datetime | None = None
 
     @property
     def passed(self) -> bool:
+        """All *executed* checks passed. Items in manual_pending remain
+        unverified regardless of this flag."""
         return not self.execution_disabled and all(s.passed for s in self.steps)
 
     def to_dict(self) -> dict[str, Any]:
@@ -55,6 +61,7 @@ class PreflightReport:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "passed": self.passed,
             "execution_disabled": self.execution_disabled,
+            "manual_pending": self.manual_pending,
             "steps": [
                 {
                     "name": s.name,
@@ -157,15 +164,22 @@ def run_preflight(
         else:
             _trade_cycle(adapter, spec, symbol, magic, clock, step)
     else:
-        step("trade_cycle", True, detail="skipped (pass --trade-cycle to run)")
+        report.manual_pending.append(
+            {
+                "name": "trade_cycle",
+                "detail": "not executed (run with --trade-cycle on a demo account)",
+            }
+        )
 
-    step(
-        "restart_reconciliation",
-        True,
-        detail=(
-            "operational step: restart terminal + application, then verify "
-            "startup reconciliation leaves trading disabled until healthy"
-        ),
+    report.manual_pending.append(
+        {
+            "name": "restart_reconciliation",
+            "detail": (
+                "operational step not performed: restart terminal + application, "
+                "then verify startup reconciliation keeps trading disabled until "
+                "healthy"
+            ),
+        }
     )
 
     report.finished_at = clock.now()

@@ -128,8 +128,13 @@ class MT5ExecutionAdapter:
             raise MT5ConnectionError(
                 f"history_deals_get failed: {self._mt5.last_error()}"
             )
+        # Account history also contains balance/credit/commission deals with
+        # no meaningful symbol or side; only BUY/SELL executions are trade
+        # deals for reconciliation.
         return [
-            mapper.deal_from_raw(d, self._contract_size(str(d.symbol))) for d in raw
+            mapper.deal_from_raw(d, self._contract_size(str(d.symbol)))
+            for d in raw
+            if mapper.is_trade_deal(d)
         ]
 
     def _map_position(self, raw: Any) -> BrokerPosition:

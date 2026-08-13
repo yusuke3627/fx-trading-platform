@@ -82,6 +82,8 @@ def make_snapshot(
     observed_at: datetime = T0,
     high_water_mark: str | None = None,
     broker_connected: bool = True,
+    margin: str = "0",
+    margin_level: str | None = None,
 ) -> AccountSnapshot:
     eq = Decimal(equity)
     hwm = Decimal(high_water_mark) if high_water_mark is not None else eq
@@ -89,9 +91,9 @@ def make_snapshot(
         observed_at=observed_at,
         balance=eq,
         equity=eq,
-        margin=Decimal(0),
+        margin=Decimal(margin),
         free_margin=eq,
-        margin_level=None,
+        margin_level=Decimal(margin_level) if margin_level is not None else None,
         unrealized_pnl=Decimal(0),
         realized_pnl_day=Decimal(0),
         high_water_mark=hwm,

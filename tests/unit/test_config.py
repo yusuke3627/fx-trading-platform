@@ -46,6 +46,13 @@ def test_micro_live_overlay_caps_and_enables():
     assert strategy.parameters["resistance_lookback"] == 20
 
 
+def test_backtest_enables_risk_gate_for_simulated_orders():
+    # The broker is unreachable in backtest by wiring (simulator only);
+    # trading_enabled must not zero out simulated fills.
+    config = load_config("backtest", CONFIG_DIR)
+    assert config.risk.trading_enabled is True
+
+
 def test_unknown_environment_rejected():
     with pytest.raises(ValueError):
         load_config("staging", CONFIG_DIR)

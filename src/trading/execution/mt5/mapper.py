@@ -33,6 +33,11 @@ ACCOUNT_TRADE_MODE_REAL = 2
 POSITION_TYPE_BUY = 0
 POSITION_TYPE_SELL = 1
 
+# Only these deal types are trade executions; balance/credit/commission etc.
+# carry no (or an empty) symbol and must never reach deal_from_raw.
+DEAL_TYPE_BUY = 0
+DEAL_TYPE_SELL = 1
+
 DEAL_REASON_CLIENT = 0
 DEAL_REASON_EXPERT = 3
 DEAL_REASON_SL = 4
@@ -194,9 +199,13 @@ def position_from_raw(raw: Any, contract_size: Decimal) -> BrokerPosition:
     )
 
 
+def is_trade_deal(raw: Any) -> bool:
+    return int(getattr(raw, "type", -1)) in (DEAL_TYPE_BUY, DEAL_TYPE_SELL)
+
+
 def deal_from_raw(raw: Any, contract_size: Decimal) -> BrokerDeal:
     reason = int(getattr(raw, "reason", DEAL_REASON_CLIENT))
-    side = ExecutionSide.BUY if int(raw.type) == 0 else ExecutionSide.SELL
+    side = ExecutionSide.BUY if int(raw.type) == DEAL_TYPE_BUY else ExecutionSide.SELL
     return BrokerDeal(
         broker_deal_id=str(raw.ticket),
         broker_order_id=str(raw.order) if getattr(raw, "order", 0) else None,

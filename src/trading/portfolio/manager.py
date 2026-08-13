@@ -40,7 +40,7 @@ class PortfolioManager:
         against the signal's stop distance), quantized to volume_step."""
         if signal.stop_distance_pips <= 0:
             return None
-        risk_budget = sizing.equity * sizing.max_risk_per_trade_pct / Decimal("100")
+        risk_budget = sizing.equity * sizing.max_risk_per_trade_pct / Decimal(100)
         loss_per_unit = signal.stop_distance_pips * sizing.pip_size
         raw_quantity = risk_budget / loss_per_unit
         quantity = (raw_quantity // sizing.volume_step) * sizing.volume_step
@@ -69,7 +69,7 @@ class PortfolioManager:
             symbol=signal.symbol,
             action=action,
             direction=signal.desired_direction,
-            target_quantity=quantity if action is not PositionAction.CLOSE else Decimal("0"),
+            target_quantity=quantity if action is not PositionAction.CLOSE else Decimal(0),
             delta_quantity=None,
             protection=ProtectionSpec(
                 stop_loss_price=stop_price,
@@ -85,11 +85,11 @@ class PortfolioManager:
         self._targets[(strategy_id, symbol)] = signed_quantity
 
     def target(self, strategy_id: str, symbol: str) -> Decimal:
-        return self._targets.get((strategy_id, symbol), Decimal("0"))
+        return self._targets.get((strategy_id, symbol), Decimal(0))
 
     def desired_net_exposure(self, symbol: str) -> Decimal:
         """Aggregate of all strategy targets for a symbol (signed units)."""
         return sum(
             (qty for (sid, sym), qty in self._targets.items() if sym == symbol),
-            Decimal("0"),
+            Decimal(0),
         )

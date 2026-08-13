@@ -5,9 +5,9 @@ JST calendar day, rolling 24 hours, and high-water-mark drawdown.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Sequence
 
 from trading.domain.account import AccountSnapshot
 
@@ -18,7 +18,7 @@ def jst_day_start(now: datetime) -> datetime:
     """UTC instant of 00:00 JST for the JST day containing `now`."""
     local = now.astimezone(JST)
     day_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
-    return day_start.astimezone(timezone.utc)
+    return day_start.astimezone(UTC)
 
 
 def _equity_at_or_before(
@@ -32,9 +32,9 @@ def _equity_at_or_before(
 
 def _loss_pct(baseline: Decimal | None, current: Decimal) -> Decimal:
     if baseline is None or baseline <= 0:
-        return Decimal("0")
-    loss = (baseline - current) / baseline * Decimal("100")
-    return max(loss, Decimal("0"))
+        return Decimal(0)
+    loss = (baseline - current) / baseline * Decimal(100)
+    return max(loss, Decimal(0))
 
 
 def daily_loss_pct(

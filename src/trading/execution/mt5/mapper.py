@@ -6,7 +6,7 @@ the live module on demo connection day.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -102,7 +102,7 @@ def instrument_spec_from_symbol_info(info: Any) -> InstrumentSpec:
     return InstrumentSpec(
         symbol=str(info.name),
         digits=digits,
-        pip_size=Decimal("10") ** (-digits + 1),
+        pip_size=Decimal(10) ** (-digits + 1),
         contract_size=contract,
         volume_min=lots_to_units(info.volume_min, contract),
         volume_step=lots_to_units(info.volume_step, contract),
@@ -162,7 +162,7 @@ def sltp_modify_request(
 
 
 def _utc(ts: float) -> datetime:
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 def position_from_raw(raw: Any, contract_size: Decimal) -> BrokerPosition:

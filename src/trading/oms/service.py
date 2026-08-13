@@ -25,7 +25,7 @@ from trading.domain.order import (
     ExecutionSide,
     execution_side,
 )
-from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
+from trading.domain.position import BrokerPosition, PositionAction
 
 
 class NakedExitError(RuntimeError):

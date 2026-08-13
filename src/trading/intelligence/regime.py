@@ -1,8 +1,10 @@
 """Regime service: market-environment labels composed from features."""
 from __future__ import annotations
 
+from collections.abc import Callable
+from collections.abc import Set as AbstractSet
 from enum import StrEnum
-from typing import AbstractSet, Callable, Protocol
+from typing import Protocol
 
 from trading.intelligence import features as f
 from trading.intelligence.features import FeatureStore

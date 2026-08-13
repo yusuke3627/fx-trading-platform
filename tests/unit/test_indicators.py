@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from tests.support import T0, make_bar, make_tick
 from trading.indicators.atr import atr
 from trading.indicators.ema import ema, ema_series
 from trading.indicators.market_structure import (
@@ -11,8 +12,6 @@ from trading.indicators.market_structure import (
 from trading.indicators.momentum import rate_of_change, tick_momentum
 from trading.indicators.volatility import realized_volatility
 from trading.indicators.vwap import vwap
-
-from tests.support import T0, make_bar, make_tick
 
 
 def bars_from_closes(closes, spread=0.5):

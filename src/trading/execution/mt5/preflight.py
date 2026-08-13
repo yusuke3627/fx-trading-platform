@@ -174,7 +174,7 @@ def run_preflight(
 def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> None:
     """OPEN min size with SL/TP -> verify protection -> modify SL/TP ->
     partial REDUCE -> full CLOSE -> history check."""
-    tick = adapter._mt5.symbol_info_tick(symbol)  # noqa: SLF001 - preflight-only raw access
+    tick = adapter._mt5.symbol_info_tick(symbol)
     if tick is None:
         step("trade_cycle_open", False, detail="no tick available")
         return

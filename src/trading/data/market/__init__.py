@@ -5,8 +5,9 @@ implementation backs tests and replay.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from datetime import timedelta
+from typing import Protocol
 
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.market import Bar, Tick

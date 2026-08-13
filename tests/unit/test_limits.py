@@ -1,16 +1,13 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
+from tests.support import make_snapshot
 from trading.risk.limits import (
     daily_loss_pct,
     hwm_drawdown_pct,
     jst_day_start,
     rolling_24h_loss_pct,
 )
-
-from tests.support import make_snapshot
-
-UTC = timezone.utc
 
 
 def test_jst_day_start_is_15_utc_previous_day():
@@ -53,4 +50,4 @@ def test_hwm_drawdown():
 def test_no_baseline_means_zero_loss():
     now = datetime(2026, 8, 13, 3, 0, tzinfo=UTC)
     current = make_snapshot("990000", observed_at=now)
-    assert daily_loss_pct([], current, now) == Decimal("0")
+    assert daily_loss_pct([], current, now) == Decimal(0)

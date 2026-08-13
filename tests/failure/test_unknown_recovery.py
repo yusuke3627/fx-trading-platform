@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+from tests.support import at, make_command
 from trading.domain.order import CommandState
 from trading.oms.claim import (
     mark_broker_request_started,
@@ -12,8 +13,6 @@ from trading.oms.claim import (
 )
 from trading.oms.reconciliation import resolve_unknown
 from trading.oms.state_machine import InvalidTransition, transition
-
-from tests.support import at, make_command
 
 
 def test_crash_before_broker_request_reclaims_to_ready():
@@ -59,7 +58,7 @@ def test_unknown_resolution_from_broker_history():
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=True,
-        filled_quantity=Decimal("1000"),
+        filled_quantity=Decimal(1000),
     )
     assert filled.state is CommandState.FILLED
 
@@ -67,7 +66,7 @@ def test_unknown_resolution_from_broker_history():
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=True,
-        filled_quantity=Decimal("400"),
+        filled_quantity=Decimal(400),
     )
     assert partial.state is CommandState.PARTIAL_FILL
 
@@ -75,7 +74,7 @@ def test_unknown_resolution_from_broker_history():
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=True,
-        filled_quantity=Decimal("0"),
+        filled_quantity=Decimal(0),
     )
     assert cancelled.state is CommandState.CANCELLED
 
@@ -83,6 +82,6 @@ def test_unknown_resolution_from_broker_history():
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=False,
-        filled_quantity=Decimal("0"),
+        filled_quantity=Decimal(0),
     )
     assert no_side_effect.state is CommandState.REJECTED

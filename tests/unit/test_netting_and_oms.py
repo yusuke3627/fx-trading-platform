@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+from tests.support import T0, FixedClock, make_command, make_intent
 from trading.backtest.clock import SystemClock
 from trading.domain.account import AccountMode
 from trading.domain.order import ExecutionSide
@@ -18,8 +19,6 @@ from trading.oms.service import (
 )
 from trading.portfolio.manager import PortfolioManager
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
-
-from tests.support import T0, FixedClock, make_command, make_intent
 
 
 class FakeBroker:
@@ -48,14 +47,14 @@ def test_desired_net_exposure_aggregates_conflicting_strategies():
     # Swing -100k, Intraday -30k, Scalp +20k -> broker target -110k (allowed
     # conflict; the portfolio layer owns aggregation).
     manager = PortfolioManager(VirtualPositionLedger(FixedClock()), FixedClock())
-    manager.set_target("swing", "USDJPY", Decimal("-100000"))
-    manager.set_target("intraday", "USDJPY", Decimal("-30000"))
-    manager.set_target("scalp", "USDJPY", Decimal("20000"))
-    assert manager.desired_net_exposure("USDJPY") == Decimal("-110000")
+    manager.set_target("swing", "USDJPY", Decimal(-100000))
+    manager.set_target("intraday", "USDJPY", Decimal(-30000))
+    manager.set_target("scalp", "USDJPY", Decimal(20000))
+    assert manager.desired_net_exposure("USDJPY") == Decimal(-110000)
 
 
 def test_execution_delta_is_difference_only():
-    assert execution_delta(Decimal("-110000"), Decimal("-80000")) == Decimal("-30000")
+    assert execution_delta(Decimal(-110000), Decimal(-80000)) == Decimal(-30000)
 
 
 def test_netting_command_orders_the_delta_not_raw_quantity():
@@ -64,14 +63,14 @@ def test_netting_command_orders_the_delta_not_raw_quantity():
     )
     command = oms.command_for_netting(
         symbol="USDJPY",
-        desired_net=Decimal("-110000"),
-        current_net=Decimal("-80000"),
+        desired_net=Decimal(-110000),
+        current_net=Decimal(-80000),
         intent=make_intent(direction=PositionDirection.SHORT),
-        volume_step=Decimal("1000"),
+        volume_step=Decimal(1000),
     )
     assert command is not None
     assert command.side is ExecutionSide.SELL
-    assert command.quantity == Decimal("30000")
+    assert command.quantity == Decimal(30000)
 
 
 def test_netting_noop_when_delta_below_step():
@@ -80,10 +79,10 @@ def test_netting_noop_when_delta_below_step():
     )
     command = oms.command_for_netting(
         symbol="USDJPY",
-        desired_net=Decimal("-80500"),
-        current_net=Decimal("-80000"),
+        desired_net=Decimal(-80500),
+        current_net=Decimal(-80000),
         intent=make_intent(),
-        volume_step=Decimal("1000"),
+        volume_step=Decimal(1000),
     )
     assert command is None
 
@@ -101,7 +100,7 @@ def test_hedging_exit_references_ticket_and_maps_short_close_to_buy():
     assert command.broker_position_ticket == "1001"
     # Closing a SHORT is a BUY order, not a BUY signal.
     assert command.side is ExecutionSide.BUY
-    assert command.quantity == Decimal("20000")
+    assert command.quantity == Decimal(20000)
 
 
 def test_exit_after_protection_close_is_noop_not_reversal():
@@ -126,10 +125,10 @@ def test_exit_cannot_exceed_existing_position():
     command = oms.command_for_hedging_exit(
         intent=make_intent(action=PositionAction.REDUCE, direction=PositionDirection.SHORT),
         ticket="1001",
-        quantity=Decimal("50000"),
+        quantity=Decimal(50000),
     )
     assert command is not None
-    assert command.quantity == Decimal("5000")
+    assert command.quantity == Decimal(5000)
 
 
 def test_naked_exit_command_is_rejected_on_hedging():

@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from collections.abc import Sequence
+from itertools import pairwise
 
 
 def log_returns(values: Sequence[float]) -> list[float]:
     return [
         math.log(b / a)
-        for a, b in zip(values, values[1:])
+        for a, b in pairwise(values)
         if a > 0 and b > 0
     ]
 

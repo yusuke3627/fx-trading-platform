@@ -7,8 +7,9 @@ value > 2x data cost) before adoption.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable, Protocol
+from typing import Protocol
 
 from trading.domain.event import EventEnvelope
 

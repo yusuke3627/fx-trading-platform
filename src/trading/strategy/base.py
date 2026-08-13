@@ -74,7 +74,7 @@ class StrategyConfig(BaseModel):
     timeframes: TimeframeMap = Field(default_factory=TimeframeMap)
     parameters: dict[str, float | int | str | bool] = Field(default_factory=dict)
 
-    def param(self, name: str, default: float | int | str | bool):
+    def param(self, name: str, default: float | str | bool):
         return self.parameters.get(name, default)
 
 

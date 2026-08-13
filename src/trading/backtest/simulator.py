@@ -7,10 +7,10 @@ including stop-through in stressed scenarios. Deterministic under a seed.
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
-from typing import Sequence
 from uuid import uuid4
 
 from trading.backtest.costs import CostModel

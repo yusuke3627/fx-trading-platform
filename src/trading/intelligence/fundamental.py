@@ -1,7 +1,7 @@
 """Fundamental engine: point-in-time macro events -> features."""
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from trading.domain.event import EventEnvelope
 from trading.intelligence.features import InMemoryFeatureStore

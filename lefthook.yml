@@ -1,0 +1,30 @@
+lefthook: .venv/bin/lefthook
+
+pre-commit:
+  commands:
+    ruff:
+      glob:
+        - "*.py"
+        - "**/*.py"
+      run: |
+        if [ -z "$(git diff --cached --name-only --diff-filter=ACMR -- {staged_files})" ]; then
+          exit 0
+        fi
+        git diff --cached --name-only --diff-filter=ACMR -z -- {staged_files} \
+          | xargs -0 .venv/bin/ruff check
+    no-migration-rewrite:
+      glob:
+        - "migrations/*.sql"
+      run: |
+        modified=$(git diff --cached --name-only --diff-filter=MD -- {staged_files})
+        if [ -n "$modified" ]; then
+          echo "適用済みマイグレーションの書き換え・削除は禁止されています。連番で新しいSQLを追加してください。"
+          echo "対象:"
+          printf "%s\n" "$modified"
+          exit 1
+        fi
+
+pre-push:
+  commands:
+    pytest:
+      run: .venv/bin/pytest -q

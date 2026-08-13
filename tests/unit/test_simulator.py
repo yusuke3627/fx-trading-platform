@@ -2,13 +2,12 @@ from dataclasses import fields
 from datetime import timedelta
 from decimal import Decimal
 
+from tests.support import T0, make_command, make_tick, usdjpy_spec
 from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
 from trading.domain.fill import FillOrigin, ProtectionReason
 from trading.domain.order import ExecutionSide
 from trading.domain.position import PositionDirection
-
-from tests.support import T0, make_command, make_tick, usdjpy_spec
 
 
 def deterministic_costs() -> CostModel:
@@ -52,7 +51,7 @@ def test_protection_fill_on_stop_loss_cross():
         position_id="simpos-1",
         symbol="USDJPY",
         direction=PositionDirection.LONG,
-        quantity=Decimal("1000"),
+        quantity=Decimal(1000),
         entry_price=Decimal("158.90"),
         stop_loss=Decimal("158.80"),
         take_profit=None,

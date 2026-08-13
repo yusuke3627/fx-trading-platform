@@ -7,8 +7,8 @@ are versioned.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Mapping
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field

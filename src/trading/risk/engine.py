@@ -9,10 +9,10 @@ overrides risk limits.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Sequence
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,7 +43,7 @@ class RiskConfig(BaseModel):
 
     max_spread_pips: Decimal = Decimal("2.0")
     quote_max_age_seconds: float = 5.0
-    min_margin_level_pct: Decimal = Decimal("300")
+    min_margin_level_pct: Decimal = Decimal(300)
 
     require_broker_stop_loss: bool = True
 
@@ -80,7 +80,7 @@ class PreTradeContext:
     duplicate: bool = False
 
     stop_distance_pips: Decimal | None = None
-    requested_quantity: Decimal = field(default=Decimal("0"))
+    requested_quantity: Decimal = field(default=Decimal(0))
 
 
 class RiskEngine:
@@ -188,14 +188,14 @@ class RiskEngine:
             check("STOP_DISTANCE_KNOWN", False, "cannot size without a stop distance")
             return None
 
-        risk_budget = ctx.account.equity * cfg.max_risk_per_trade_pct / Decimal("100")
+        risk_budget = ctx.account.equity * cfg.max_risk_per_trade_pct / Decimal(100)
         loss_per_unit = ctx.stop_distance_pips * spec.pip_size
         allowed = (risk_budget / loss_per_unit // spec.volume_step) * spec.volume_step
 
         max_units = cfg.max_units_per_symbol.get(intent.symbol)
         if max_units is not None:
             headroom = Decimal(max_units) - abs(ctx.symbol_exposure_units)
-            allowed = min(allowed, max(headroom, Decimal("0")))
+            allowed = min(allowed, max(headroom, Decimal(0)))
 
         if ctx.event_mode is EventRiskMode.REDUCED:
             allowed = (allowed / 2 // spec.volume_step) * spec.volume_step

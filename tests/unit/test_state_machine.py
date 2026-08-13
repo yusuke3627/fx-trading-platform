@@ -1,9 +1,8 @@
 import pytest
 
+from tests.support import at, make_command
 from trading.domain.order import CommandState
 from trading.oms.state_machine import InvalidTransition, can_transition, transition
-
-from tests.support import at, make_command
 
 
 def test_happy_path_transitions():

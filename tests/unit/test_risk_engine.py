@@ -1,39 +1,38 @@
 from decimal import Decimal
 
+from tests.support import T0, FixedClock, at, make_intent, make_snapshot, make_tick, usdjpy_spec
 from trading.domain.position import PositionAction
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 
-from tests.support import FixedClock, T0, at, make_intent, make_snapshot, make_tick, usdjpy_spec
-
 
 def make_context(**overrides) -> PreTradeContext:
-    values = dict(
-        now=T0,
-        execution_enabled=True,
-        broker_connected=True,
-        account_reconciled=True,
-        quote=make_tick("158.840", "158.844", time=T0),
-        instrument=usdjpy_spec(),
-        account=make_snapshot("1000000"),
-        snapshots=[make_snapshot("1000000", observed_at=at(hours=-25))],
-        open_positions_count=0,
-        symbol_exposure_units=Decimal("0"),
-        event_mode=EventRiskMode.NORMAL,
-        kill_switch=KillSwitchLevel.NONE,
-        unknown_commands=0,
-        stop_distance_pips=Decimal("10"),
-        requested_quantity=Decimal("2000"),
-    )
+    values = {
+        "now": T0,
+        "execution_enabled": True,
+        "broker_connected": True,
+        "account_reconciled": True,
+        "quote": make_tick("158.840", "158.844", time=T0),
+        "instrument": usdjpy_spec(),
+        "account": make_snapshot("1000000"),
+        "snapshots": [make_snapshot("1000000", observed_at=at(hours=-25))],
+        "open_positions_count": 0,
+        "symbol_exposure_units": Decimal(0),
+        "event_mode": EventRiskMode.NORMAL,
+        "kill_switch": KillSwitchLevel.NONE,
+        "unknown_commands": 0,
+        "stop_distance_pips": Decimal(10),
+        "requested_quantity": Decimal(2000),
+    }
     values.update(overrides)
     return PreTradeContext(**values)
 
 
 def enabled_config(**overrides) -> RiskConfig:
-    values = dict(
-        trading_enabled=True,
-        max_units_per_symbol={"USDJPY": 10000},
-    )
+    values = {
+        "trading_enabled": True,
+        "max_units_per_symbol": {"USDJPY": 10000},
+    }
     values.update(overrides)
     return RiskConfig(**values)
 
@@ -47,7 +46,7 @@ def test_approves_within_risk_budget():
     # -> 5,000 units allowed; requested 2,000 approved as-is.
     decision = engine(enabled_config()).evaluate(make_intent(), make_context())
     assert decision.approved, decision.reject_codes
-    assert decision.approved_quantity == Decimal("2000")
+    assert decision.approved_quantity == Decimal(2000)
 
 
 def test_minimum_broker_size_never_overrides_risk():
@@ -125,11 +124,11 @@ def test_unknown_orders_halt_new_risk():
 def test_reduced_event_mode_halves_size():
     decision = engine(enabled_config()).evaluate(
         make_intent(),
-        make_context(event_mode=EventRiskMode.REDUCED, requested_quantity=Decimal("5000")),
+        make_context(event_mode=EventRiskMode.REDUCED, requested_quantity=Decimal(5000)),
     )
     # 5,000 allowed -> halved to 2,500 -> quantized to 2,000.
     assert decision.approved
-    assert decision.approved_quantity == Decimal("2000")
+    assert decision.approved_quantity == Decimal(2000)
 
 
 def test_stale_quote_rejected():

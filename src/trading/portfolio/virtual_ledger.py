@@ -43,7 +43,7 @@ class VirtualPositionLedger:
 
     def net_exposure(self, symbol: str) -> Decimal:
         return sum(
-            (p.signed_quantity for p in self.positions_for_symbol(symbol)), Decimal("0")
+            (p.signed_quantity for p in self.positions_for_symbol(symbol)), Decimal(0)
         )
 
     def apply_fill(
@@ -56,7 +56,7 @@ class VirtualPositionLedger:
     ) -> VirtualPosition:
         """Apply an attributed fill and record the resulting snapshot."""
         current = self.position(strategy_id, symbol)
-        signed = current.signed_quantity if current else Decimal("0")
+        signed = current.signed_quantity if current else Decimal(0)
         delta = quantity if side is ExecutionSide.BUY else -quantity
         new_signed = signed + delta
 

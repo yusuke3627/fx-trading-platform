@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from tests.support import T0
 from trading.domain.fill import BrokerDeal, ProtectionReason
 from trading.domain.order import ExecutionSide
 from trading.oms.reconciliation import (
@@ -7,8 +8,6 @@ from trading.oms.reconciliation import (
     classify_deal,
     reconcile_deals,
 )
-
-from tests.support import T0
 
 
 def make_deal(
@@ -25,7 +24,7 @@ def make_deal(
         reason_code=4 if protection is ProtectionReason.STOP_LOSS else 0,
         protection_reason=protection,
         side=ExecutionSide.BUY,
-        quantity=Decimal("1000"),
+        quantity=Decimal(1000),
         price=Decimal("158.840"),
         broker_time=T0,
     )

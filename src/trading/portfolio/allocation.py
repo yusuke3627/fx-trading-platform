@@ -25,13 +25,13 @@ class AllocationResult:
 def allocate_pro_rata(
     requests: list[AllocationRequest],
     filled_quantity: Decimal,
-    volume_step: Decimal = Decimal("1"),
+    volume_step: Decimal = Decimal(1),
 ) -> AllocationResult:
     """Pro-rata allocation quantized to volume_step, deterministic by
     largest-remainder then strategy_id ordering."""
     if filled_quantity < 0:
         raise ValueError("filled_quantity must be >= 0")
-    total = sum((r.quantity for r in requests), Decimal("0"))
+    total = sum((r.quantity for r in requests), Decimal(0))
     if total <= 0:
         raise ValueError("total requested quantity must be > 0")
     if filled_quantity > total:
@@ -44,7 +44,7 @@ def allocate_pro_rata(
         sid: (value // volume_step) * volume_step for sid, value in raw.items()
     }
     remainder_steps = int(
-        (filled_quantity - sum(floored.values(), Decimal("0"))) / volume_step
+        (filled_quantity - sum(floored.values(), Decimal(0))) / volume_step
     )
 
     by_fraction = sorted(

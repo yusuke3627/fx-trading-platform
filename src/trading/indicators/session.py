@@ -1,7 +1,7 @@
 """FX trading sessions (UTC windows)."""
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 
 
@@ -20,7 +20,7 @@ SESSION_WINDOWS_UTC: dict[Session, tuple[int, int]] = {
 
 
 def sessions_at(ts: datetime) -> frozenset[Session]:
-    utc = ts.astimezone(timezone.utc)
+    utc = ts.astimezone(UTC)
     active = {
         s for s, (start, end) in SESSION_WINDOWS_UTC.items() if start <= utc.hour < end
     }
@@ -29,9 +29,9 @@ def sessions_at(ts: datetime) -> frozenset[Session]:
 
 def session_start(session: Session, ts: datetime) -> datetime:
     """Start of the given session's window on/preceding `ts` (UTC)."""
-    utc = ts.astimezone(timezone.utc)
+    utc = ts.astimezone(UTC)
     start_hour, _ = SESSION_WINDOWS_UTC[session]
-    start = datetime.combine(utc.date(), time(hour=start_hour, tzinfo=timezone.utc))
+    start = datetime.combine(utc.date(), time(hour=start_hour, tzinfo=UTC))
     if utc < start:
         start -= timedelta(days=1)
     return start

@@ -1,7 +1,7 @@
 """Market structure: rolling extremes, swing points, failed breakouts."""
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from trading.domain.market import Bar
 

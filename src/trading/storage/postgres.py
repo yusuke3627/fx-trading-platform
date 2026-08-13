@@ -6,8 +6,9 @@ the queue-like execution_commands table without lock contention.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Any, Sequence
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row

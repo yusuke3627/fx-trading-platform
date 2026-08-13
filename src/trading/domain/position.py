@@ -6,10 +6,10 @@ not a BUY signal.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Iterable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -93,4 +93,4 @@ class BrokerPosition(BaseModel):
 
 
 def net_exposure(positions: Iterable[BrokerPosition | VirtualPosition]) -> Decimal:
-    return sum((p.signed_quantity for p in positions), Decimal("0"))
+    return sum((p.signed_quantity for p in positions), Decimal(0))

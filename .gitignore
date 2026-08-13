@@ -10,3 +10,8 @@ build/
 .env
 *.local.yaml
 .DS_Store
+.claude/worktrees/
+.claude/plans/
+.claude/memory/
+.claude/settings.local.json
+.serena/

@@ -2,6 +2,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support import T0
 from trading.intelligence.intervention import (
     InterventionRiskConfig,
     VerificationRegressionError,
@@ -9,8 +10,6 @@ from trading.intelligence.intervention import (
     intervention_risk_score,
     verification_state_level,
 )
-
-from tests.support import T0
 
 
 def test_forward_transition_creates_new_event():

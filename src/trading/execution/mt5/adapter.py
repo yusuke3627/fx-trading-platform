@@ -27,7 +27,7 @@ class MT5ConnectionError(RuntimeError):
 
 def _load_mt5_module() -> Any:
     try:
-        import MetaTrader5  # noqa: PLC0415 - Windows-only optional dependency
+        import MetaTrader5
     except ImportError as exc:
         raise MT5NotAvailable(
             "MetaTrader5 package is not installed (Windows-only). "

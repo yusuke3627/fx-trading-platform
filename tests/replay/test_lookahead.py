@@ -1,10 +1,9 @@
 """Replay determinism and look-ahead prohibition."""
 import pytest
 
+from tests.support import T0, at, make_event, make_tick
 from trading.backtest.clock import ClockRegressionError, ReplayClock
 from trading.backtest.replay import LookaheadError, ReplayEngine, assert_visible, visible
-
-from tests.support import T0, at, make_event, make_tick
 
 
 def test_replay_clock_never_regresses():

@@ -5,8 +5,9 @@ implementation lives in storage/postgres.py; strategies never see these.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from trading.domain.account import AccountSnapshot
 from trading.domain.event import EventEnvelope

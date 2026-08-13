@@ -1,7 +1,7 @@
 """Exponential moving average."""
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def ema_series(values: Sequence[float], period: int) -> list[float]:

@@ -1,7 +1,7 @@
 """Shared test factories. All names/values are fictional test data."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -13,7 +13,6 @@ from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand, ExecutionSide
 from trading.domain.position import PositionAction, PositionDirection
 
-UTC = timezone.utc
 T0 = datetime(2026, 8, 13, 0, 0, tzinfo=UTC)
 
 
@@ -37,10 +36,10 @@ def usdjpy_spec(**overrides) -> InstrumentSpec:
         "symbol": "USDJPY",
         "digits": 3,
         "pip_size": Decimal("0.01"),
-        "contract_size": Decimal("1000"),
-        "volume_min": Decimal("1000"),
-        "volume_step": Decimal("1000"),
-        "volume_max": Decimal("100000"),
+        "contract_size": Decimal(1000),
+        "volume_min": Decimal(1000),
+        "volume_step": Decimal(1000),
+        "volume_max": Decimal(100000),
         "stop_level_points": 0,
     }
     values.update(overrides)
@@ -90,13 +89,13 @@ def make_snapshot(
         observed_at=observed_at,
         balance=eq,
         equity=eq,
-        margin=Decimal("0"),
+        margin=Decimal(0),
         free_margin=eq,
         margin_level=None,
-        unrealized_pnl=Decimal("0"),
-        realized_pnl_day=Decimal("0"),
+        unrealized_pnl=Decimal(0),
+        realized_pnl_day=Decimal(0),
         high_water_mark=hwm,
-        drawdown_from_hwm=max(hwm - eq, Decimal("0")),
+        drawdown_from_hwm=max(hwm - eq, Decimal(0)),
         broker_connected=broker_connected,
     )
 

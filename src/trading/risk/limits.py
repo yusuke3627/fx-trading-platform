@@ -24,10 +24,18 @@ def jst_day_start(now: datetime) -> datetime:
 def _equity_at_or_before(
     snapshots: Sequence[AccountSnapshot], t: datetime
 ) -> Decimal | None:
+    """Baseline equity for a loss window.
+
+    When no snapshot exists at or before the window start (first day of
+    operation, recording gaps), fall back to the earliest available snapshot:
+    under-reporting a loss as 0% would let real losses through the halts.
+    """
     eligible = [s for s in snapshots if s.observed_at <= t]
-    if not eligible:
-        return None
-    return max(eligible, key=lambda s: s.observed_at).equity
+    if eligible:
+        return max(eligible, key=lambda s: s.observed_at).equity
+    if snapshots:
+        return min(snapshots, key=lambda s: s.observed_at).equity
+    return None
 
 
 def _loss_pct(baseline: Decimal | None, current: Decimal) -> Decimal:

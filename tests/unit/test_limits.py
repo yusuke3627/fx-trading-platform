@@ -47,6 +47,18 @@ def test_hwm_drawdown():
     assert Decimal("4.76") < drawdown < Decimal("4.77")
 
 
+def test_missing_baseline_falls_back_to_earliest_snapshot():
+    # First day of operation: no snapshot exists at/before the JST day start,
+    # so the earliest available snapshot becomes the baseline instead of
+    # silently reporting 0% loss.
+    now = datetime(2026, 8, 13, 3, 0, tzinfo=UTC)
+    snapshots = [
+        make_snapshot("1000000", observed_at=datetime(2026, 8, 12, 20, 0, tzinfo=UTC)),
+    ]
+    current = make_snapshot("992500", observed_at=now)
+    assert daily_loss_pct(snapshots, current, now) == Decimal("0.75")
+
+
 def test_no_baseline_means_zero_loss():
     now = datetime(2026, 8, 13, 3, 0, tzinfo=UTC)
     current = make_snapshot("990000", observed_at=now)

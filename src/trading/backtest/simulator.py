@@ -57,7 +57,11 @@ class ExecutionSimulator:
 
         submit_time = ticks[0].time
         fill_after = submit_time + timedelta(milliseconds=self._costs.latency_ms)
-        fill_tick = next((t for t in ticks if t.time >= fill_after), ticks[-1])
+        fill_tick = next((t for t in ticks if t.time >= fill_after), None)
+        if fill_tick is None:
+            # No market data after the latency window: not filled, rather than
+            # optimistically filling at the last observed tick.
+            return SimulationResult(fill=None, rejected=True, position=None)
 
         price = self._execution_price(fill_tick, command.side)
 

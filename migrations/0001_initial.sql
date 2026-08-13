@@ -152,9 +152,11 @@ CREATE TABLE position_intents (
 );
 
 -- Snapshot history: the current position is MAX(as_of) per
--- (strategy_id, symbol). Rows are never updated.
+-- (strategy_id, symbol), ties broken by seq (insertion order, newest wins) —
+-- replayed fills can legitimately share one timestamp. Rows are never updated.
 CREATE TABLE virtual_positions (
     id             UUID PRIMARY KEY,
+    seq            BIGINT GENERATED ALWAYS AS IDENTITY,
     strategy_id    TEXT NOT NULL,
     symbol         TEXT NOT NULL,
     direction      TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
@@ -165,7 +167,7 @@ CREATE TABLE virtual_positions (
 );
 
 CREATE INDEX idx_virtual_positions_current
-    ON virtual_positions (strategy_id, symbol, as_of DESC);
+    ON virtual_positions (strategy_id, symbol, as_of DESC, seq DESC);
 
 -- ---------------------------------------------------------------------------
 -- Risk

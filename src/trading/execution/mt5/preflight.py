@@ -85,8 +85,8 @@ def run_preflight(
     # 1. Terminal connection + account info
     try:
         adapter.initialize()
-        info = adapter.account_info()
-        step("terminal_connection", True, {"login": getattr(info, "login", None)})
+        adapter.account_info()
+        step("terminal_connection", True)
     except Exception as exc:  # noqa: BLE001 - boundary: report, don't crash
         step("terminal_connection", False, detail=str(exc))
         report.execution_disabled = True
@@ -198,12 +198,18 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     if not opened:
         return
 
-    positions = adapter.positions(symbol)
-    ours = [p for p in positions if p.symbol == symbol]
-    if not ours:
-        step("trade_cycle_protection_verify", False, detail="opened position not found")
+    # An MT5 market order's position ticket equals the opening order ticket.
+    # Select exactly that position: guessing (e.g. "latest position on the
+    # symbol") could touch a pre-existing position the cycle did not open.
+    order_ticket = str(getattr(result, "order", 0) or 0)
+    position = adapter.position(order_ticket) if order_ticket != "0" else None
+    if position is None:
+        step(
+            "trade_cycle_protection_verify",
+            False,
+            detail="opened position not identified from order ticket; refusing to guess",
+        )
         return
-    position = ours[-1]
     step(
         "trade_cycle_protection_verify",
         position.protected,

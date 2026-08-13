@@ -75,6 +75,7 @@ class OMSService:
         current_net: Decimal,
         intent: PositionIntent,
         volume_step: Decimal,
+        sequence: int = 0,
     ) -> ExecutionCommand | None:
         """Difference-only order for a netting account; None when the delta is
         below one volume step."""
@@ -85,7 +86,9 @@ class OMSService:
         if quantity < volume_step:
             return None
         side = ExecutionSide.BUY if delta > 0 else ExecutionSide.SELL
-        return self._command(intent, symbol=symbol, side=side, quantity=quantity)
+        return self._command(
+            intent, symbol=symbol, side=side, quantity=quantity, sequence=sequence
+        )
 
     def prepare_exit(self, ticket: str) -> ExitPlan:
         """Fresh position select before any exit. A missing position means it
@@ -106,6 +109,7 @@ class OMSService:
         intent: PositionIntent,
         ticket: str,
         quantity: Decimal | None = None,
+        sequence: int = 0,
     ) -> ExecutionCommand | None:
         """Ticket-referenced REDUCE/CLOSE for a hedging account."""
         if self._mode is not AccountMode.HEDGING:
@@ -128,6 +132,7 @@ class OMSService:
             side=execution_side(plan.position.direction, intent.action),
             quantity=exit_quantity,
             ticket=ticket,
+            sequence=sequence,
         )
 
     def validate_command(self, command: ExecutionCommand) -> None:
@@ -151,12 +156,16 @@ class OMSService:
         side: ExecutionSide,
         quantity: Decimal,
         ticket: str | None = None,
+        sequence: int = 0,
     ) -> ExecutionCommand:
+        """`sequence` distinguishes legitimate follow-up commands from the
+        same intent (e.g. a re-delta after a partial fill) while keeping the
+        key deterministic for true retries of the same logical command."""
         now: datetime = self._clock.now()
         command = ExecutionCommand(
             command_id=uuid4(),
             intent_id=intent.intent_id,
-            idempotency_key=f"{intent.intent_id}:{intent.action}:{symbol}",
+            idempotency_key=f"{intent.intent_id}:{intent.action}:{symbol}:{sequence}",
             symbol=symbol,
             side=side,
             action=intent.action,

@@ -16,11 +16,13 @@ pre-commit:
       glob:
         - "migrations/*.sql"
       run: |
-        modified=$(git diff --cached --name-only --diff-filter=MD -- {staged_files})
-        if [ -n "$modified" ]; then
-          echo "適用済みマイグレーションの書き換え・削除は禁止されています。連番で新しいSQLを追加してください。"
+        blocked=$(git diff --cached --name-only --diff-filter=MD -- {staged_files} | while read -r f; do
+          if git cat-file -e "origin/main:$f" 2>/dev/null; then echo "$f"; fi
+        done)
+        if [ -n "$blocked" ]; then
+          echo "main に存在する（適用済みの）マイグレーションの書き換え・削除は禁止されています。連番で新しいSQLを追加してください。"
           echo "対象:"
-          printf "%s\n" "$modified"
+          printf "%s\n" "$blocked"
           exit 1
         fi
 

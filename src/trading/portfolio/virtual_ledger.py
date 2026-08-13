@@ -1,8 +1,10 @@
 """Virtual position ledger.
 
 Append-only snapshot history; the current position is the row with MAX(as_of)
-per (strategy_id, symbol). Satisfies the strategy layer's read-only
-PortfolioView protocol.
+per (strategy_id, symbol), ties broken by insertion order (newest wins).
+Under a ReplayClock multiple fills can share one timestamp, so insertion
+order is part of the convention, not an edge case. Satisfies the strategy
+layer's read-only PortfolioView protocol.
 """
 from __future__ import annotations
 
@@ -22,14 +24,13 @@ class VirtualPositionLedger:
         self._snapshots.append(snapshot)
 
     def position(self, strategy_id: str, symbol: str) -> VirtualPosition | None:
-        candidates = [
-            s
-            for s in self._snapshots
-            if s.strategy_id == strategy_id and s.symbol == symbol
-        ]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda s: s.as_of)
+        best: VirtualPosition | None = None
+        for s in self._snapshots:
+            if s.strategy_id != strategy_id or s.symbol != symbol:
+                continue
+            if best is None or s.as_of >= best.as_of:
+                best = s
+        return best
 
     def positions_for_symbol(self, symbol: str) -> list[VirtualPosition]:
         latest: dict[str, VirtualPosition] = {}
@@ -37,7 +38,7 @@ class VirtualPositionLedger:
             if s.symbol != symbol:
                 continue
             held = latest.get(s.strategy_id)
-            if held is None or s.as_of > held.as_of:
+            if held is None or s.as_of >= held.as_of:
                 latest[s.strategy_id] = s
         return [p for p in latest.values() if p.quantity != 0]
 
@@ -54,22 +55,44 @@ class VirtualPositionLedger:
         quantity: Decimal,
         price: Decimal,
     ) -> VirtualPosition:
-        """Apply an attributed fill and record the resulting snapshot."""
+        """Apply an attributed fill and record the resulting snapshot.
+
+        average_price is the volume-weighted cost basis: increases blend it,
+        reductions keep it, a flip through zero restarts it at the fill price.
+        """
         current = self.position(strategy_id, symbol)
         signed = current.signed_quantity if current else Decimal(0)
         delta = quantity if side is ExecutionSide.BUY else -quantity
         new_signed = signed + delta
 
-        direction = (
-            PositionDirection.LONG if new_signed >= 0 else PositionDirection.SHORT
-        )
         snapshot = VirtualPosition(
             strategy_id=strategy_id,
             symbol=symbol,
-            direction=direction,
+            direction=(
+                PositionDirection.LONG if new_signed >= 0 else PositionDirection.SHORT
+            ),
             quantity=abs(new_signed),
-            average_price=price if new_signed != 0 else None,
+            average_price=self._cost_basis(current, signed, delta, new_signed, price),
             as_of=self._clock.now(),
         )
         self.record(snapshot)
         return snapshot
+
+    @staticmethod
+    def _cost_basis(
+        current: VirtualPosition | None,
+        signed: Decimal,
+        delta: Decimal,
+        new_signed: Decimal,
+        price: Decimal,
+    ) -> Decimal | None:
+        if new_signed == 0:
+            return None
+        if signed == 0 or (signed > 0) != (new_signed > 0):
+            return price
+        if (signed > 0) == (delta > 0):
+            old_average = (
+                current.average_price if current and current.average_price else price
+            )
+            return (old_average * abs(signed) + price * abs(delta)) / abs(new_signed)
+        return current.average_price if current else None

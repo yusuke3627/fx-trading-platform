@@ -38,6 +38,16 @@ def test_crash_after_broker_request_goes_to_unknown():
     assert recovery_state(command, at(minutes=2)) is CommandState.UNKNOWN
 
 
+def test_inflight_submitting_within_timeout_is_left_alone():
+    # A live worker mid-submission must never be seized by a recovery sweep:
+    # a false UNKNOWN would trip halt_on_unknown_order and freeze new risk.
+    command = mark_claimed(
+        make_command(state=CommandState.READY), "worker-1", at(), lease_seconds=60
+    )
+    command = mark_submitting(command, at(seconds=1))
+    assert recovery_state(command, at(seconds=30)) is None
+
+
 def test_crash_during_submitting_goes_to_unknown_never_ready():
     command = mark_claimed(
         make_command(state=CommandState.READY), "worker-1", at(), lease_seconds=60

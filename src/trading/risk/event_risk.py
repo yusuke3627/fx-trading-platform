@@ -3,6 +3,10 @@
 Consecutive central-bank meetings are treated as one independent risk state
 (e.g. DUAL_CENTRAL_BANK_CLUSTER), not as the sum of individual event risks.
 Thresholds and windows live in YAML configuration, not in the spec text.
+
+Wiring note: YAML supplies pre/post hours and per-horizon actions
+(config.EventRiskWindowSettings); the concrete event datetimes come from the
+scheduled-event calendar built by application wiring (vertical slice).
 """
 from __future__ import annotations
 

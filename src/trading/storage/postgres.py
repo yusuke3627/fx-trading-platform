@@ -23,6 +23,63 @@ def connect(dsn: str) -> psycopg.Connection:
     return psycopg.connect(dsn, row_factory=dict_row)
 
 
+def _row_to_command(row: dict[str, Any]) -> ExecutionCommand:
+    return ExecutionCommand(
+        command_id=row["id"],
+        intent_id=row["intent_id"],
+        idempotency_key=row["idempotency_key"],
+        symbol=row["symbol"],
+        side=row["side"],
+        action=row["action"],
+        direction=row["direction"],
+        quantity=row["quantity"],
+        stop_loss_price=row["stop_loss_price"],
+        take_profit_price=row["take_profit_price"],
+        broker_position_ticket=row["broker_position_ticket"],
+        state=row["state"],
+        claimed_by=row["claimed_by"],
+        claimed_at=row["claimed_at"],
+        claim_expires_at=row["claim_expires_at"],
+        submitting_at=row["submitting_at"],
+        broker_request_started_at=row["broker_request_started_at"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_snapshot(row: dict[str, Any]) -> AccountSnapshot:
+    return AccountSnapshot(
+        observed_at=row["observed_at"],
+        balance=row["balance"],
+        equity=row["equity"],
+        margin=row["margin"],
+        free_margin=row["free_margin"],
+        margin_level=row["margin_level"],
+        unrealized_pnl=row["unrealized_pnl"],
+        realized_pnl_day=row["realized_pnl_day"],
+        high_water_mark=row["high_water_mark"],
+        drawdown_from_hwm=row["drawdown_from_hwm"],
+        broker_connected=row["broker_connected"],
+    )
+
+
+def _row_to_event(row: dict[str, Any]) -> EventEnvelope:
+    return EventEnvelope(
+        event_id=row["id"],
+        event_type=row["event_type"],
+        source=row["source"],
+        source_uri=row["source_uri"],
+        payload=row["payload"],
+        payload_hash=row["payload_hash"],
+        raw_uri=row["raw_uri"],
+        effective_at=row["effective_at"],
+        published_at=row["published_at"],
+        retrieved_at=row["retrieved_at"],
+        known_at=row["known_at"],
+        processed_at=row["processed_at"],
+        superseded_at=row["superseded_at"],
+    )
+
+
 class PostgresCommandRepository:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
@@ -83,7 +140,15 @@ class PostgresCommandRepository:
         )
         self._conn.commit()
 
-    def claim_next(self, worker: str, lease_seconds: int, now: datetime) -> dict[str, Any] | None:
+    def get(self, command_id: str) -> ExecutionCommand | None:
+        row = self._conn.execute(
+            "SELECT * FROM execution_commands WHERE id = %s", (command_id,)
+        ).fetchone()
+        return _row_to_command(row) if row else None
+
+    def claim_next(
+        self, worker: str, lease_seconds: int, now: datetime
+    ) -> ExecutionCommand | None:
         with self._conn.transaction():
             row = self._conn.execute(
                 """
@@ -108,13 +173,14 @@ class PostgresCommandRepository:
                     "expires": now + timedelta(seconds=lease_seconds),
                 },
             ).fetchone()
-        return row
+        return _row_to_command(row) if row else None
 
-    def in_state(self, state: CommandState) -> Sequence[dict[str, Any]]:
-        return self._conn.execute(
+    def in_state(self, state: CommandState) -> Sequence[ExecutionCommand]:
+        rows = self._conn.execute(
             "SELECT * FROM execution_commands WHERE state = %s ORDER BY created_at",
             (state,),
         ).fetchall()
+        return [_row_to_command(r) for r in rows]
 
 
 class PostgresFillRepository:
@@ -193,11 +259,18 @@ class PostgresAccountSnapshotRepository:
         )
         self._conn.commit()
 
-    def since(self, t: datetime) -> Sequence[dict[str, Any]]:
-        return self._conn.execute(
+    def since(self, t: datetime) -> Sequence[AccountSnapshot]:
+        rows = self._conn.execute(
             "SELECT * FROM account_snapshots WHERE observed_at >= %s ORDER BY observed_at",
             (t,),
         ).fetchall()
+        return [_row_to_snapshot(r) for r in rows]
+
+    def latest(self) -> AccountSnapshot | None:
+        row = self._conn.execute(
+            "SELECT * FROM account_snapshots ORDER BY observed_at DESC LIMIT 1"
+        ).fetchone()
+        return _row_to_snapshot(row) if row else None
 
 
 class PostgresEventRepository:
@@ -237,12 +310,14 @@ class PostgresEventRepository:
 
     def known_before(
         self, t: datetime, event_type: str | None = None
-    ) -> Sequence[dict[str, Any]]:
+    ) -> Sequence[EventEnvelope]:
         if event_type is None:
-            return self._conn.execute(
+            rows = self._conn.execute(
                 "SELECT * FROM events WHERE known_at <= %s ORDER BY known_at", (t,)
             ).fetchall()
-        return self._conn.execute(
-            "SELECT * FROM events WHERE known_at <= %s AND event_type = %s ORDER BY known_at",
-            (t, event_type),
-        ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM events WHERE known_at <= %s AND event_type = %s ORDER BY known_at",
+                (t, event_type),
+            ).fetchall()
+        return [_row_to_event(r) for r in rows]

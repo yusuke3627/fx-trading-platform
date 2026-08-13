@@ -36,6 +36,7 @@ Collectors → Point-in-Time Event Store → Fundamental/Regime Engine
 | Risk Day | JST 日次 + Rolling 24h + HWM Drawdown の3系統 |
 | 介入データ | 推定額と公式額は別カラム。検証状態遷移はイベントとして追記 |
 | Source Registry | `events` 上の View（二重管理しない） |
+| virtual_positions | 履歴Snapshot。現在値 = MAX(as_of)、同時刻タイは挿入順（`seq`）で新しい方 |
 | Scalping | `RESEARCH_ONLY` から開始 |
 | Event Bus | 初期は使わない |
 | LLM | 初期 OFF。使う場合も Structured Event 生成まで。発注権限なし |

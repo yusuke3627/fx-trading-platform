@@ -45,6 +45,16 @@ def test_stress_scenario_widens_effective_spread():
         assert result.fill.price > normal_price
 
 
+def test_no_fill_when_no_tick_after_latency_window():
+    costs = CostModel(latency_ms=10_000, slippage_sigma_pips=0.0)
+    sim = ExecutionSimulator(costs, usdjpy_spec(), seed=1)
+    result = sim.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.rejected and result.fill is None
+
+
 def test_protection_fill_on_stop_loss_cross():
     sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
     position = SimulatedPosition(

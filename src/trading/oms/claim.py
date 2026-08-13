@@ -1,10 +1,12 @@
 """Claim protocol for execution commands.
 
 Workers claim READY rows with FOR UPDATE SKIP LOCKED (queue-like table
-processing without lock contention). Recovery rules:
+processing without lock contention). Recovery rules (all staleness-gated so a
+runtime sweep can never seize a healthy in-flight command):
 
 - CLAIMED + lease expired + broker request never started  -> READY
-- CLAIMED or SUBMITTING + broker request started           -> UNKNOWN
+- CLAIMED + lease expired + broker request started        -> UNKNOWN
+- SUBMITTING + submitting_at older than the timeout       -> UNKNOWN
 """
 from __future__ import annotations
 
@@ -57,14 +59,37 @@ def mark_broker_request_started(
     return command.model_copy(update={"broker_request_started_at": now})
 
 
-def recovery_state(command: ExecutionCommand, now: datetime) -> CommandState | None:
-    """State a stale command should recover to; None when no recovery applies."""
+DEFAULT_SUBMITTING_TIMEOUT_SECONDS = 60
+
+
+def recovery_state(
+    command: ExecutionCommand,
+    now: datetime,
+    *,
+    submitting_timeout_seconds: int = DEFAULT_SUBMITTING_TIMEOUT_SECONDS,
+) -> CommandState | None:
+    """State a stale command should recover to; None when no recovery applies.
+
+    A command is only considered stale after its lease expiry (CLAIMED) or the
+    submitting timeout (SUBMITTING): declaring a live submission UNKNOWN would
+    falsely trip halt_on_unknown_order and freeze new risk.
+    """
     if command.state is CommandState.CLAIMED:
+        lease_expired = (
+            command.claim_expires_at is not None and now >= command.claim_expires_at
+        )
+        if not lease_expired:
+            return None
         if command.broker_request_started_at is not None:
             return CommandState.UNKNOWN
-        if command.claim_expires_at is not None and now >= command.claim_expires_at:
-            return CommandState.READY
-        return None
+        return CommandState.READY
     if command.state is CommandState.SUBMITTING:
-        return CommandState.UNKNOWN
+        started = command.submitting_at or command.broker_request_started_at
+        if started is None:
+            # No timestamp to measure staleness against: startup recovery
+            # after a crash, where no worker can still be in flight.
+            return CommandState.UNKNOWN
+        if now >= started + timedelta(seconds=submitting_timeout_seconds):
+            return CommandState.UNKNOWN
+        return None
     return None

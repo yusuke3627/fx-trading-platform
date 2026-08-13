@@ -57,7 +57,11 @@ class ReplayEngine:
         handler: Callable[[EventEnvelope | Tick | Bar], Any],
     ) -> int:
         """Deliver items in time order, advancing the clock first so a handler
-        can never observe data before its known_at."""
+        can never observe data before its known_at.
+
+        Items sharing a timestamp keep their input order (stable sort), so a
+        replay is deterministic for identical input sequences.
+        """
         ordered = sorted(
             (ReplayItem(replay_time(i), i) for i in items), key=lambda r: r.at
         )

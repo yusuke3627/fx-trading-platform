@@ -131,6 +131,30 @@ def test_exit_cannot_exceed_existing_position():
     assert command.quantity == Decimal(5000)
 
 
+def test_idempotency_key_distinguishes_follow_up_commands():
+    # A re-delta after a partial fill is a legitimate second command from the
+    # same intent; only identical (intent, sequence) pairs share a key.
+    oms = OMSService(
+        account_mode=AccountMode.NETTING, broker=FakeBroker(), clock=SystemClock()
+    )
+    intent = make_intent(direction=PositionDirection.SHORT)
+
+    def command(sequence: int):
+        return oms.command_for_netting(
+            symbol="USDJPY",
+            desired_net=Decimal(-110000),
+            current_net=Decimal(-80000),
+            intent=intent,
+            volume_step=Decimal(1000),
+            sequence=sequence,
+        )
+
+    first, retry, follow_up = command(0), command(0), command(1)
+    assert first is not None and retry is not None and follow_up is not None
+    assert first.idempotency_key == retry.idempotency_key
+    assert first.idempotency_key != follow_up.idempotency_key
+
+
 def test_naked_exit_command_is_rejected_on_hedging():
     oms = OMSService(
         account_mode=AccountMode.HEDGING, broker=FakeBroker(), clock=SystemClock()

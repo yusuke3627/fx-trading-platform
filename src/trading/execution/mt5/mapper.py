@@ -91,10 +91,20 @@ def lots_to_units(lots: float, contract_size: Decimal) -> Decimal:
     return Decimal(str(lots)) * contract_size
 
 
+def pip_size_for_digits(digits: int) -> Decimal:
+    """Conventional pip size: 0.01 for JPY-style 2/3-digit quotes, 0.0001 for
+    4/5-digit quotes. Point-based formulas break on 4/2-digit feeds (a pip is
+    10 points only on 3/5-digit quotes), so digits are mapped explicitly."""
+    if digits in (2, 3):
+        return Decimal("0.01")
+    if digits in (4, 5):
+        return Decimal("0.0001")
+    raise ValueError(f"unsupported quote digits for pip derivation: {digits}")
+
+
 def instrument_spec_from_symbol_info(info: Any) -> InstrumentSpec:
     """Build an InstrumentSpec from mt5.symbol_info() output.
 
-    A pip is 10 points on 3/5-digit quotes (JPY pairs: digits=3, pip=0.01).
     MT5 volumes are lots; the spec carries units.
     """
     digits = int(info.digits)
@@ -102,7 +112,7 @@ def instrument_spec_from_symbol_info(info: Any) -> InstrumentSpec:
     return InstrumentSpec(
         symbol=str(info.name),
         digits=digits,
-        pip_size=Decimal(10) ** (-digits + 1),
+        pip_size=pip_size_for_digits(digits),
         contract_size=contract,
         volume_min=lots_to_units(info.volume_min, contract),
         volume_step=lots_to_units(info.volume_step, contract),

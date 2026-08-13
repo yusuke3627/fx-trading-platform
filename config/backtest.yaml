@@ -1,0 +1,15 @@
+# Backtest: replay clock, execution simulator, no broker.
+risk:
+  trading_enabled: false
+
+simulator:
+  scenario: normal
+  seed: 42
+
+strategies:
+  failed_spike_reversal:
+    enabled: true
+  post_event_failed_breakout:
+    enabled: true
+  monetary_policy_convergence:
+    enabled: true

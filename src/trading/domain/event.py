@@ -1,0 +1,81 @@
+"""Point-in-time event model.
+
+Every external observation is stored as an event with a full time model so a
+backtest can only see what was known at replay time:
+
+    visible  <=>  known_at <= replay_clock.now()
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class EventEnvelope(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    event_id: UUID
+    event_type: str
+    source: str
+    source_uri: str | None = None
+
+    payload: dict[str, Any] = Field(default_factory=dict)
+    payload_hash: str | None = None
+    raw_uri: str | None = None
+
+    effective_at: datetime | None = None
+    published_at: datetime | None = None
+    retrieved_at: datetime
+    known_at: datetime
+    processed_at: datetime | None = None
+    superseded_at: datetime | None = None
+
+
+InterventionVerificationStatus = Literal[
+    "RUMOR",
+    "MARKET_SUSPECTED",
+    "MEDIA_CONFIRMED",
+    "OFFICIAL_ACTION_CONFIRMED",
+    "OFFICIAL_AMOUNT_CONFIRMED",
+]
+
+
+class FXInterventionEvent(BaseModel):
+    """FX intervention observation.
+
+    Live estimates and later official MOF figures live in separate columns and
+    are never overwritten into each other.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    event_id: UUID
+
+    direction: Literal["JPY_BUY", "JPY_SELL"]
+    verification_status: InterventionVerificationStatus
+
+    reported_estimate_jpy: Decimal | None = None
+    official_amount_jpy: Decimal | None = None
+
+    effective_at: datetime
+    known_at: datetime
+
+
+class VerificationEvent(BaseModel):
+    """A verification-status transition, recorded as a new fact.
+
+    Status changes are never in-place updates; each transition is a new event
+    with its own known_at.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    event_id: UUID
+    subject_event_id: UUID
+    from_status: str | None
+    to_status: str
+    known_at: datetime

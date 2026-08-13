@@ -1,0 +1,114 @@
+# Shared configuration. Environment overlays (backtest/demo/shadow/
+# micro_live/production) merge on top of this file.
+
+broker:
+  expected_account_mode: HEDGING
+  magic_number: 260813
+  deviation_points: 10
+
+market:
+  primary_instruments: [USDJPY]
+  quote_max_age_seconds: 5
+
+storage:
+  dsn_env: TRADING_DB_DSN
+
+# Beginner upper bounds for entering micro live; never a backtest
+# optimization target. Percentages are in percent (0.05 = 0.05%).
+risk:
+  trading_enabled: false
+
+  max_open_positions: 1
+  max_units_per_symbol:
+    USDJPY: 1000
+
+  max_risk_per_trade_pct: 0.05
+
+  daily_loss_halt_pct: 0.75
+  rolling_24h_loss_halt_pct: 1.00
+  high_water_mark_drawdown_halt_pct: 3.00
+
+  max_spread_pips: 2.0
+  quote_max_age_seconds: 5
+  min_margin_level_pct: 300
+
+  require_broker_stop_loss: true
+
+  halt_on_unknown_order: true
+  halt_on_position_mismatch: true
+  halt_on_untracked_fill: true
+
+  event_mode_default: REDUCED
+
+event_risk:
+  dual_central_bank_cluster:
+    pre_hours: 48
+    post_hours: 24
+    scalp: HALT
+    intraday: REDUCED
+    swing: REDUCED
+
+intelligence:
+  llm_enabled: false
+  intervention_risk:
+    version: "2026.08.0"
+    weights:
+      official_wording_score: 0.25
+      realized_volatility: 0.20
+      distance_from_intervention_zone: 0.20
+      days_since_intervention: 0.15
+      verification_state: 0.10
+      rate_of_change: 0.10
+
+simulator:
+  scenario: normal
+  seed: 42
+  latency_ms: 150
+
+strategies:
+  failed_spike_reversal:
+    enabled: false
+    status: RESEARCH_ONLY
+    instruments: [USDJPY]
+    timeframes:
+      entry: 1m
+    parameters:
+      spike_atr_multiple: 3.0
+      spike_window_seconds: 60
+      atr_period: 14
+      stop_buffer_atr: 0.5
+      max_spread_pips: 1.5
+      long_side_enabled: false
+      expected_horizon_seconds: 300
+
+  post_event_failed_breakout:
+    enabled: false
+    status: RESEARCH_ONLY
+    instruments: [USDJPY]
+    timeframes:
+      regime: 1h
+      setup: 15m
+      entry: 5m
+    parameters:
+      resistance_lookback: 20
+      atr_period: 14
+      stop_buffer_atr: 0.5
+      macro_gate_threshold: 0.0
+      intervention_risk_max_for_long: 0.5
+      expected_horizon_seconds: 21600
+
+  monetary_policy_convergence:
+    enabled: false
+    status: RESEARCH_ONLY
+    instruments: [USDJPY]
+    timeframes:
+      trigger: 4h
+      trend: 1d
+    parameters:
+      swing_left: 2
+      swing_right: 2
+      support_lookback: 30
+      atr_period: 14
+      stop_buffer_atr: 1.0
+      intervention_risk_min_for_short: 0.2
+      expected_horizon_seconds: 432000

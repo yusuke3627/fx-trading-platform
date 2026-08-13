@@ -85,6 +85,9 @@ def test_direction_flip_closes_existing_first():
     assert intent is not None
     assert intent.action is PositionAction.CLOSE
     assert intent.target_quantity == Decimal(0)
+    # The intent closes what exists: CLOSE LONG (via SELL), not CLOSE SHORT.
+    assert intent.direction is PositionDirection.LONG
+    assert intent.protection is None
 
 
 def test_no_intent_without_stop_distance():

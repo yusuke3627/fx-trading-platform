@@ -50,17 +50,30 @@ class PortfolioManager:
         current = self._ledger.position(signal.strategy_id, signal.symbol)
         if current is None or current.quantity == 0:
             action = PositionAction.OPEN
+            direction = signal.desired_direction
         elif current.direction == signal.desired_direction:
             action = PositionAction.INCREASE
+            direction = signal.desired_direction
         else:
             # Direction change: close the existing virtual position first.
+            # The intent closes what exists, so it carries the held direction
+            # — "CLOSE LONG via SELL", never "CLOSE SHORT + SELL".
             action = PositionAction.CLOSE
+            direction = current.direction
 
-        stop_offset = signal.stop_distance_pips * sizing.pip_size
-        if signal.desired_direction is PositionDirection.LONG:
-            stop_price = sizing.entry_price - stop_offset
-        else:
-            stop_price = sizing.entry_price + stop_offset
+        protection = None
+        if action is not PositionAction.CLOSE:
+            stop_offset = signal.stop_distance_pips * sizing.pip_size
+            if direction is PositionDirection.LONG:
+                stop_price = sizing.entry_price - stop_offset
+            else:
+                stop_price = sizing.entry_price + stop_offset
+            protection = ProtectionSpec(
+                stop_loss_price=stop_price,
+                take_profit_price=None,
+                maximum_unprotected_seconds=sizing.max_unprotected_seconds,
+                source="STRATEGY",
+            )
 
         return PositionIntent(
             intent_id=uuid4(),
@@ -68,15 +81,10 @@ class PortfolioManager:
             strategy_version=signal.strategy_version,
             symbol=signal.symbol,
             action=action,
-            direction=signal.desired_direction,
+            direction=direction,
             target_quantity=quantity if action is not PositionAction.CLOSE else Decimal(0),
             delta_quantity=None,
-            protection=ProtectionSpec(
-                stop_loss_price=stop_price,
-                take_profit_price=None,
-                maximum_unprotected_seconds=sizing.max_unprotected_seconds,
-                source="STRATEGY",
-            ),
+            protection=protection,
             reason_codes=signal.reason_codes,
             generated_at=self._clock.now(),
         )

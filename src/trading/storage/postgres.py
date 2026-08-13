@@ -149,30 +149,35 @@ class PostgresCommandRepository:
     def claim_next(
         self, worker: str, lease_seconds: int, now: datetime
     ) -> ExecutionCommand | None:
-        with self._conn.transaction():
-            row = self._conn.execute(
-                """
-                UPDATE execution_commands
-                SET state = 'CLAIMED',
-                    claimed_by = %(worker)s,
-                    claimed_at = %(now)s,
-                    claim_expires_at = %(expires)s
-                WHERE id = (
-                    SELECT id
-                    FROM execution_commands
-                    WHERE state = 'READY'
-                    ORDER BY created_at
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1
-                )
-                RETURNING *
-                """,
-                {
-                    "worker": worker,
-                    "now": now,
-                    "expires": now + timedelta(seconds=lease_seconds),
-                },
-            ).fetchone()
+        # Single-statement claim + explicit commit. A `transaction()` block
+        # would degrade to a savepoint if a prior SELECT on this connection
+        # opened an implicit transaction, leaving the CLAIMED update
+        # uncommitted — a crash after the broker call would then roll the
+        # claim back to READY and let another worker re-send the order.
+        row = self._conn.execute(
+            """
+            UPDATE execution_commands
+            SET state = 'CLAIMED',
+                claimed_by = %(worker)s,
+                claimed_at = %(now)s,
+                claim_expires_at = %(expires)s
+            WHERE id = (
+                SELECT id
+                FROM execution_commands
+                WHERE state = 'READY'
+                ORDER BY created_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            RETURNING *
+            """,
+            {
+                "worker": worker,
+                "now": now,
+                "expires": now + timedelta(seconds=lease_seconds),
+            },
+        ).fetchone()
+        self._conn.commit()
         return _row_to_command(row) if row else None
 
     def in_state(self, state: CommandState) -> Sequence[ExecutionCommand]:

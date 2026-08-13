@@ -17,6 +17,7 @@ Usage (Windows host with MT5 terminal):
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -293,6 +294,102 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         {
             "deals": len(cycle_deals),
             "reason_codes": sorted({d.reason_code for d in cycle_deals if d.reason_code is not None}),
+        },
+    )
+
+    _protection_fill_probe(adapter, spec, symbol, magic, clock, step)
+
+
+def _protection_fill_probe(
+    adapter, spec, symbol: str, magic: int, clock: Clock, step, wait_seconds: int = 90
+) -> None:
+    """Verify PROTECTION_FILL with a real broker-side SL execution.
+
+    The normal trade cycle produces only client-origin deals, so it can never
+    prove protection classification. This probe opens a minimum position with
+    the tightest legal SL and waits for the broker to fire it. If no SL/TP/SO
+    deal is observed within the window, the step FAILS as unverified — a
+    skipped protection check must never read as a verified Production Gate
+    item.
+    """
+    tick = adapter._mt5.symbol_info_tick(symbol)
+    if tick is None:
+        step("trade_cycle_protection_fill", False, detail="no tick available")
+        return
+    point = Decimal(10) ** -spec.digits
+    distance = max(spec.stop_level_points, 20) * point
+    stop_loss = Decimal(str(tick.bid)) - distance
+
+    result = adapter.order_send(
+        mapper.market_order_request(
+            symbol=symbol,
+            side=ExecutionSide.BUY,
+            units=spec.volume_min,
+            spec=spec,
+            stop_loss=stop_loss,
+            magic=magic,
+            comment="preflight-protection",
+        )
+    )
+    if result is None or result.retcode != mapper.TRADE_RETCODE_DONE:
+        step(
+            "trade_cycle_protection_fill",
+            False,
+            {"retcode": getattr(result, "retcode", None)},
+        )
+        return
+    ticket = str(getattr(result, "order", 0) or 0)
+    if ticket == "0":
+        step("trade_cycle_protection_fill", False, detail="opened position not identified")
+        return
+
+    deadline = time.monotonic() + wait_seconds
+    fired = False
+    while time.monotonic() < deadline:
+        if adapter.position(ticket) is None:
+            fired = True
+            break
+        time.sleep(2)
+
+    if not fired:
+        leftover = adapter.position(ticket)
+        if leftover is not None:
+            adapter.order_send(
+                mapper.market_order_request(
+                    symbol=symbol,
+                    side=ExecutionSide.SELL,
+                    units=leftover.quantity,
+                    spec=spec,
+                    position_ticket=ticket,
+                    magic=magic,
+                    comment="preflight-protection-cleanup",
+                )
+            )
+        step(
+            "trade_cycle_protection_fill",
+            False,
+            detail=(
+                f"unverified: broker-side SL did not fire within {wait_seconds}s; "
+                "PROTECTION_FILL remains unverified"
+            ),
+        )
+        return
+
+    deals = adapter.history_deals(
+        clock.now() - timedelta(hours=1), clock.now() + timedelta(minutes=1)
+    )
+    protection_deals = [
+        d
+        for d in deals
+        if d.broker_position_ticket == ticket and d.protection_reason is not None
+    ]
+    step(
+        "trade_cycle_protection_fill",
+        bool(protection_deals),
+        {
+            "reason_codes": sorted(
+                {d.reason_code for d in protection_deals if d.reason_code is not None}
+            )
         },
     )
 

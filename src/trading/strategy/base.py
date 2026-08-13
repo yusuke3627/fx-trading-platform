@@ -107,6 +107,23 @@ class Strategy(ABC):
         context: StrategyContext,
     ) -> list[StrategySignal]: ...
 
+    def _new_setup(self, symbol: str, direction: PositionDirection, setup_id: object) -> bool:
+        """One setup, one signal.
+
+        Every market event re-evaluates the same closed bars, so a persisting
+        condition would emit a fresh signal (and a fresh intent) on every
+        tick. Records the latest setup identity per (symbol, direction) and
+        returns False when it already produced a signal.
+        """
+        memo: dict[tuple[str, PositionDirection], object] = self.__dict__.setdefault(
+            "_signaled_setups", {}
+        )
+        slot = (symbol, direction)
+        if memo.get(slot) == setup_id:
+            return False
+        memo[slot] = setup_id
+        return True
+
     def make_signal(
         self,
         context: StrategyContext,

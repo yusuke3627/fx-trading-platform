@@ -74,6 +74,11 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
             failed_retest = support is not None and float(bars[-1].high) < support + atr
             if lower_high and support_broken and failed_retest:
                 highs = swing_highs(bars, left, right)
+                # One signal per structural setup (identified by the bar of
+                # the last swing high), not one per market event.
+                setup_id = bars[highs[-1]].start if highs else bars[-1].start
+                if not self._new_setup(symbol, PositionDirection.SHORT, setup_id):
+                    return None
                 structural_high = float(bars[highs[-1]].high) if highs else max(
                     float(b.high) for b in bars[-10:]
                 )
@@ -96,6 +101,8 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
         if self._long_fundamental_gate(ctx) and self._trend_up(ctx, symbol, trend_tf):
             recent_low = rolling_low(bars, 10)
             if recent_low is not None and current > recent_low:
+                if not self._new_setup(symbol, PositionDirection.LONG, bars[-1].start):
+                    return None
                 stop_price_distance = (current - recent_low) + stop_buffer_atr * atr
                 return self.make_signal(
                     ctx,

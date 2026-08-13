@@ -81,6 +81,10 @@ class FailedSpikeReversalStrategy(Strategy):
             no_new_high = current < spike_high
             lost_base_high = current < max(mids[: mids.index(spike_high)] or [base])
             if no_new_high and lost_base_high and momentum < 0:
+                # One signal per spike (identified by its extreme tick).
+                spike_time = ticks[mids.index(spike_high)].time
+                if not self._new_setup(symbol, PositionDirection.SHORT, spike_time):
+                    return None
                 stop_price_distance = (spike_high - current) + stop_buffer_atr * atr
                 return self.make_signal(
                     ctx,
@@ -103,6 +107,9 @@ class FailedSpikeReversalStrategy(Strategy):
             no_new_low = current > spike_low
             reclaimed = current > min(mids[: mids.index(spike_low)] or [base])
             if no_new_low and reclaimed and momentum > 0:
+                spike_time = ticks[mids.index(spike_low)].time
+                if not self._new_setup(symbol, PositionDirection.LONG, spike_time):
+                    return None
                 stop_price_distance = (current - spike_low) + stop_buffer_atr * atr
                 return self.make_signal(
                     ctx,

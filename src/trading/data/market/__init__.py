@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Protocol
 
+from trading.backtest.clock import Clock
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.market import Bar, Tick
 
@@ -24,7 +25,17 @@ class MarketDataService(Protocol):
 
 
 class InMemoryMarketData:
-    def __init__(self) -> None:
+    """In-memory store for tests and replay.
+
+    Replay MUST construct this with the ReplayClock: pre-loaded history is
+    then filtered so only data already known at clock.now() is visible (bars
+    by close_time, ticks by their time) — without the clock a strategy could
+    read future highs/lows/closes straight past the replay engine. Omitting
+    the clock is for live/incremental feeding only.
+    """
+
+    def __init__(self, clock: Clock | None = None) -> None:
+        self._clock = clock
         self._ticks: dict[str, list[Tick]] = {}
         self._bars: dict[tuple[str, str], list[Bar]] = {}
         self._instruments: dict[str, InstrumentSpec] = {}
@@ -39,10 +50,14 @@ class InMemoryMarketData:
         self._instruments[spec.symbol] = spec
 
     def bars(self, symbol: str, timeframe: str, count: int) -> Sequence[Bar]:
-        return self._bars.get((symbol, timeframe), [])[-count:]
+        bars = self._bars.get((symbol, timeframe), [])
+        if self._clock is not None:
+            now = self._clock.now()
+            bars = [b for b in bars if b.close_time <= now]
+        return bars[-count:]
 
     def ticks(self, symbol: str, window_seconds: float) -> Sequence[Tick]:
-        ticks = self._ticks.get(symbol, [])
+        ticks = self._visible_ticks(symbol)
         if not ticks:
             return []
         end = ticks[-1].time
@@ -50,8 +65,15 @@ class InMemoryMarketData:
         return [t for t in ticks if t.time >= start]
 
     def latest_tick(self, symbol: str) -> Tick | None:
-        ticks = self._ticks.get(symbol, [])
+        ticks = self._visible_ticks(symbol)
         return ticks[-1] if ticks else None
 
     def instrument(self, symbol: str) -> InstrumentSpec | None:
         return self._instruments.get(symbol)
+
+    def _visible_ticks(self, symbol: str) -> list[Tick]:
+        ticks = self._ticks.get(symbol, [])
+        if self._clock is None:
+            return ticks
+        now = self._clock.now()
+        return [t for t in ticks if t.time <= now]

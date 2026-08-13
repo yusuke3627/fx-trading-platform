@@ -182,10 +182,16 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     sl = price - 100 * spec.pip_size
     tp = price + 100 * spec.pip_size
 
+    # Open volume_min + one step so a real partial REDUCE is always executed
+    # while the remainder stays at the broker minimum. With volume_min ==
+    # volume_step (e.g. OANDA 1,000-unit accounts) a half-of-minimum reduce
+    # would be skipped — and a skipped step must never count as verifying the
+    # Production Gate item "Partial REDUCE verified".
+    cycle_units = spec.volume_min + spec.volume_step
     open_request = mapper.market_order_request(
         symbol=symbol,
         side=ExecutionSide.BUY,
-        units=spec.volume_min,
+        units=cycle_units,
         spec=spec,
         stop_loss=sl,
         take_profit=tp,
@@ -236,29 +242,26 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         {"retcode": getattr(modify_result, "retcode", None)},
     )
 
-    # Partial reduce (half, if the step allows), then full close.
-    half = (spec.volume_min / 2 // spec.volume_step) * spec.volume_step
-    remaining = position.quantity
-    if half >= spec.volume_step:
-        reduce_request = mapper.market_order_request(
-            symbol=symbol,
-            side=ExecutionSide.SELL,
-            units=half,
-            spec=spec,
-            position_ticket=position.broker_position_ticket,
-            magic=magic,
-            comment="preflight-reduce",
-        )
-        reduce_result = adapter.order_send(reduce_request)
-        reduced = (
-            reduce_result is not None
-            and reduce_result.retcode == mapper.TRADE_RETCODE_DONE
-        )
-        step("trade_cycle_partial_reduce", reduced, {"retcode": getattr(reduce_result, "retcode", None)})
-        if reduced:
-            remaining = remaining - half
-    else:
-        step("trade_cycle_partial_reduce", True, detail="skipped: volume_min == volume_step")
+    reduce_units = spec.volume_step
+    reduce_request = mapper.market_order_request(
+        symbol=symbol,
+        side=ExecutionSide.SELL,
+        units=reduce_units,
+        spec=spec,
+        position_ticket=position.broker_position_ticket,
+        magic=magic,
+        comment="preflight-reduce",
+    )
+    reduce_result = adapter.order_send(reduce_request)
+    step(
+        "trade_cycle_partial_reduce",
+        reduce_result is not None
+        and reduce_result.retcode == mapper.TRADE_RETCODE_DONE,
+        {
+            "retcode": getattr(reduce_result, "retcode", None),
+            "reduced_units": str(reduce_units),
+        },
+    )
 
     fresh = adapter.position(position.broker_position_ticket)
     if fresh is None:
@@ -277,7 +280,7 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     step(
         "trade_cycle_close",
         close_result is not None and close_result.retcode == mapper.TRADE_RETCODE_DONE,
-        {"retcode": getattr(close_result, "retcode", None), "closed_units": str(remaining)},
+        {"retcode": getattr(close_result, "retcode", None), "closed_units": str(fresh.quantity)},
     )
 
     deals = adapter.history_deals(

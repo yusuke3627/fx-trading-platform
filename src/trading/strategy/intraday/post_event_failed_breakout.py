@@ -76,6 +76,10 @@ class PostEventFailedBreakoutStrategy(Strategy):
         if self._short_macro_gate(ctx, gate_eps) and detect_failed_breakout(
             entry_bars, resistance, side="UP"
         ):
+            # One signal per failed-breakout attempt (identified by the
+            # attempt bar), not one per market event while the setup holds.
+            if not self._new_setup(symbol, PositionDirection.SHORT, entry_bars[-2].start):
+                return None
             failed_high = max(float(b.high) for b in entry_bars[-2:])
             stop_price_distance = (failed_high - current) + stop_buffer_atr * atr
             return self.make_signal(
@@ -96,6 +100,8 @@ class PostEventFailedBreakoutStrategy(Strategy):
             and self._long_macro_gate(ctx, gate_eps, intervention_max_for_long)
             and detect_failed_breakout(entry_bars, support, side="DOWN")
         ):
+            if not self._new_setup(symbol, PositionDirection.LONG, entry_bars[-2].start):
+                return None
             failed_low = min(float(b.low) for b in entry_bars[-2:])
             stop_price_distance = (current - failed_low) + stop_buffer_atr * atr
             return self.make_signal(

@@ -121,9 +121,15 @@ class RiskEngine:
             check("EXECUTION_ENABLED", ctx.execution_enabled)
             check("EVENT_MODE_ALLOWS_ENTRY", ctx.event_mode is not EventRiskMode.HALT)
 
+            # Age must be within [0, max]: a future-dated quote is not
+            # "fresh", it is look-ahead (replay leak or broken broker clock).
+            quote_age = (
+                (ctx.now - ctx.quote.time).total_seconds()
+                if ctx.quote is not None
+                else None
+            )
             quote_fresh = (
-                ctx.quote is not None
-                and (ctx.now - ctx.quote.time).total_seconds() <= cfg.quote_max_age_seconds
+                quote_age is not None and 0 <= quote_age <= cfg.quote_max_age_seconds
             )
             check("QUOTE_FRESH", quote_fresh)
             spread_ok = (

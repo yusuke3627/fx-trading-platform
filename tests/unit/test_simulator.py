@@ -77,22 +77,97 @@ def test_protection_fill_on_stop_loss_cross():
     assert fill.broker_position_ticket == "simpos-1"
 
 
-def test_close_command_does_not_leave_a_position():
-    # Closing a SHORT is a BUY execution; it must not respawn as a fresh
-    # position in the simulation result.
-    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+def open_long(sim: ExecutionSimulator, quantity: str = "1000"):
     result = sim.submit(
         make_command(
             side=ExecutionSide.BUY,
-            direction=PositionDirection.SHORT,
+            direction=PositionDirection.LONG,
+            action=PositionAction.OPEN,
+            quantity=quantity,
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.position is not None
+    return result.position
+
+
+def test_close_removes_position_from_book():
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    position = open_long(sim)
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
             action=PositionAction.CLOSE,
-            broker_position_ticket="simpos-1",
+            broker_position_ticket=position.position_id,
         ),
         [make_tick("158.840", "158.844")],
     )
     assert result.fill is not None
+    assert result.fill.broker_position_ticket == position.position_id
     assert result.position is None
-    assert result.fill.broker_position_ticket == "simpos-1"
+    assert sim.position(position.position_id) is None
+
+
+def test_exit_against_missing_position_does_not_execute():
+    # A queued CLOSE whose position was already closed (e.g. by protection)
+    # must not fill — a real broker rejects the unknown ticket.
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.CLOSE,
+            broker_position_ticket="simpos-ghost",
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.rejected and result.fill is None
+
+
+def test_exit_after_protection_close_does_not_execute():
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    position = open_long(sim)
+    protected = SimulatedPosition(
+        position_id=position.position_id,
+        symbol="USDJPY",
+        direction=PositionDirection.LONG,
+        quantity=position.quantity,
+        entry_price=position.entry_price,
+        stop_loss=Decimal("158.80"),
+        take_profit=None,
+    )
+    fired = sim.check_protection(protected, make_tick("158.790", "158.794"))
+    assert fired is not None
+
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.CLOSE,
+            broker_position_ticket=position.position_id,
+        ),
+        [make_tick("158.790", "158.794")],
+    )
+    assert result.rejected and result.fill is None
+
+
+def test_exit_cannot_fill_more_than_held():
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    position = open_long(sim, quantity="1000")
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.REDUCE,
+            quantity="50000",
+            broker_position_ticket=position.position_id,
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.fill is not None
+    assert result.fill.quantity == Decimal(1000)
+    assert result.position is None
 
 
 def test_same_seed_reproduces_fill_price():

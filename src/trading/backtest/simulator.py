@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -40,20 +40,29 @@ class SimulationResult:
 
 
 class ExecutionSimulator:
+    """Holds the simulated broker's position book: exits are validated
+    against it exactly like a real broker validates a position ticket."""
+
     def __init__(self, costs: CostModel, spec: InstrumentSpec, seed: int) -> None:
         self._costs = costs
         self._spec = spec
         self._rng = random.Random(seed)
+        self._positions: dict[str, SimulatedPosition] = {}
+
+    def position(self, position_id: str) -> SimulatedPosition | None:
+        return self._positions.get(position_id)
 
     def submit(
         self, command: ExecutionCommand, ticks: Sequence[Tick]
     ) -> SimulationResult:
         """Fill a market command at the first tick after latency.
 
-        Only OPEN/INCREASE produce a new SimulatedPosition. A REDUCE/CLOSE
-        fill references the command's position ticket and returns no
-        position: the caller's ledger applies the reduction, and a closed
-        position must never reappear as a fresh opposite one.
+        OPEN/INCREASE registers a new SimulatedPosition. REDUCE/CLOSE
+        re-checks the referenced ticket against the book first: if broker
+        protection already removed the position, the order does NOT execute
+        (fill=None) — exactly like a real broker rejecting an unknown ticket.
+        An exit never fills more than the held quantity, so a queued close
+        can never manufacture a reversal.
         """
         if not ticks:
             return SimulationResult(fill=None, rejected=True, position=None)
@@ -69,6 +78,16 @@ class ExecutionSimulator:
             # optimistically filling at the last observed tick.
             return SimulationResult(fill=None, rejected=True, position=None)
 
+        opening = command.action in (PositionAction.OPEN, PositionAction.INCREASE)
+        held: SimulatedPosition | None = None
+        if not opening:
+            ticket = command.broker_position_ticket
+            held = self._positions.get(ticket) if ticket else None
+            if held is None:
+                # The referenced position no longer exists (e.g. protection
+                # closed it first): the order does not execute.
+                return SimulationResult(fill=None, rejected=True, position=None)
+
         price = self._execution_price(fill_tick, command.side)
 
         quantity = command.quantity
@@ -78,13 +97,18 @@ class ExecutionSimulator:
             ) * self._spec.volume_step
             if quantity <= 0:
                 quantity = command.quantity
+        if held is not None:
+            quantity = min(quantity, held.quantity)
 
+        ticket_for_fill = (
+            command.broker_position_ticket if held is not None else None
+        )
         fill = Fill(
             fill_id=uuid4(),
             broker_deal_id=f"sim-{uuid4().hex[:12]}",
             broker_order_id=None,
-            broker_position_ticket=command.broker_position_ticket,
-            broker_position_identifier=command.broker_position_ticket,
+            broker_position_ticket=ticket_for_fill,
+            broker_position_identifier=ticket_for_fill,
             execution_command_id=command.command_id,
             origin=FillOrigin.COMMAND,
             protection_reason=None,
@@ -94,9 +118,9 @@ class ExecutionSimulator:
             broker_time=fill_tick.time,
             received_at=fill_tick.time,
         )
-        opening = command.action in (PositionAction.OPEN, PositionAction.INCREASE)
-        position = (
-            SimulatedPosition(
+
+        if opening:
+            position = SimulatedPosition(
                 position_id=f"simpos-{uuid4().hex[:12]}",
                 symbol=command.symbol,
                 direction=command.direction,
@@ -105,16 +129,25 @@ class ExecutionSimulator:
                 stop_loss=command.stop_loss_price,
                 take_profit=command.take_profit_price,
             )
-            if opening
-            else None
-        )
-        return SimulationResult(fill=fill, rejected=False, position=position)
+            self._positions[position.position_id] = position
+            return SimulationResult(fill=fill, rejected=False, position=position)
+
+        assert held is not None
+        remaining = held.quantity - quantity
+        if remaining > 0:
+            updated = replace(held, quantity=remaining)
+            self._positions[held.position_id] = updated
+            return SimulationResult(fill=fill, rejected=False, position=updated)
+        del self._positions[held.position_id]
+        return SimulationResult(fill=fill, rejected=False, position=None)
 
     def check_protection(
         self, position: SimulatedPosition, tick: Tick
     ) -> Fill | None:
         """Broker-side SL/TP evaluation on each tick. LONG exits at bid,
-        SHORT at ask; stop-through adds adverse pips in stressed scenarios."""
+        SHORT at ask; stop-through adds adverse pips in stressed scenarios.
+        A triggered protection removes the position from the book, so a
+        queued system exit for the same ticket can no longer execute."""
         pip = self._spec.pip_size
         through = Decimal(str(self._costs.stop_through_pips)) * pip
 
@@ -150,6 +183,7 @@ class ExecutionSimulator:
         tick: Tick,
         reason: ProtectionReason,
     ) -> Fill:
+        self._positions.pop(position.position_id, None)
         return Fill(
             fill_id=uuid4(),
             broker_deal_id=f"sim-{uuid4().hex[:12]}",

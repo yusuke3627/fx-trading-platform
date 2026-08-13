@@ -158,3 +158,14 @@ def test_stale_quote_rejected():
     )
     assert not decision.approved
     assert "QUOTE_FRESH" in decision.reject_codes
+
+
+def test_future_dated_quote_rejected():
+    # A quote from the future is look-ahead (replay leak or broken broker
+    # clock), not freshness.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(quote=make_tick("158.840", "158.844", time=at(seconds=30))),
+    )
+    assert not decision.approved
+    assert "QUOTE_FRESH" in decision.reject_codes

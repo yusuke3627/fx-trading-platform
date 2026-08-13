@@ -55,8 +55,9 @@ def held(direction: PositionDirection) -> VirtualPosition:
 
 def test_open_intent_sized_by_risk_budget():
     # 1,000,000 x 0.05% = 500 budget; 10 pips x 0.01 = 0.1 loss/unit -> 5,000.
-    intent = manager_with().intent_from_signal(make_signal(), sizing())
-    assert intent is not None
+    intents = manager_with().intents_from_signal(make_signal(), sizing())
+    assert len(intents) == 1
+    intent = intents[0]
     assert intent.action is PositionAction.OPEN
     assert intent.target_quantity == Decimal(5000)
     # SHORT stop sits above the entry price.
@@ -65,30 +66,36 @@ def test_open_intent_sized_by_risk_budget():
 
 
 def test_long_stop_sits_below_entry():
-    intent = manager_with().intent_from_signal(
+    intents = manager_with().intents_from_signal(
         make_signal(direction=PositionDirection.LONG), sizing()
     )
-    assert intent is not None
-    assert intent.protection.stop_loss_price == Decimal("158.740")
+    assert intents[0].protection.stop_loss_price == Decimal("158.740")
 
 
 def test_same_direction_becomes_increase():
     manager = manager_with(held(PositionDirection.SHORT))
-    intent = manager.intent_from_signal(make_signal(), sizing())
-    assert intent is not None
-    assert intent.action is PositionAction.INCREASE
+    intents = manager.intents_from_signal(make_signal(), sizing())
+    assert len(intents) == 1
+    assert intents[0].action is PositionAction.INCREASE
 
 
-def test_direction_flip_closes_existing_first():
+def test_direction_flip_closes_then_opens():
+    # The reversal must survive: CLOSE what exists, then OPEN the desired
+    # side. Collapsing it into a bare exit would lose the deduped signal.
     manager = manager_with(held(PositionDirection.LONG))
-    intent = manager.intent_from_signal(make_signal(), sizing())
-    assert intent is not None
-    assert intent.action is PositionAction.CLOSE
-    assert intent.target_quantity == Decimal(0)
-    # The intent closes what exists: CLOSE LONG (via SELL), not CLOSE SHORT.
-    assert intent.direction is PositionDirection.LONG
-    assert intent.protection is None
+    intents = manager.intents_from_signal(make_signal(), sizing())
+    assert [i.action for i in intents] == [PositionAction.CLOSE, PositionAction.OPEN]
+
+    close, reopen = intents
+    # The close carries the held direction: CLOSE LONG (via SELL).
+    assert close.direction is PositionDirection.LONG
+    assert close.target_quantity == Decimal(0)
+    assert close.protection is None
+
+    assert reopen.direction is PositionDirection.SHORT
+    assert reopen.target_quantity == Decimal(5000)
+    assert reopen.protection is not None
 
 
-def test_no_intent_without_stop_distance():
-    assert manager_with().intent_from_signal(make_signal(stop_pips="0"), sizing()) is None
+def test_no_intents_without_stop_distance():
+    assert manager_with().intents_from_signal(make_signal(stop_pips="0"), sizing()) == []

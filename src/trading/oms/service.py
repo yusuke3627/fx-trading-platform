@@ -37,6 +37,8 @@ class BrokerPositionReader(Protocol):
 
     def position(self, ticket: str) -> BrokerPosition | None: ...
 
+    def net_exposure(self, symbol: str) -> Decimal: ...
+
 
 class ExitPreparation(StrEnum):
     PROCEED = "PROCEED"
@@ -72,15 +74,21 @@ class OMSService:
         *,
         symbol: str,
         desired_net: Decimal,
-        current_net: Decimal,
         intent: PositionIntent,
         volume_step: Decimal,
         sequence: int = 0,
     ) -> ExecutionCommand | None:
         """Difference-only order for a netting account; None when the delta is
-        below one volume step."""
+        below one volume step.
+
+        Current exposure is re-read from the broker at command-build time —
+        the netting counterpart of the hedging fresh select. A stale value
+        (e.g. captured before a protection fill closed the position) would
+        turn an exit delta into a fresh reversal.
+        """
         if self._mode is not AccountMode.NETTING:
             raise RuntimeError("command_for_netting requires a NETTING account")
+        current_net = self._broker.net_exposure(symbol)
         delta = execution_delta(desired_net, current_net)
         quantity = abs(delta)
         if quantity < volume_step:

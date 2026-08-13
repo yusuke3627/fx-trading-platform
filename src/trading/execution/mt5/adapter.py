@@ -77,29 +77,57 @@ class MT5ExecutionAdapter:
     def order_send(self, request: dict[str, Any]) -> Any:
         return self._mt5.order_send(request)
 
+    # MT5 getters return None on API failure and an empty tuple when nothing
+    # exists. The two must never be conflated: treating a fetch error as
+    # "position gone" would make an exit silently skip a live position
+    # (ALREADY_CLOSED) or make netting read a flat book during an outage.
+
     def positions(self, symbol: str | None = None) -> list[BrokerPosition]:
         raw = (
             self._mt5.positions_get(symbol=symbol)
             if symbol
             else self._mt5.positions_get()
         )
-        return [self._map_position(p) for p in (raw or [])]
+        if raw is None:
+            raise MT5ConnectionError(f"positions_get failed: {self._mt5.last_error()}")
+        return [self._map_position(p) for p in raw]
 
     def position(self, ticket: str) -> BrokerPosition | None:
-        """Fresh single-position select; the mandatory step before any exit."""
+        """Fresh single-position select; the mandatory step before any exit.
+        Returns None only for a confirmed empty result (position closed)."""
         raw = self._mt5.positions_get(ticket=int(ticket))
+        if raw is None:
+            raise MT5ConnectionError(
+                f"positions_get(ticket={ticket}) failed: {self._mt5.last_error()}"
+            )
         if not raw:
             return None
         return self._map_position(raw[0])
 
+    def net_exposure(self, symbol: str) -> Decimal:
+        """Signed exposure in units from a fresh position select."""
+        return sum((p.signed_quantity for p in self.positions(symbol)), Decimal(0))
+
     def orders(self) -> list[Any]:
-        return list(self._mt5.orders_get() or [])
+        raw = self._mt5.orders_get()
+        if raw is None:
+            raise MT5ConnectionError(f"orders_get failed: {self._mt5.last_error()}")
+        return list(raw)
 
     def history_orders(self, start: datetime, end: datetime) -> list[Any]:
-        return list(self._mt5.history_orders_get(start, end) or [])
+        raw = self._mt5.history_orders_get(start, end)
+        if raw is None:
+            raise MT5ConnectionError(
+                f"history_orders_get failed: {self._mt5.last_error()}"
+            )
+        return list(raw)
 
     def history_deals(self, start: datetime, end: datetime) -> list[BrokerDeal]:
-        raw = self._mt5.history_deals_get(start, end) or []
+        raw = self._mt5.history_deals_get(start, end)
+        if raw is None:
+            raise MT5ConnectionError(
+                f"history_deals_get failed: {self._mt5.last_error()}"
+            )
         return [
             mapper.deal_from_raw(d, self._contract_size(str(d.symbol))) for d in raw
         ]

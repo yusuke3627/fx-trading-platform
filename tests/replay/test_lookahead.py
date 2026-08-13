@@ -1,7 +1,7 @@
 """Replay determinism and look-ahead prohibition."""
 import pytest
 
-from tests.support import T0, at, make_event, make_tick
+from tests.support import T0, at, make_bar, make_event, make_tick
 from trading.backtest.clock import ClockRegressionError, ReplayClock
 from trading.backtest.replay import LookaheadError, ReplayEngine, assert_visible, visible
 
@@ -44,6 +44,18 @@ def test_replay_delivers_in_known_at_order_with_clock_advanced():
     # The clock is already at the item's time when the handler observes it.
     assert seen[0][1] == at(minutes=10).isoformat()
     assert seen[2][1] == at(minutes=30).isoformat()
+
+
+def test_bar_is_delivered_at_close_time_not_start():
+    # A 1h bar's close does not exist at the bar's start; delivering it there
+    # would leak one hour of the future into every bar-driven backtest.
+    clock = ReplayClock(T0)
+    engine = ReplayEngine(clock)
+    bar = make_bar("158.80", "158.90", "158.70", "158.85", start=T0, timeframe="1h")
+
+    delivered_at: list[str] = []
+    engine.run([bar], lambda item: delivered_at.append(clock.now().isoformat()))
+    assert delivered_at == [at(hours=1).isoformat()]
 
 
 def test_replay_is_deterministic_across_runs():

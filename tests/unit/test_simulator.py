@@ -7,7 +7,7 @@ from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
 from trading.domain.fill import FillOrigin, ProtectionReason
 from trading.domain.order import ExecutionSide
-from trading.domain.position import PositionDirection
+from trading.domain.position import PositionAction, PositionDirection
 
 
 def deterministic_costs() -> CostModel:
@@ -75,6 +75,24 @@ def test_protection_fill_on_stop_loss_cross():
     assert fill.protection_reason is ProtectionReason.STOP_LOSS
     assert fill.side is ExecutionSide.SELL
     assert fill.broker_position_ticket == "simpos-1"
+
+
+def test_close_command_does_not_leave_a_position():
+    # Closing a SHORT is a BUY execution; it must not respawn as a fresh
+    # position in the simulation result.
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.BUY,
+            direction=PositionDirection.SHORT,
+            action=PositionAction.CLOSE,
+            broker_position_ticket="simpos-1",
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.fill is not None
+    assert result.position is None
+    assert result.fill.broker_position_ticket == "simpos-1"
 
 
 def test_same_seed_reproduces_fill_price():

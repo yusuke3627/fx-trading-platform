@@ -18,7 +18,7 @@ from trading.domain.fill import Fill, FillOrigin, ProtectionReason
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.market import Tick
 from trading.domain.order import ExecutionCommand, ExecutionSide
-from trading.domain.position import PositionDirection
+from trading.domain.position import PositionAction, PositionDirection
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,13 @@ class ExecutionSimulator:
     def submit(
         self, command: ExecutionCommand, ticks: Sequence[Tick]
     ) -> SimulationResult:
-        """Fill a market command at the first tick after latency."""
+        """Fill a market command at the first tick after latency.
+
+        Only OPEN/INCREASE produce a new SimulatedPosition. A REDUCE/CLOSE
+        fill references the command's position ticket and returns no
+        position: the caller's ledger applies the reduction, and a closed
+        position must never reappear as a fresh opposite one.
+        """
         if not ticks:
             return SimulationResult(fill=None, rejected=True, position=None)
 
@@ -77,8 +83,8 @@ class ExecutionSimulator:
             fill_id=uuid4(),
             broker_deal_id=f"sim-{uuid4().hex[:12]}",
             broker_order_id=None,
-            broker_position_ticket=None,
-            broker_position_identifier=None,
+            broker_position_ticket=command.broker_position_ticket,
+            broker_position_identifier=command.broker_position_ticket,
             execution_command_id=command.command_id,
             origin=FillOrigin.COMMAND,
             protection_reason=None,
@@ -88,14 +94,19 @@ class ExecutionSimulator:
             broker_time=fill_tick.time,
             received_at=fill_tick.time,
         )
-        position = SimulatedPosition(
-            position_id=f"simpos-{uuid4().hex[:12]}",
-            symbol=command.symbol,
-            direction=command.direction,
-            quantity=quantity,
-            entry_price=price,
-            stop_loss=command.stop_loss_price,
-            take_profit=command.take_profit_price,
+        opening = command.action in (PositionAction.OPEN, PositionAction.INCREASE)
+        position = (
+            SimulatedPosition(
+                position_id=f"simpos-{uuid4().hex[:12]}",
+                symbol=command.symbol,
+                direction=command.direction,
+                quantity=quantity,
+                entry_price=price,
+                stop_loss=command.stop_loss_price,
+                take_profit=command.take_profit_price,
+            )
+            if opening
+            else None
         )
         return SimulationResult(fill=fill, rejected=False, position=position)
 

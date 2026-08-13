@@ -40,11 +40,14 @@ class ReplayItem:
 
 
 def replay_time(item: EventEnvelope | Tick | Bar) -> datetime:
+    """When an item becomes known: events at known_at, ticks at their time,
+    bars at close time — delivering a bar at its start would hand the strategy
+    the close price before it exists (systematic look-ahead)."""
     if isinstance(item, EventEnvelope):
         return item.known_at
     if isinstance(item, Tick):
         return item.time
-    return item.start
+    return item.close_time
 
 
 class ReplayEngine:

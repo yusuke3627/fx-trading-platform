@@ -22,11 +22,19 @@ from trading.portfolio.virtual_ledger import VirtualPositionLedger
 
 
 class FakeBroker:
-    def __init__(self, positions: dict[str, BrokerPosition] | None = None) -> None:
+    def __init__(
+        self,
+        positions: dict[str, BrokerPosition] | None = None,
+        net: Decimal = Decimal(0),
+    ) -> None:
         self._positions = positions or {}
+        self._net = net
 
     def position(self, ticket: str) -> BrokerPosition | None:
         return self._positions.get(ticket)
+
+    def net_exposure(self, symbol: str) -> Decimal:
+        return self._net
 
 
 def short_position(ticket: str = "1001", quantity: str = "20000") -> BrokerPosition:
@@ -59,12 +67,13 @@ def test_execution_delta_is_difference_only():
 
 def test_netting_command_orders_the_delta_not_raw_quantity():
     oms = OMSService(
-        account_mode=AccountMode.NETTING, broker=FakeBroker(), clock=SystemClock()
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(-80000)),
+        clock=SystemClock(),
     )
     command = oms.command_for_netting(
         symbol="USDJPY",
         desired_net=Decimal(-110000),
-        current_net=Decimal(-80000),
         intent=make_intent(direction=PositionDirection.SHORT),
         volume_step=Decimal(1000),
     )
@@ -75,13 +84,32 @@ def test_netting_command_orders_the_delta_not_raw_quantity():
 
 def test_netting_noop_when_delta_below_step():
     oms = OMSService(
-        account_mode=AccountMode.NETTING, broker=FakeBroker(), clock=SystemClock()
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(-80000)),
+        clock=SystemClock(),
     )
     command = oms.command_for_netting(
         symbol="USDJPY",
         desired_net=Decimal(-80500),
-        current_net=Decimal(-80000),
         intent=make_intent(),
+        volume_step=Decimal(1000),
+    )
+    assert command is None
+
+
+def test_netting_exit_after_protection_close_is_noop_not_reversal():
+    # Plan captured current=-1000 -> desired 0. Broker-side SL then closed the
+    # position (fresh net = 0). The command must be a NOOP, not a fresh order
+    # built from the stale value.
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(0)),
+        clock=SystemClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(0),
+        intent=make_intent(action=PositionAction.CLOSE),
         volume_step=Decimal(1000),
     )
     assert command is None
@@ -135,7 +163,9 @@ def test_idempotency_key_distinguishes_follow_up_commands():
     # A re-delta after a partial fill is a legitimate second command from the
     # same intent; only identical (intent, sequence) pairs share a key.
     oms = OMSService(
-        account_mode=AccountMode.NETTING, broker=FakeBroker(), clock=SystemClock()
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(-80000)),
+        clock=SystemClock(),
     )
     intent = make_intent(direction=PositionDirection.SHORT)
 
@@ -143,7 +173,6 @@ def test_idempotency_key_distinguishes_follow_up_commands():
         return oms.command_for_netting(
             symbol="USDJPY",
             desired_net=Decimal(-110000),
-            current_net=Decimal(-80000),
             intent=intent,
             volume_step=Decimal(1000),
             sequence=sequence,

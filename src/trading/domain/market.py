@@ -1,7 +1,7 @@
 """Market data primitives."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
@@ -48,3 +48,10 @@ class Bar(BaseModel):
     low: Decimal
     close: Decimal
     tick_volume: int = 0
+
+    @property
+    def close_time(self) -> datetime:
+        """The instant every field of the bar is known: high/low/close exist
+        only once the bar has closed, so this — not `start` — is the earliest
+        time the bar may be shown to a strategy."""
+        return self.start + timedelta(seconds=TIMEFRAME_SECONDS[self.timeframe])

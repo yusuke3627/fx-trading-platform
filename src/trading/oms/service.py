@@ -25,7 +25,7 @@ from trading.domain.order import (
     ExecutionSide,
     execution_side,
 )
-from trading.domain.position import BrokerPosition, PositionAction
+from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 
 
 class NakedExitError(RuntimeError):
@@ -89,6 +89,16 @@ class OMSService:
         if self._mode is not AccountMode.NETTING:
             raise RuntimeError("command_for_netting requires a NETTING account")
         current_net = self._broker.net_exposure(symbol)
+
+        # A reversal OPEN is built only once the book is no longer on the
+        # opposite side. With opposite exposure still open (its CLOSE leg not
+        # yet filled), the delta would duplicate the flatten quantity into an
+        # unapproved position; the caller re-delters after the close fill.
+        opening = intent.action in (PositionAction.OPEN, PositionAction.INCREASE)
+        desired_long = intent.direction is PositionDirection.LONG
+        if opening and current_net != 0 and (current_net > 0) != desired_long:
+            return None
+
         delta = execution_delta(desired_net, current_net)
         quantity = abs(delta)
         if quantity < volume_step:

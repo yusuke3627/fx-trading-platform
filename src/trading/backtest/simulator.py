@@ -148,9 +148,13 @@ class ExecutionSimulator:
         SHORT at ask; stop-through adds adverse pips in stressed scenarios.
         A triggered protection removes the position from the book, so a
         queued system exit for the same ticket can no longer execute and the
-        same protection can never fire twice."""
-        if position.position_id not in self._positions:
+        same protection can never fire twice. Evaluation and the fill both
+        use the book's LATEST state — a caller holding the object from OPEN
+        must not close pre-reduction quantity."""
+        held = self._positions.get(position.position_id)
+        if held is None:
             return None
+        position = held
         pip = self._spec.pip_size
         through = Decimal(str(self._costs.stop_through_pips)) * pip
 

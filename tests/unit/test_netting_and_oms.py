@@ -36,6 +36,9 @@ class FakeBroker:
     def net_exposure(self, symbol: str) -> Decimal:
         return self._net
 
+    def set_net(self, net: Decimal) -> None:
+        self._net = net
+
 
 def short_position(ticket: str = "1001", quantity: str = "20000") -> BrokerPosition:
     return BrokerPosition(
@@ -95,6 +98,38 @@ def test_netting_noop_when_delta_below_step():
         volume_step=Decimal(1000),
     )
     assert command is None
+
+
+def test_netting_reversal_open_waits_for_flat_book():
+    # LONG 5,000 -> SHORT 1,000: the OPEN leg must not be built while the
+    # book is still long (its delta would duplicate the flatten quantity).
+    broker = FakeBroker(net=Decimal(5000))
+    oms = OMSService(
+        account_mode=AccountMode.NETTING, broker=broker, clock=SystemClock()
+    )
+    open_intent = make_intent(
+        action=PositionAction.OPEN, direction=PositionDirection.SHORT
+    )
+    blocked = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(-1000),
+        intent=open_intent,
+        volume_step=Decimal(1000),
+    )
+    assert blocked is None
+
+    # After the CLOSE leg fills, the fresh select sees a flat book and the
+    # approved SHORT is delta'd normally.
+    broker.set_net(Decimal(0))
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(-1000),
+        intent=open_intent,
+        volume_step=Decimal(1000),
+    )
+    assert command is not None
+    assert command.side is ExecutionSide.SELL
+    assert command.quantity == Decimal(1000)
 
 
 def test_netting_zero_cross_flattens_only():

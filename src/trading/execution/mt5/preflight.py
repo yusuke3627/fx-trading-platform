@@ -301,7 +301,12 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     deals = adapter.history_deals(
         clock.now() - timedelta(hours=1), clock.now() + timedelta(minutes=1)
     )
-    cycle_deals = [d for d in deals if d.broker_position_ticket == position.broker_position_ticket]
+    # Deals carry the lifecycle identifier, not the current ticket.
+    cycle_deals = [
+        d
+        for d in deals
+        if d.broker_position_identifier == position.broker_position_identifier
+    ]
     step(
         "trade_cycle_history_check",
         len(cycle_deals) >= 2,
@@ -357,9 +362,14 @@ def _protection_fill_probe(
         step("trade_cycle_protection_fill", False, detail="opened position not identified")
         return
 
+    # Deals reference the lifecycle identifier, so capture it while the
+    # position still exists (identifier == opening order ticket as fallback).
+    probed = adapter.position(ticket)
+    identifier = probed.broker_position_identifier if probed is not None else ticket
+
     deadline = time.monotonic() + wait_seconds
-    fired = False
-    while time.monotonic() < deadline:
+    fired = probed is None
+    while not fired and time.monotonic() < deadline:
         if adapter.position(ticket) is None:
             fired = True
             break
@@ -395,7 +405,8 @@ def _protection_fill_probe(
     protection_deals = [
         d
         for d in deals
-        if d.broker_position_ticket == ticket and d.protection_reason is not None
+        if d.broker_position_identifier == identifier
+        and d.protection_reason is not None
     ]
     step(
         "trade_cycle_protection_fill",

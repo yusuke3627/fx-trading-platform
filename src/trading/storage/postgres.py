@@ -17,6 +17,7 @@ from trading.domain.account import AccountSnapshot
 from trading.domain.event import EventEnvelope
 from trading.domain.fill import Fill
 from trading.domain.order import CommandState, ExecutionCommand
+from trading.storage.repository import StaleCommandStateError
 
 
 def connect(dsn: str) -> psycopg.Connection:
@@ -115,8 +116,16 @@ class PostgresCommandRepository:
         )
         self._conn.commit()
 
-    def save_state(self, command: ExecutionCommand) -> None:
-        self._conn.execute(
+    def save_state(
+        self, command: ExecutionCommand, expected_state: CommandState
+    ) -> None:
+        """Compare-and-set on the current DB state.
+
+        An unconditional UPDATE would let a slow worker holding a stale
+        SUBMITTING object overwrite UNKNOWN (or rewind a terminal state),
+        resolving UNKNOWN without reconciliation.
+        """
+        cursor = self._conn.execute(
             """
             UPDATE execution_commands
             SET state = %(state)s,
@@ -126,11 +135,12 @@ class PostgresCommandRepository:
                 submitting_at = %(submitting_at)s,
                 broker_request_started_at = %(broker_request_started_at)s,
                 updated_at = now()
-            WHERE id = %(id)s
+            WHERE id = %(id)s AND state = %(expected_state)s
             """,
             {
                 "id": command.command_id,
                 "state": command.state,
+                "expected_state": expected_state,
                 "claimed_by": command.claimed_by,
                 "claimed_at": command.claimed_at,
                 "claim_expires_at": command.claim_expires_at,
@@ -139,6 +149,11 @@ class PostgresCommandRepository:
             },
         )
         self._conn.commit()
+        if cursor.rowcount != 1:
+            raise StaleCommandStateError(
+                f"command {command.command_id} is no longer {expected_state}; "
+                "re-read and reconcile instead of writing"
+            )
 
     def get(self, command_id: str) -> ExecutionCommand | None:
         row = self._conn.execute(

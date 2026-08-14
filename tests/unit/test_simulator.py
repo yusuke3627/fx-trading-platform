@@ -96,6 +96,27 @@ def test_protection_never_fires_twice():
     assert sim.check_protection(position, trigger_tick) is None
 
 
+def test_protection_uses_latest_book_quantity_after_reduce():
+    # The caller may still hold the object from OPEN; after a partial REDUCE
+    # the protection must close the remaining quantity, not the stale one.
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    opened = open_long(sim, quantity="2000", stop_loss="158.80")
+    sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.REDUCE,
+            quantity="1000",
+            broker_position_ticket=opened.position_id,
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+
+    fill = sim.check_protection(opened, make_tick("158.790", "158.794"))
+    assert fill is not None
+    assert fill.quantity == Decimal(1000)
+
+
 def test_protection_ignores_unregistered_position():
     sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
     ghost = SimulatedPosition(

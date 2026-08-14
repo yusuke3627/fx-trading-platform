@@ -15,12 +15,22 @@ from trading.domain.fill import Fill
 from trading.domain.order import CommandState, ExecutionCommand
 
 
+class StaleCommandStateError(RuntimeError):
+    """The command's DB state no longer matches what the caller held; the
+    caller must re-read and go through reconciliation instead of writing."""
+
+
 class CommandRepository(Protocol):
     def insert(self, command: ExecutionCommand) -> None: ...
 
     def get(self, command_id: str) -> ExecutionCommand | None: ...
 
-    def save_state(self, command: ExecutionCommand) -> None: ...
+    # Compare-and-set: raises StaleCommandStateError when the row is no
+    # longer in expected_state (e.g. a timeout sweep moved it to UNKNOWN
+    # while a slow worker was still holding the old object).
+    def save_state(
+        self, command: ExecutionCommand, expected_state: CommandState
+    ) -> None: ...
 
     # `now` is injected (never read from a wall clock inside the repository)
     # so claim leases stay deterministic under replay.

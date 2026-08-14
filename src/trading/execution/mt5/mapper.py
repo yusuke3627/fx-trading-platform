@@ -209,7 +209,10 @@ def deal_from_raw(raw: Any, contract_size: Decimal) -> BrokerDeal:
     return BrokerDeal(
         broker_deal_id=str(raw.ticket),
         broker_order_id=str(raw.order) if getattr(raw, "order", 0) else None,
-        broker_position_ticket=str(raw.position_id) if getattr(raw, "position_id", 0) else None,
+        # A deal carries only the position lifecycle identifier; the current
+        # position ticket is not derivable from it (netting can change the
+        # ticket), so it is never copied into the ticket field.
+        broker_position_ticket=None,
         broker_position_identifier=(
             str(raw.position_id) if getattr(raw, "position_id", 0) else None
         ),

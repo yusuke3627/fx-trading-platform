@@ -2,7 +2,7 @@ from dataclasses import fields
 from datetime import timedelta
 from decimal import Decimal
 
-from tests.support import T0, make_command, make_tick, usdjpy_spec
+from tests.support import T0, at, make_command, make_tick, usdjpy_spec
 from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
 from trading.domain.fill import FillOrigin, ProtectionReason
@@ -43,6 +43,32 @@ def test_stress_scenario_widens_effective_spread():
     )
     if result.fill is not None:  # reject burst may trigger under stress
         assert result.fill.price > normal_price
+
+
+def test_order_never_fills_on_ticks_before_its_creation():
+    # Pre-command history in the tick window must not produce a fill in the
+    # past (command.created_at is the earliest possible submit time).
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    stale_ticks = [make_tick("158.840", "158.844", time=at(minutes=-5))]
+    result = sim.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG),
+        stale_ticks,
+    )
+    assert result.rejected and result.fill is None
+
+
+def test_fill_time_is_at_or_after_command_creation():
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    ticks = [
+        make_tick("158.800", "158.804", time=at(minutes=-5)),
+        make_tick("158.840", "158.844", time=at(seconds=1)),
+    ]
+    result = sim.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG), ticks
+    )
+    assert result.fill is not None
+    assert result.fill.broker_time == at(seconds=1)
+    assert result.fill.price == Decimal("158.844")
 
 
 def test_no_fill_when_no_tick_after_latency_window():

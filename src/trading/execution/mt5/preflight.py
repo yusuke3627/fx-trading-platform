@@ -189,6 +189,23 @@ def run_preflight(
 def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> None:
     """OPEN min size with SL/TP -> verify protection -> modify SL/TP ->
     partial REDUCE -> full CLOSE -> history check."""
+    # On a netting account an OPEN merges into any existing position on the
+    # symbol: the cycle could then neither track its own position nor restore
+    # the prior exposure. Require a flat symbol before touching it.
+    if (
+        adapter.account_mode() is AccountMode.NETTING
+        and adapter.net_exposure(symbol) != 0
+    ):
+        step(
+            "trade_cycle_open",
+            False,
+            detail=(
+                "refused: netting account already has exposure on the symbol; "
+                "flatten it before running the trade cycle"
+            ),
+        )
+        return
+
     tick = adapter._mt5.symbol_info_tick(symbol)
     if tick is None:
         step("trade_cycle_open", False, detail="no tick available")
@@ -231,30 +248,59 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
             detail="opened position not identified from order ticket; refusing to guess",
         )
         return
+    # Both SL and TP must come back as stored values from a fresh select —
+    # "SL present" alone would let a dropped TP pass as verified.
+    tolerance = spec.pip_size
+    protection_ok = (
+        position.stop_loss is not None
+        and position.take_profit is not None
+        and abs(position.stop_loss - sl) < tolerance
+        and abs(position.take_profit - tp) < tolerance
+    )
     step(
         "trade_cycle_protection_verify",
-        position.protected,
+        protection_ok,
         {
             "ticket": position.broker_position_ticket,
             "identifier": position.broker_position_identifier,
-            "sl": str(position.stop_loss) if position.stop_loss else None,
-            "tp": str(position.take_profit) if position.take_profit else None,
+            "requested_sl": str(sl),
+            "stored_sl": str(position.stop_loss) if position.stop_loss else None,
+            "requested_tp": str(tp),
+            "stored_tp": str(position.take_profit) if position.take_profit else None,
         },
-        None if position.protected else "OPEN_UNPROTECTED: broker-side SL missing",
+        None if protection_ok else "broker did not persist the requested SL/TP",
     )
 
-    modify = mapper.sltp_modify_request(
-        symbol=symbol,
-        position_ticket=position.broker_position_ticket,
-        stop_loss=sl - 10 * spec.pip_size,
-        take_profit=tp,
+    new_sl = sl - 10 * spec.pip_size
+    modify_result = adapter.order_send(
+        mapper.sltp_modify_request(
+            symbol=symbol,
+            position_ticket=position.broker_position_ticket,
+            stop_loss=new_sl,
+            take_profit=tp,
+        )
     )
-    modify_result = adapter.order_send(modify)
+    # retcode alone does not prove persistence; re-select and compare.
+    modified = adapter.position(position.broker_position_ticket)
+    modify_ok = (
+        modify_result is not None
+        and modify_result.retcode == mapper.TRADE_RETCODE_DONE
+        and modified is not None
+        and modified.stop_loss is not None
+        and abs(modified.stop_loss - new_sl) < tolerance
+    )
     step(
         "trade_cycle_sltp_modify",
-        modify_result is not None
-        and modify_result.retcode == mapper.TRADE_RETCODE_DONE,
-        {"retcode": getattr(modify_result, "retcode", None)},
+        modify_ok,
+        {
+            "retcode": getattr(modify_result, "retcode", None),
+            "requested_sl": str(new_sl),
+            "stored_sl": (
+                str(modified.stop_loss)
+                if modified is not None and modified.stop_loss is not None
+                else None
+            ),
+        },
     )
 
     reduce_units = spec.volume_step

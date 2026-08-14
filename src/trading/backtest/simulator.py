@@ -70,7 +70,10 @@ class ExecutionSimulator:
         if self._rng.random() < self._costs.reject_probability:
             return SimulationResult(fill=None, rejected=True, position=None)
 
-        submit_time = ticks[0].time
+        # Latency runs from the command's creation, not from whatever history
+        # happens to sit at the head of the tick window: an order must never
+        # fill on ticks that predate it.
+        submit_time = command.created_at
         fill_after = submit_time + timedelta(milliseconds=self._costs.latency_ms)
         fill_tick = next((t for t in ticks if t.time >= fill_after), None)
         if fill_tick is None:

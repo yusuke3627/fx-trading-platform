@@ -22,7 +22,7 @@ from trading.domain.account import AccountSnapshot
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.market import Tick
-from trading.domain.position import PositionAction
+from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel, RiskCheck, RiskDecision
 from trading.risk.limits import daily_loss_pct, hwm_drawdown_pct, rolling_24h_loss_pct
 
@@ -98,7 +98,6 @@ class RiskEngine:
 
         # System-state checks apply to every order, exits included.
         check("BROKER_CONNECTED", ctx.broker_connected)
-        check("ACCOUNT_RECONCILED", ctx.account_reconciled)
         check(
             "KILL_SWITCH_ALLOWS_ORDER",
             ctx.kill_switch is not KillSwitchLevel.EMERGENCY
@@ -119,6 +118,7 @@ class RiskEngine:
             # keep market risk on the book until reconciliation finishes —
             # the opposite of what an incident demands (UNKNOWN commands are
             # still never resent; that ban lives in the OMS state machine).
+            check("ACCOUNT_RECONCILED", ctx.account_reconciled)
             if cfg.halt_on_unknown_order:
                 check(
                     "NO_UNKNOWN_ORDERS",
@@ -218,7 +218,13 @@ class RiskEngine:
         )
         if max_units is None:
             return None
-        headroom = Decimal(max_units) - abs(ctx.symbol_exposure_units)
+        # Headroom is direction-aware on the SIGNED net exposure: an order
+        # that shrinks |net| (opposite-direction strategy) has more room, not
+        # less. Bound is |net_after_fill| <= max_units.
+        if intent.direction is PositionDirection.LONG:
+            headroom = Decimal(max_units) - ctx.symbol_exposure_units
+        else:
+            headroom = Decimal(max_units) + ctx.symbol_exposure_units
         allowed = min(allowed, max(headroom, Decimal(0)))
 
         if ctx.event_mode is EventRiskMode.REDUCED:

@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from tests.support import T0, FixedClock, at, make_intent, make_snapshot, make_tick, usdjpy_spec
-from trading.domain.position import PositionAction
+from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 
@@ -121,14 +121,42 @@ def test_unknown_orders_halt_new_risk():
     assert "NO_UNKNOWN_ORDERS" in decision.reject_codes
 
 
-def test_unknown_orders_do_not_block_exits():
-    # Halting exits during an UNKNOWN incident would keep market risk on the
-    # book until reconciliation finishes; the halt applies to new risk only.
+def test_incident_state_does_not_block_exits():
+    # Halting exits during an UNKNOWN / unreconciled incident would keep
+    # market risk on the book until reconciliation finishes; these halts
+    # apply to new risk only.
     decision = engine(enabled_config()).evaluate(
         make_intent(action=PositionAction.CLOSE),
-        make_context(unknown_commands=1, untracked_fills=1, position_mismatch=True),
+        make_context(
+            unknown_commands=1,
+            untracked_fills=1,
+            position_mismatch=True,
+            account_reconciled=False,
+        ),
     )
     assert decision.approved, decision.reject_codes
+
+
+def test_opposite_direction_order_headroom_allows_net_reduction():
+    # At the SHORT cap, a LONG order shrinks |net| and must not be blocked.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(
+            symbol_exposure_units=Decimal(-10000),
+            requested_quantity=Decimal(2000),
+        ),
+    )
+    assert decision.approved, decision.reject_codes
+    assert decision.approved_quantity == Decimal(2000)
+
+
+def test_same_direction_at_cap_rejected():
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.SHORT),
+        make_context(symbol_exposure_units=Decimal(-10000)),
+    )
+    assert not decision.approved
+    assert "MINIMUM_BROKER_SIZE_EXCEEDS_RISK" in decision.reject_codes
 
 
 def test_reduced_event_mode_halves_size():

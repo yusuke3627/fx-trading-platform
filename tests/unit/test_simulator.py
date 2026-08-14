@@ -5,6 +5,7 @@ from decimal import Decimal
 from tests.support import T0, at, make_command, make_tick, usdjpy_spec
 from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
+from trading.domain.account import AccountMode
 from trading.domain.fill import FillOrigin, ProtectionReason
 from trading.domain.order import ExecutionSide
 from trading.domain.position import PositionAction, PositionDirection
@@ -173,6 +174,52 @@ def test_close_removes_position_from_book():
     assert result.fill.broker_position_ticket == position.position_id
     assert result.position is None
     assert sim.position(position.position_id) is None
+
+
+def test_netting_exit_without_ticket_applies_to_symbol_book():
+    sim = ExecutionSimulator(
+        deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING
+    )
+    open_long(sim, quantity="2000")
+    reduced = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.REDUCE,
+            quantity="1000",
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert reduced.fill is not None and reduced.fill.quantity == Decimal(1000)
+    assert reduced.position is not None and reduced.position.quantity == Decimal(1000)
+
+    closed = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.CLOSE,
+            quantity="1000",
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert closed.fill is not None
+    assert closed.position is None
+
+
+def test_netting_exit_with_empty_book_does_not_execute():
+    sim = ExecutionSimulator(
+        deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING
+    )
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.CLOSE,
+            quantity="1000",
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.rejected and result.fill is None
 
 
 def test_exit_against_missing_position_does_not_execute():

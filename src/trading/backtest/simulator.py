@@ -14,6 +14,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from trading.backtest.costs import CostModel
+from trading.domain.account import AccountMode
 from trading.domain.fill import Fill, FillOrigin, ProtectionReason
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.market import Tick
@@ -41,12 +42,24 @@ class SimulationResult:
 
 class ExecutionSimulator:
     """Holds the simulated broker's position book: exits are validated
-    against it exactly like a real broker validates a position ticket."""
+    against it exactly like a real broker validates them.
 
-    def __init__(self, costs: CostModel, spec: InstrumentSpec, seed: int) -> None:
+    Hedging (default): exits reference a position ticket. Netting: exits are
+    ticketless delta orders and are applied against the symbol's positions on
+    the command's direction side.
+    """
+
+    def __init__(
+        self,
+        costs: CostModel,
+        spec: InstrumentSpec,
+        seed: int,
+        account_mode: AccountMode = AccountMode.HEDGING,
+    ) -> None:
         self._costs = costs
         self._spec = spec
         self._rng = random.Random(seed)
+        self._mode = account_mode
         self._positions: dict[str, SimulatedPosition] = {}
 
     def position(self, position_id: str) -> SimulatedPosition | None:
@@ -82,13 +95,24 @@ class ExecutionSimulator:
             return SimulationResult(fill=None, rejected=True, position=None)
 
         opening = command.action in (PositionAction.OPEN, PositionAction.INCREASE)
-        held: SimulatedPosition | None = None
+        book: list[SimulatedPosition] = []
         if not opening:
             ticket = command.broker_position_ticket
-            held = self._positions.get(ticket) if ticket else None
-            if held is None:
-                # The referenced position no longer exists (e.g. protection
-                # closed it first): the order does not execute.
+            if ticket:
+                held = self._positions.get(ticket)
+                book = [held] if held is not None else []
+            elif self._mode is AccountMode.NETTING:
+                # Ticketless netting exit: delta applies to the symbol's
+                # exposure on the command's direction side.
+                book = [
+                    p
+                    for p in self._positions.values()
+                    if p.symbol == command.symbol
+                    and p.direction is command.direction
+                ]
+            if not book:
+                # Nothing to exit (e.g. protection closed it first): the
+                # order does not execute.
                 return SimulationResult(fill=None, rejected=True, position=None)
 
         price = self._execution_price(fill_tick, command.side)
@@ -100,12 +124,10 @@ class ExecutionSimulator:
             ) * self._spec.volume_step
             if quantity <= 0:
                 quantity = command.quantity
-        if held is not None:
-            quantity = min(quantity, held.quantity)
+        if book:
+            quantity = min(quantity, sum(p.quantity for p in book))
 
-        ticket_for_fill = (
-            command.broker_position_ticket if held is not None else None
-        )
+        ticket_for_fill = command.broker_position_ticket if book else None
         fill = Fill(
             fill_id=uuid4(),
             broker_deal_id=f"sim-{uuid4().hex[:12]}",
@@ -135,14 +157,21 @@ class ExecutionSimulator:
             self._positions[position.position_id] = position
             return SimulationResult(fill=fill, rejected=False, position=position)
 
-        assert held is not None
-        remaining = held.quantity - quantity
-        if remaining > 0:
-            updated = replace(held, quantity=remaining)
-            self._positions[held.position_id] = updated
-            return SimulationResult(fill=fill, rejected=False, position=updated)
-        del self._positions[held.position_id]
-        return SimulationResult(fill=fill, rejected=False, position=None)
+        # Apply the exit FIFO across the matched positions.
+        to_apply = quantity
+        last_remaining: SimulatedPosition | None = None
+        for held in book:
+            if to_apply <= 0:
+                break
+            reduce_by = min(to_apply, held.quantity)
+            to_apply -= reduce_by
+            remaining = held.quantity - reduce_by
+            if remaining > 0:
+                last_remaining = replace(held, quantity=remaining)
+                self._positions[held.position_id] = last_remaining
+            else:
+                del self._positions[held.position_id]
+        return SimulationResult(fill=fill, rejected=False, position=last_remaining)
 
     def check_protection(
         self, position: SimulatedPosition, tick: Tick

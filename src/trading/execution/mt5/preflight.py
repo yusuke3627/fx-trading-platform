@@ -231,9 +231,15 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         comment="preflight-cycle",
     )
     result = adapter.order_send(open_request)
-    opened = result is not None and result.retcode == mapper.TRADE_RETCODE_DONE
-    step("trade_cycle_open", opened, {"retcode": getattr(result, "retcode", None)})
+    retcode = getattr(result, "retcode", None)
+    # DONE_PARTIAL still leaves a live position; it must flow through the
+    # normal verify/close path, never be dropped as a failure.
+    opened = retcode in (mapper.TRADE_RETCODE_DONE, mapper.TRADE_RETCODE_DONE_PARTIAL)
+    step("trade_cycle_open", opened, {"retcode": retcode})
     if not opened:
+        _cleanup_leftover_position(
+            adapter, spec, symbol, magic, result, step, "trade_cycle_cleanup"
+        )
         return
 
     # An MT5 market order's position ticket equals the opening order ticket.
@@ -365,6 +371,31 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     _protection_fill_probe(adapter, spec, symbol, magic, clock, step)
 
 
+def _cleanup_leftover_position(
+    adapter, spec, symbol: str, magic: int, result, step, step_name: str
+) -> None:
+    """A failed or partial order may still have left a position on the demo
+    account; close whatever exists so the preflight never leaves exposure."""
+    ticket = str(getattr(result, "order", 0) or 0) if result is not None else "0"
+    if ticket == "0":
+        return
+    leftover = adapter.position(ticket)
+    if leftover is None:
+        return
+    adapter.order_send(
+        mapper.market_order_request(
+            symbol=symbol,
+            side=ExecutionSide.SELL,
+            units=leftover.quantity,
+            spec=spec,
+            position_ticket=ticket,
+            magic=magic,
+            comment="preflight-cleanup",
+        )
+    )
+    step(step_name, True, {"closed_units": str(leftover.quantity)})
+
+
 def _protection_fill_probe(
     adapter, spec, symbol: str, magic: int, clock: Clock, step, wait_seconds: int = 90
 ) -> None:
@@ -396,11 +427,14 @@ def _protection_fill_probe(
             comment="preflight-protection",
         )
     )
-    if result is None or result.retcode != mapper.TRADE_RETCODE_DONE:
-        step(
-            "trade_cycle_protection_fill",
-            False,
-            {"retcode": getattr(result, "retcode", None)},
+    probe_retcode = getattr(result, "retcode", None)
+    if probe_retcode not in (
+        mapper.TRADE_RETCODE_DONE,
+        mapper.TRADE_RETCODE_DONE_PARTIAL,
+    ):
+        step("trade_cycle_protection_fill", False, {"retcode": probe_retcode})
+        _cleanup_leftover_position(
+            adapter, spec, symbol, magic, result, step, "trade_cycle_protection_cleanup"
         )
         return
     ticket = str(getattr(result, "order", 0) or 0)

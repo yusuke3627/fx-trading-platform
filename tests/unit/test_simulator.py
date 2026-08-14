@@ -55,17 +55,27 @@ def test_no_fill_when_no_tick_after_latency_window():
     assert result.rejected and result.fill is None
 
 
+def open_long(
+    sim: ExecutionSimulator, quantity: str = "1000", stop_loss: str | None = None
+):
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.BUY,
+            direction=PositionDirection.LONG,
+            action=PositionAction.OPEN,
+            quantity=quantity,
+            stop_loss=stop_loss,
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.position is not None
+    return result.position
+
+
 def test_protection_fill_on_stop_loss_cross():
     sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
-    position = SimulatedPosition(
-        position_id="simpos-1",
-        symbol="USDJPY",
-        direction=PositionDirection.LONG,
-        quantity=Decimal(1000),
-        entry_price=Decimal("158.90"),
-        stop_loss=Decimal("158.80"),
-        take_profit=None,
-    )
+    position = open_long(sim, stop_loss="158.80")
+
     no_trigger = sim.check_protection(position, make_tick("158.850", "158.854"))
     assert no_trigger is None
 
@@ -74,21 +84,30 @@ def test_protection_fill_on_stop_loss_cross():
     assert fill.origin is FillOrigin.PROTECTION
     assert fill.protection_reason is ProtectionReason.STOP_LOSS
     assert fill.side is ExecutionSide.SELL
-    assert fill.broker_position_ticket == "simpos-1"
+    assert fill.broker_position_ticket == position.position_id
 
 
-def open_long(sim: ExecutionSimulator, quantity: str = "1000"):
-    result = sim.submit(
-        make_command(
-            side=ExecutionSide.BUY,
-            direction=PositionDirection.LONG,
-            action=PositionAction.OPEN,
-            quantity=quantity,
-        ),
-        [make_tick("158.840", "158.844")],
+def test_protection_never_fires_twice():
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    position = open_long(sim, stop_loss="158.80")
+    trigger_tick = make_tick("158.790", "158.794")
+    assert sim.check_protection(position, trigger_tick) is not None
+    # The position left the book with the first fire.
+    assert sim.check_protection(position, trigger_tick) is None
+
+
+def test_protection_ignores_unregistered_position():
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    ghost = SimulatedPosition(
+        position_id="simpos-ghost",
+        symbol="USDJPY",
+        direction=PositionDirection.LONG,
+        quantity=Decimal(1000),
+        entry_price=Decimal("158.90"),
+        stop_loss=Decimal("158.80"),
+        take_profit=None,
     )
-    assert result.position is not None
-    return result.position
+    assert sim.check_protection(ghost, make_tick("158.790", "158.794")) is None
 
 
 def test_close_removes_position_from_book():
@@ -127,17 +146,8 @@ def test_exit_against_missing_position_does_not_execute():
 
 def test_exit_after_protection_close_does_not_execute():
     sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
-    position = open_long(sim)
-    protected = SimulatedPosition(
-        position_id=position.position_id,
-        symbol="USDJPY",
-        direction=PositionDirection.LONG,
-        quantity=position.quantity,
-        entry_price=position.entry_price,
-        stop_loss=Decimal("158.80"),
-        take_profit=None,
-    )
-    fired = sim.check_protection(protected, make_tick("158.790", "158.794"))
+    position = open_long(sim, stop_loss="158.80")
+    fired = sim.check_protection(position, make_tick("158.790", "158.794"))
     assert fired is not None
 
     result = sim.submit(

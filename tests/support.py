@@ -141,6 +141,7 @@ def make_command(
     claim_expires_at: datetime | None = None,
     broker_request_started_at: datetime | None = None,
     broker_position_ticket: str | None = None,
+    stop_loss: str | None = None,
 ) -> ExecutionCommand:
     return ExecutionCommand(
         command_id=uuid4(),
@@ -151,6 +152,7 @@ def make_command(
         action=action,
         direction=direction,
         quantity=Decimal(quantity),
+        stop_loss_price=Decimal(stop_loss) if stop_loss else None,
         state=state,
         claim_expires_at=claim_expires_at,
         broker_request_started_at=broker_request_started_at,

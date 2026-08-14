@@ -97,6 +97,25 @@ def test_netting_noop_when_delta_below_step():
     assert command is None
 
 
+def test_netting_zero_cross_flattens_only():
+    # +1000 -> -1000 must not become one SELL 2000: the command flattens to
+    # zero and the opposite side needs its own risk-approved opening intent.
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(1000)),
+        clock=SystemClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(-1000),
+        intent=make_intent(action=PositionAction.CLOSE),
+        volume_step=Decimal(1000),
+    )
+    assert command is not None
+    assert command.side is ExecutionSide.SELL
+    assert command.quantity == Decimal(1000)
+
+
 def test_netting_exit_after_protection_close_is_noop_not_reversal():
     # Plan captured current=-1000 -> desired 0. Broker-side SL then closed the
     # position (fresh net = 0). The command must be a NOOP, not a fresh order

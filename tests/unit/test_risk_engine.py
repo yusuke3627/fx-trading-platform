@@ -121,6 +121,16 @@ def test_unknown_orders_halt_new_risk():
     assert "NO_UNKNOWN_ORDERS" in decision.reject_codes
 
 
+def test_unknown_orders_do_not_block_exits():
+    # Halting exits during an UNKNOWN incident would keep market risk on the
+    # book until reconciliation finishes; the halt applies to new risk only.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(action=PositionAction.CLOSE),
+        make_context(unknown_commands=1, untracked_fills=1, position_mismatch=True),
+    )
+    assert decision.approved, decision.reject_codes
+
+
 def test_reduced_event_mode_halves_size():
     decision = engine(enabled_config()).evaluate(
         make_intent(),

@@ -93,6 +93,18 @@ class OMSService:
         quantity = abs(delta)
         if quantity < volume_step:
             return None
+        # One command never crosses zero. A zero-crossing delta as a single
+        # order would bundle a fresh opposite-side OPEN into an exit-labelled
+        # command, dodging max-size and mandatory-SL checks. This command
+        # only flattens; the opposite side must arrive as its own
+        # risk-approved opening intent.
+        crosses_zero = (
+            current_net != 0
+            and desired_net != 0
+            and (current_net > 0) != (desired_net > 0)
+        )
+        if crosses_zero:
+            quantity = abs(current_net)
         side = ExecutionSide.BUY if delta > 0 else ExecutionSide.SELL
         return self._command(
             intent, symbol=symbol, side=side, quantity=quantity, sequence=sequence

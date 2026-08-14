@@ -106,12 +106,6 @@ class RiskEngine:
             else ctx.kill_switch is KillSwitchLevel.NONE,
             f"kill_switch={ctx.kill_switch}",
         )
-        if cfg.halt_on_unknown_order:
-            check("NO_UNKNOWN_ORDERS", ctx.unknown_commands == 0, f"unknown={ctx.unknown_commands}")
-        if cfg.halt_on_position_mismatch:
-            check("NO_POSITION_MISMATCH", not ctx.position_mismatch)
-        if cfg.halt_on_untracked_fill:
-            check("NO_UNTRACKED_FILL", ctx.untracked_fills == 0)
         check("NOT_DUPLICATE", not ctx.duplicate)
 
         approved_quantity: Decimal | None = None
@@ -120,6 +114,21 @@ class RiskEngine:
             check("TRADING_ENABLED", cfg.trading_enabled)
             check("EXECUTION_ENABLED", ctx.execution_enabled)
             check("EVENT_MODE_ALLOWS_ENTRY", ctx.event_mode is not EventRiskMode.HALT)
+
+            # These halts stop NEW risk only. Blocking exits as well would
+            # keep market risk on the book until reconciliation finishes —
+            # the opposite of what an incident demands (UNKNOWN commands are
+            # still never resent; that ban lives in the OMS state machine).
+            if cfg.halt_on_unknown_order:
+                check(
+                    "NO_UNKNOWN_ORDERS",
+                    ctx.unknown_commands == 0,
+                    f"unknown={ctx.unknown_commands}",
+                )
+            if cfg.halt_on_position_mismatch:
+                check("NO_POSITION_MISMATCH", not ctx.position_mismatch)
+            if cfg.halt_on_untracked_fill:
+                check("NO_UNTRACKED_FILL", ctx.untracked_fills == 0)
 
             # Age must be within [0, max]: a future-dated quote is not
             # "fresh", it is look-ahead (replay leak or broken broker clock).

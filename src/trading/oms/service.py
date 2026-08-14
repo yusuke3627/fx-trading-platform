@@ -25,7 +25,7 @@ from trading.domain.order import (
     ExecutionSide,
     execution_side,
 )
-from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
+from trading.domain.position import BrokerPosition, PositionAction
 
 
 class NakedExitError(RuntimeError):
@@ -90,13 +90,22 @@ class OMSService:
             raise RuntimeError("command_for_netting requires a NETTING account")
         current_net = self._broker.net_exposure(symbol)
 
-        # A reversal OPEN is built only once the book is no longer on the
-        # opposite side. With opposite exposure still open (its CLOSE leg not
-        # yet filled), the delta would duplicate the flatten quantity into an
-        # unapproved position; the caller re-delters after the close fill.
+        # Zero-crossing is decided by current vs desired NET exposure, not by
+        # the intent's direction: an opposite-direction strategy merely
+        # shrinking the net (e.g. -80k -> -60k via a LONG add) is an ordinary
+        # same-sign delta and must go out.
+        crosses_zero = (
+            current_net != 0
+            and desired_net != 0
+            and (current_net > 0) != (desired_net > 0)
+        )
+
+        # A reversal OPEN is built only once the book has actually crossed to
+        # the target side. With opposite exposure still open (its CLOSE leg
+        # not yet filled), the delta would duplicate the flatten quantity into
+        # an unapproved position; the caller re-delters after the close fill.
         opening = intent.action in (PositionAction.OPEN, PositionAction.INCREASE)
-        desired_long = intent.direction is PositionDirection.LONG
-        if opening and current_net != 0 and (current_net > 0) != desired_long:
+        if opening and crosses_zero:
             return None
 
         delta = execution_delta(desired_net, current_net)
@@ -108,11 +117,6 @@ class OMSService:
         # command, dodging max-size and mandatory-SL checks. This command
         # only flattens; the opposite side must arrive as its own
         # risk-approved opening intent.
-        crosses_zero = (
-            current_net != 0
-            and desired_net != 0
-            and (current_net > 0) != (desired_net > 0)
-        )
         if crosses_zero:
             quantity = abs(current_net)
         side = ExecutionSide.BUY if delta > 0 else ExecutionSide.SELL

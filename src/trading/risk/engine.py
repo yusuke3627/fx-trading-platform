@@ -208,10 +208,18 @@ class RiskEngine:
         loss_per_unit = ctx.stop_distance_pips * spec.pip_size
         allowed = (risk_budget / loss_per_unit // spec.volume_step) * spec.volume_step
 
+        # Instrument-independent structure means limits must fail closed: a
+        # symbol without a configured cap is a config omission, not unlimited.
         max_units = cfg.max_units_per_symbol.get(intent.symbol)
-        if max_units is not None:
-            headroom = Decimal(max_units) - abs(ctx.symbol_exposure_units)
-            allowed = min(allowed, max(headroom, Decimal(0)))
+        check(
+            "SYMBOL_LIMIT_CONFIGURED",
+            max_units is not None,
+            f"max_units_per_symbol missing for {intent.symbol}",
+        )
+        if max_units is None:
+            return None
+        headroom = Decimal(max_units) - abs(ctx.symbol_exposure_units)
+        allowed = min(allowed, max(headroom, Decimal(0)))
 
         if ctx.event_mode is EventRiskMode.REDUCED:
             allowed = (allowed / 2 // spec.volume_step) * spec.volume_step

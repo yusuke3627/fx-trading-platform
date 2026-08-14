@@ -62,6 +62,23 @@ def test_owned_but_unexplained_requires_reconciliation():
     )
 
 
+def test_unexplained_owned_deal_blocks_health():
+    # An owned-position deal with no command and no protection reason is
+    # unexplained: it must block health like an untracked fill would.
+    deal = make_deal(deal_id="d9", order_id=None, protection=None)
+    report = reconcile_deals(
+        [deal],
+        command_order_ids=set(),
+        owned_position_ids={"pos-1"},
+        started_at=T0,
+    )
+    assert (
+        report.classifications["d9"] is FillClassification.RECONCILIATION_REQUIRED
+    )
+    assert report.unexplained_deal_ids == ["d9"]
+    assert report.healthy is False
+
+
 def test_reconcile_deals_reports_untracked_and_health():
     tracked = make_deal(deal_id="d1", order_id="known-order")
     protection = make_deal(

@@ -132,6 +132,27 @@ def test_netting_reversal_open_waits_for_flat_book():
     assert command.quantity == Decimal(1000)
 
 
+def test_netting_same_sign_reduction_is_ordered():
+    # An opposite-direction strategy shrinking the net (-80k -> -60k via a
+    # LONG add) is an ordinary same-sign delta: BUY 20,000 goes out, no wait.
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(-80000)),
+        clock=SystemClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(-60000),
+        intent=make_intent(
+            action=PositionAction.OPEN, direction=PositionDirection.LONG
+        ),
+        volume_step=Decimal(1000),
+    )
+    assert command is not None
+    assert command.side is ExecutionSide.BUY
+    assert command.quantity == Decimal(20000)
+
+
 def test_netting_zero_cross_flattens_only():
     # +1000 -> -1000 must not become one SELL 2000: the command flattens to
     # zero and the opposite side needs its own risk-approved opening intent.

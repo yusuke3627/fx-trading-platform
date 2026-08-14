@@ -141,6 +141,16 @@ def test_reduced_event_mode_halves_size():
     assert decision.approved_quantity == Decimal(2000)
 
 
+def test_unconfigured_symbol_limit_fails_closed():
+    # Instrument independence: a symbol missing from max_units_per_symbol is
+    # a config omission, never "unlimited".
+    decision = engine(enabled_config(max_units_per_symbol={})).evaluate(
+        make_intent(), make_context()
+    )
+    assert not decision.approved
+    assert "SYMBOL_LIMIT_CONFIGURED" in decision.reject_codes
+
+
 def test_unknown_margin_level_with_open_margin_rejected():
     # A missing snapshot value must never approve new risk.
     decision = engine(enabled_config()).evaluate(

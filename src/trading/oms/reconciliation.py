@@ -79,11 +79,18 @@ class ReconciliationReport:
 
     classifications: dict[str, FillClassification] = field(default_factory=dict)
     untracked_deal_ids: list[str] = field(default_factory=list)
+    # Owned-position deals with no command and no protection reason: still
+    # unexplained, so they block health exactly like untracked fills.
+    unexplained_deal_ids: list[str] = field(default_factory=list)
     unresolved_command_ids: list[str] = field(default_factory=list)
 
     @property
     def healthy(self) -> bool:
-        return not self.untracked_deal_ids and not self.unresolved_command_ids
+        return (
+            not self.untracked_deal_ids
+            and not self.unexplained_deal_ids
+            and not self.unresolved_command_ids
+        )
 
 
 def reconcile_deals(
@@ -111,5 +118,7 @@ def reconcile_deals(
         report.classifications[deal.broker_deal_id] = classification
         if classification is FillClassification.UNTRACKED_FILL:
             report.untracked_deal_ids.append(deal.broker_deal_id)
+        elif classification is FillClassification.RECONCILIATION_REQUIRED:
+            report.unexplained_deal_ids.append(deal.broker_deal_id)
         report.deals_checked += 1
     return report

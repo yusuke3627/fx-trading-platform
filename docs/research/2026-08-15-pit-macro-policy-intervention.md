@@ -101,6 +101,11 @@ InterventionEvent                               # 認識段階ごとに別イベ
 
 Surprise の定義: `actual_first_print - consensus` を指標ごとの過去 forecast error
 で標準化（z-score）。rolling window は `known_at < 対象 release` のデータのみ。
+共通 feature `US_DATA_SURPRISE` へ集約する際は、指標ごとの方向マップ
+（`direction_map[indicator] ∈ {+1, -1}`）を z-score に掛けて
+「+ = hawkish / USD 支持方向」へ符号を正規化する（CPI・NFP は actual >
+consensus が hawkish だが、失業率や新規失業保険申請は actual > consensus が
+dovish であり、生の符号のまま混ぜると意味が反転するため）。
 `headline_surprise` と `revision_surprise`（前月値改定）は別 feature にする
 （NFP のように前月改定が市場反応を左右する指標があるため）。
 

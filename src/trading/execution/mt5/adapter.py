@@ -25,7 +25,7 @@ class MT5ConnectionError(RuntimeError):
     pass
 
 
-def _load_mt5_module() -> Any:
+def load_mt5_module() -> Any:
     try:
         import MetaTrader5
     except ImportError as exc:
@@ -38,7 +38,7 @@ def _load_mt5_module() -> Any:
 
 class MT5ExecutionAdapter:
     def __init__(self, mt5_module: Any | None = None) -> None:
-        self._mt5 = mt5_module if mt5_module is not None else _load_mt5_module()
+        self._mt5 = mt5_module if mt5_module is not None else load_mt5_module()
         self._contract_sizes: dict[str, Decimal] = {}
 
     def initialize(self, **kwargs: Any) -> None:

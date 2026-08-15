@@ -31,6 +31,7 @@ class MarketConfig(BaseModel):
 
     primary_instruments: list[str] = Field(default_factory=lambda: ["USDJPY"])
     quote_max_age_seconds: float = 5.0
+    tick_poll_interval_seconds: float = 0.2
 
 
 class StorageConfig(BaseModel):

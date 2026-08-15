@@ -9,6 +9,7 @@ broker:
 market:
   primary_instruments: [USDJPY]
   quote_max_age_seconds: 5
+  tick_poll_interval_seconds: 0.2
 
 storage:
   dsn_env: TRADING_DB_DSN

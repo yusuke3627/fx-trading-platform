@@ -1,6 +1,8 @@
 """Tick -> Bar folding: only closed bars exist, and they close on the grid."""
 from decimal import Decimal
 
+import pytest
+
 from tests.support import T0, at, make_tick
 from trading.data.market.bars import BarBuilder
 from trading.domain.market import Bar
@@ -109,6 +111,41 @@ def test_tick_received_after_its_own_bucket_closed_never_enters_the_bar():
     assert bar.start == T0
     assert bar.high == Decimal("158.840")
     assert bar.tick_volume == 1
+
+
+def test_a_stale_quote_still_closes_a_bucket_that_already_finished():
+    # The quote misses its own bar (broker time 00:02:30, received 00:04), so
+    # it joins nothing. The 00:00 bar is finished on its own merits though,
+    # and withholding it here would delay — or with no tick after, lose — a
+    # candle because of an unrelated late arrival.
+    builder = BarBuilder("USDJPY", "1m")
+    builder.on_tick(make_tick("158.840", "158.844", time=T0))
+
+    bar = builder.on_tick(
+        make_tick("159.500", "159.504", time=at(minutes=2, seconds=30), received_at=at(minutes=4))
+    )
+    assert bar is not None
+    assert bar.start == T0
+    assert bar.high == Decimal("158.840")
+    assert bar.tick_volume == 1
+
+    # It seeded no bucket either, so the next tick opens one instead of
+    # closing a bar built around the stale quote.
+    assert builder.on_tick(make_tick("158.900", "158.904", time=at(minutes=5))) is None
+
+
+def test_timeframes_hanging_off_the_broker_session_anchor_are_refused():
+    # 4h and 1d candles start at the trade server's midnight, not UTC, so
+    # folding them from ticks here would disagree with copy_rates. Both are
+    # configured in config/base.yaml, so this must fail loudly rather than
+    # produce a plausible-looking misaligned series.
+    for timeframe in ("4h", "1d"):
+        with pytest.raises(ValueError, match="session anchor"):
+            BarBuilder("USDJPY", timeframe)
+
+    # Everything dividing an hour is unaffected by a whole-hour server offset.
+    for timeframe in ("1m", "5m", "15m", "30m", "1h"):
+        assert BarBuilder("USDJPY", timeframe).on_tick(make_tick("158.840", "158.844")) is None
 
 
 def test_tick_known_exactly_at_its_bucket_close_still_counts():

@@ -1,8 +1,10 @@
 """Tick -> Bar aggregation.
 
 Live MT5 serves bars directly (copy_rates); replay has only the bid/ask tick
-stream, so bars are folded from ticks here. The two must agree bar for bar,
-which is why OHLC follows the bid series MT5 charts FX on rather than the mid.
+stream, so bars are folded from ticks here. The two have to agree candle for
+candle, which drives two decisions: OHLC follows the bid series MT5 charts FX
+on rather than the mid, and only timeframes whose grid is independent of the
+broker's session anchor are built at all (see BarBuilder).
 """
 from __future__ import annotations
 
@@ -11,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
+
+SECONDS_PER_HOUR = 3600
 
 
 @dataclass
@@ -37,6 +41,13 @@ def _open_bucket(start: datetime, tick: Tick) -> _Bucket:
     )
 
 
+def _fold(bucket: _Bucket, tick: Tick) -> None:
+    bucket.high = max(bucket.high, tick.bid)
+    bucket.low = min(bucket.low, tick.bid)
+    bucket.close = tick.bid
+    bucket.tick_volume += 1
+
+
 class BarBuilder:
     """Folds the ticks of one (symbol, timeframe) into completed bars.
 
@@ -44,12 +55,26 @@ class BarBuilder:
     bucket are not final, so handing one to a strategy would show it a candle
     the market has not printed yet. There is deliberately no flush(): an
     unfinished bucket has no completed bar to give.
+
+    Buckets sit on a UTC grid. That matches the broker for any timeframe
+    dividing one hour, because MT5 trade servers are offset from UTC by whole
+    hours; 4h and 1d candles instead hang off the server's own midnight, so
+    building them here would silently disagree with copy_rates. Those
+    timeframes are rejected rather than approximated - the anchor has to come
+    from the broker before they can be folded from ticks.
     """
 
     def __init__(self, symbol: str, timeframe: str) -> None:
+        seconds = TIMEFRAME_SECONDS[timeframe]
+        if SECONDS_PER_HOUR % seconds != 0:
+            raise ValueError(
+                f"{timeframe} bars cannot be folded from ticks yet: their boundaries "
+                "follow the broker's session anchor, which the platform does not know. "
+                "Timeframes dividing one hour are anchor-independent and are supported."
+            )
         self._symbol = symbol
         self._timeframe = timeframe
-        self._seconds = TIMEFRAME_SECONDS[timeframe]
+        self._seconds = seconds
         self._bucket: _Bucket | None = None
 
     def on_tick(self, tick: Tick) -> Bar | None:
@@ -60,29 +85,33 @@ class BarBuilder:
         close_time against the replay clock.
         """
         start = self._bucket_start(tick.time)
-        if tick.known_time > start + timedelta(seconds=self._seconds):
-            # Reached us only after its own bar had closed. A bar is what was
-            # knowable by its close — and it is persisted with
-            # known_at = close_time — so folding this quote in would let a
-            # later replay read the bar before its contents existed.
-            return None
+        # A quote that reached us only after its own bar had closed cannot be
+        # part of it: bars are persisted with known_at = close_time, so
+        # folding it in would let a later replay read the candle before its
+        # contents existed. Reception exactly at the close still counts —
+        # visibility is `<=`.
+        fresh = tick.known_time <= start + timedelta(seconds=self._seconds)
         bucket = self._bucket
+
         if bucket is None:
-            self._bucket = _open_bucket(start, tick)
+            if fresh:
+                self._bucket = _open_bucket(start, tick)
             return None
         if start < bucket.start:
-            # A late arrival for a bucket that already closed. Replay delivers
-            # in reception order, so this is normal after a reconnect —
-            # rewriting a published bar would change a candle a strategy may
-            # already have traded on.
+            # Belongs to a bucket that already closed. Replay delivers in
+            # reception order, so this is normal after a reconnect; rewriting
+            # a published bar would change a candle a strategy may already
+            # have traded on.
             return None
         if start == bucket.start:
-            bucket.high = max(bucket.high, tick.bid)
-            bucket.low = min(bucket.low, tick.bid)
-            bucket.close = tick.bid
-            bucket.tick_volume += 1
+            if fresh:
+                _fold(bucket, tick)
             return None
-        self._bucket = _open_bucket(start, tick)
+        # A later bucket. The open one is finished on its own merits, so it
+        # is published even when this tick is itself too late to seed the
+        # next one — otherwise one stale quote would withhold a finished bar,
+        # or lose it outright if nothing follows.
+        self._bucket = _open_bucket(start, tick) if fresh else None
         return self._to_bar(bucket)
 
     def _bucket_start(self, at: datetime) -> datetime:

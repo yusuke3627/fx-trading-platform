@@ -286,7 +286,8 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
             take_profit=tp,
         )
     )
-    # retcode alone does not prove persistence; re-select and compare.
+    # retcode alone does not prove persistence; re-select and compare BOTH
+    # values — a dropped TP must fail the step just like a dropped SL.
     modified = adapter.position(position.broker_position_ticket)
     modify_ok = (
         modify_result is not None
@@ -294,6 +295,8 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         and modified is not None
         and modified.stop_loss is not None
         and abs(modified.stop_loss - new_sl) < tolerance
+        and modified.take_profit is not None
+        and abs(modified.take_profit - tp) < tolerance
     )
     step(
         "trade_cycle_sltp_modify",
@@ -304,6 +307,12 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
             "stored_sl": (
                 str(modified.stop_loss)
                 if modified is not None and modified.stop_loss is not None
+                else None
+            ),
+            "requested_tp": str(tp),
+            "stored_tp": (
+                str(modified.take_profit)
+                if modified is not None and modified.take_profit is not None
                 else None
             ),
         },
@@ -395,25 +404,42 @@ def _cleanup_leftover_position(
     adapter, spec, symbol: str, magic: int, result, step, step_name: str
 ) -> None:
     """A failed or partial order may still have left a position on the demo
-    account; close whatever exists so the preflight never leaves exposure."""
+    account; keep closing until a fresh select confirms it is gone. A cleanup
+    that leaves exposure is itself a failure, never a silent success."""
     ticket = str(getattr(result, "order", 0) or 0) if result is not None else "0"
     if ticket == "0":
         return
     leftover = adapter.position(ticket)
     if leftover is None:
         return
-    adapter.order_send(
-        mapper.market_order_request(
-            symbol=symbol,
-            side=ExecutionSide.SELL,
-            units=leftover.quantity,
-            spec=spec,
-            position_ticket=ticket,
-            magic=magic,
-            comment="preflight-cleanup",
+    for _ in range(4):
+        if leftover is None:
+            break
+        close_result = adapter.order_send(
+            mapper.market_order_request(
+                symbol=symbol,
+                side=ExecutionSide.SELL,
+                units=leftover.quantity,
+                spec=spec,
+                position_ticket=ticket,
+                magic=magic,
+                comment="preflight-cleanup",
+            )
         )
+        retcode = getattr(close_result, "retcode", None)
+        if retcode not in (
+            mapper.TRADE_RETCODE_DONE,
+            mapper.TRADE_RETCODE_DONE_PARTIAL,
+        ):
+            break
+        leftover = adapter.position(ticket)
+    flat = leftover is None
+    step(
+        step_name,
+        flat,
+        {"leftover_units": "0" if flat else str(leftover.quantity)},
+        None if flat else "cleanup failed: leftover position remains on the demo account",
     )
-    step(step_name, True, {"closed_units": str(leftover.quantity)})
 
 
 def _protection_fill_probe(

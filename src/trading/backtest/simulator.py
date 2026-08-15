@@ -158,6 +158,42 @@ class ExecutionSimulator:
         )
 
         if opening:
+            if self._mode is AccountMode.NETTING:
+                # A netting account holds ONE position per symbol: same-side
+                # fills merge quantity, volume-weighted entry price and the
+                # latest protection, instead of stacking tranches with
+                # divergent SLs.
+                existing = next(
+                    (
+                        p
+                        for p in self._positions.values()
+                        if p.symbol == command.symbol
+                        and p.direction is command.direction
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    total = existing.quantity + quantity
+                    average = (
+                        existing.entry_price * existing.quantity + price * quantity
+                    ) / total
+                    merged = replace(
+                        existing,
+                        quantity=total,
+                        entry_price=average,
+                        stop_loss=(
+                            command.stop_loss_price
+                            if command.stop_loss_price is not None
+                            else existing.stop_loss
+                        ),
+                        take_profit=(
+                            command.take_profit_price
+                            if command.take_profit_price is not None
+                            else existing.take_profit
+                        ),
+                    )
+                    self._positions[existing.position_id] = merged
+                    return SimulationResult(fill=fill, rejected=False, position=merged)
             position = SimulatedPosition(
                 position_id=f"simpos-{uuid4().hex[:12]}",
                 symbol=command.symbol,

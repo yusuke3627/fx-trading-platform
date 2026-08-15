@@ -242,6 +242,43 @@ def test_netting_open_labelled_buy_offsets_existing_short():
     assert result.position.direction is PositionDirection.SHORT
 
 
+def test_netting_same_direction_fills_merge_into_single_position():
+    # A netting account holds one position per symbol: quantity adds up,
+    # entry price is volume-weighted, protection follows the latest order.
+    sim = ExecutionSimulator(
+        deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING
+    )
+    first = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.SHORT,
+            action=PositionAction.OPEN,
+            quantity="1000",
+            stop_loss="159.50",
+        ),
+        [make_tick("158.840", "158.844")],
+    ).position
+    assert first is not None
+
+    second = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.SHORT,
+            action=PositionAction.INCREASE,
+            quantity="3000",
+            stop_loss="159.30",
+        ),
+        [make_tick("158.640", "158.644")],
+    ).position
+    assert second is not None
+    assert second.position_id == first.position_id
+    assert second.quantity == Decimal(4000)
+    # (158.840 x 1000 + 158.640 x 3000) / 4000
+    assert second.entry_price == Decimal("158.690")
+    assert second.stop_loss == Decimal("159.30")
+    assert sim.position(first.position_id).quantity == Decimal(4000)
+
+
 def test_netting_exit_with_empty_book_does_not_execute():
     sim = ExecutionSimulator(
         deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING

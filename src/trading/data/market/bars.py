@@ -122,7 +122,12 @@ class BarBuilder:
         if start == bucket.start:
             if fresh:
                 _fold(bucket, tick)
-            return None
+                return None
+            # Known only after this very bucket closed, so it cannot join the
+            # bar — but it is proof the bar ended, and withholding a finished
+            # candle because of a late arrival is what a strategy would feel.
+            self._bucket = None
+            return self._to_bar(bucket)
         if tick.known_time < bucket.start + timedelta(seconds=self._seconds):
             # A later bucket by broker time, but we do not yet KNOW that the
             # open bar has ended — a broker clock running ahead of ours

@@ -99,18 +99,19 @@ def test_tick_received_after_its_own_bucket_closed_never_enters_the_bar():
     # candle whose contents did not exist yet — look-ahead through the store.
     builder = BarBuilder("USDJPY", "1m")
     builder.on_tick(make_tick("158.840", "158.844", time=T0))
-    assert (
-        builder.on_tick(
-            make_tick("159.500", "159.504", time=at(seconds=30), received_at=at(minutes=2))
-        )
-        is None
-    )
 
-    bar = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=3)))
+    # It cannot join the bar, but its reception time proves the bar ended, so
+    # the finished candle is published rather than held back.
+    bar = builder.on_tick(
+        make_tick("159.500", "159.504", time=at(seconds=30), received_at=at(minutes=2))
+    )
     assert bar is not None
     assert bar.start == T0
     assert bar.high == Decimal("158.840")
     assert bar.tick_volume == 1
+
+    # It seeded no bucket either: the next quote opens one.
+    assert builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=3))) is None
 
 
 def test_a_future_dated_quote_does_not_close_a_bucket_early():

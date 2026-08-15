@@ -74,13 +74,21 @@ consensus_snapshots                             # 今日から forward 蓄積
   forecast / median / high / low / respondent_count
   raw_uri / payload_hash
 
-InterventionEvent
-  event_id / suspected_start_at
-  reported_at / reported_estimate_jpy
-  verification_status                           # SUSPECTED..OFFICIAL
-  official_action_date / official_amount_jpy / official_amount_known_at
-  source_uri / retrieved_at / payload_hash      # 報道は published_at / updated_at /
-                                                # retrieved_at を別管理（初報時刻の保全）
+InterventionEvent                               # 認識段階ごとに別イベント。
+  event_id / intervention_id                    # 1 レコードへ集約しない。
+  kind                                          # MARKET_SUSPECTED / REPORTED /
+                                                # GOVERNMENT_CONFIRMED /
+                                                # OFFICIAL_MONTHLY_AMOUNT /
+                                                # OFFICIAL_DAILY_AMOUNT
+  known_at                                      # その段階を市場が知った時刻
+  source_uri / retrieved_at / payload_hash
+  kind 別 payload:
+    MARKET_SUSPECTED → suspected_start_at
+    REPORTED         → published_at / updated_at / reported_estimate_jpy
+                       # 初報時刻の保全のため published_at と updated_at を別管理
+    OFFICIAL_*       → official_action_date / official_amount_jpy
+  # 同一介入は intervention_id で相関。Replay は known_at <= ReplayClock の
+  # イベントだけを見る。後段の official 値で過去イベントを UPDATE しない
 ```
 
 Surprise の定義: `actual_first_print - consensus` を指標ごとの過去 forecast error

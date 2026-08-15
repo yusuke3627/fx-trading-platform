@@ -1,0 +1,15 @@
+# Shadow: full pipeline runs and records signals/intents/decisions, but no
+# orders reach the broker.
+risk:
+  trading_enabled: false
+
+strategies:
+  failed_spike_reversal:
+    enabled: true
+    status: SHADOW
+  post_event_failed_breakout:
+    enabled: true
+    status: SHADOW
+  monetary_policy_convergence:
+    enabled: true
+    status: SHADOW

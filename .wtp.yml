@@ -1,0 +1,9 @@
+version: "1.0"
+defaults:
+  base_dir: "../" # worktreeの作成場所
+
+hooks:
+  post_create:
+    # 依存関係インストール（worktreeごとに venv を作る）
+    - type: command
+      command: "python -m venv .venv && .venv/bin/pip install -e '.[dev]'"

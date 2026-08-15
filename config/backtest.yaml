@@ -1,0 +1,18 @@
+# Backtest: replay clock, execution simulator, no broker.
+# trading_enabled は Risk Engine のゲートなので backtest では有効にする。
+# 実 Broker への到達は設定ではなく配線で遮断される（backtest では
+# ExecutionAdapter を組み込まず Simulator のみが注文を受ける）。
+risk:
+  trading_enabled: true
+
+simulator:
+  scenario: normal
+  seed: 42
+
+strategies:
+  failed_spike_reversal:
+    enabled: true
+  post_event_failed_breakout:
+    enabled: true
+  monetary_policy_convergence:
+    enabled: true

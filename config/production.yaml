@@ -1,0 +1,9 @@
+# Production: capital scaling only after edge is verified through
+# backtest -> out-of-sample -> walk-forward -> shadow -> micro live.
+# Limits are raised deliberately per strategy, never by default.
+risk:
+  trading_enabled: true
+  max_open_positions: 1
+  max_units_per_symbol:
+    USDJPY: 1000
+  require_broker_stop_loss: true

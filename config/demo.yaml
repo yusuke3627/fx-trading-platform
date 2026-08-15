@@ -1,0 +1,4 @@
+# OANDA demo via MT5. Trading stays disabled; orders happen only through the
+# explicit preflight trade cycle (--trade-cycle).
+risk:
+  trading_enabled: false

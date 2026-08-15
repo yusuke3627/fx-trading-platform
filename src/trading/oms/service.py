@@ -1,0 +1,234 @@
+"""OMS service.
+
+Netting: order quantity is (desired broker net exposure - current broker
+exposure), never raw strategy quantity. Hedging: exits always reference the
+target position ticket. In both modes exit is never a naked opposite market
+order: the broker position is re-selected fresh before any close/reduce, and
+a position already closed by broker-side protection results in a NOOP, never
+a reversal.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from enum import StrEnum
+from typing import Protocol
+from uuid import uuid4
+
+from trading.backtest.clock import Clock
+from trading.domain.account import AccountMode
+from trading.domain.intent import PositionIntent
+from trading.domain.order import (
+    CommandState,
+    ExecutionCommand,
+    ExecutionSide,
+    execution_side,
+)
+from trading.domain.position import BrokerPosition, PositionAction
+
+
+class NakedExitError(RuntimeError):
+    pass
+
+
+class BrokerPositionReader(Protocol):
+    """Fresh broker position lookup (re-select before reading)."""
+
+    def position(self, ticket: str) -> BrokerPosition | None: ...
+
+    def net_exposure(self, symbol: str) -> Decimal: ...
+
+
+class ExitPreparation(StrEnum):
+    PROCEED = "PROCEED"
+    ALREADY_CLOSED = "ALREADY_CLOSED"
+
+
+@dataclass(frozen=True)
+class ExitPlan:
+    result: ExitPreparation
+    position: BrokerPosition | None = None
+    quantity: Decimal | None = None
+
+
+def execution_delta(desired_net: Decimal, current_net: Decimal) -> Decimal:
+    """Signed order quantity that moves broker exposure to the target."""
+    return desired_net - current_net
+
+
+class OMSService:
+    def __init__(
+        self,
+        *,
+        account_mode: AccountMode,
+        broker: BrokerPositionReader,
+        clock: Clock,
+    ) -> None:
+        self._mode = account_mode
+        self._broker = broker
+        self._clock = clock
+
+    def command_for_netting(
+        self,
+        *,
+        symbol: str,
+        desired_net: Decimal,
+        intent: PositionIntent,
+        volume_step: Decimal,
+        sequence: int = 0,
+    ) -> ExecutionCommand | None:
+        """Difference-only order for a netting account; None when the delta is
+        below one volume step.
+
+        Current exposure is re-read from the broker at command-build time —
+        the netting counterpart of the hedging fresh select. A stale value
+        (e.g. captured before a protection fill closed the position) would
+        turn an exit delta into a fresh reversal.
+        """
+        if self._mode is not AccountMode.NETTING:
+            raise RuntimeError("command_for_netting requires a NETTING account")
+        current_net = self._broker.net_exposure(symbol)
+
+        # Zero-crossing is decided by current vs desired NET exposure, not by
+        # the intent's direction: an opposite-direction strategy merely
+        # shrinking the net (e.g. -80k -> -60k via a LONG add) is an ordinary
+        # same-sign delta and must go out.
+        crosses_zero = (
+            current_net != 0
+            and desired_net != 0
+            and (current_net > 0) != (desired_net > 0)
+        )
+
+        # A reversal OPEN is built only once the book has actually crossed to
+        # the target side. With opposite exposure still open (its CLOSE leg
+        # not yet filled), the delta would duplicate the flatten quantity into
+        # an unapproved position; the caller re-delters after the close fill.
+        opening = intent.action in (PositionAction.OPEN, PositionAction.INCREASE)
+        if opening and crosses_zero:
+            return None
+
+        delta = execution_delta(desired_net, current_net)
+        quantity = abs(delta)
+        if quantity < volume_step:
+            return None
+        # One command never crosses zero. A zero-crossing delta as a single
+        # order would bundle a fresh opposite-side OPEN into an exit-labelled
+        # command, dodging max-size and mandatory-SL checks. This command
+        # only flattens; the opposite side must arrive as its own
+        # risk-approved opening intent.
+        if crosses_zero:
+            quantity = abs(current_net)
+        side = ExecutionSide.BUY if delta > 0 else ExecutionSide.SELL
+        return self._command(
+            intent, symbol=symbol, side=side, quantity=quantity, sequence=sequence
+        )
+
+    def prepare_exit(self, ticket: str) -> ExitPlan:
+        """Fresh position select before any exit. A missing position means it
+        was already closed (e.g. broker-side protection): NOOP, never a
+        reversal order."""
+        position = self._broker.position(ticket)
+        if position is None:
+            return ExitPlan(result=ExitPreparation.ALREADY_CLOSED)
+        return ExitPlan(
+            result=ExitPreparation.PROCEED,
+            position=position,
+            quantity=position.quantity,
+        )
+
+    def command_for_hedging_exit(
+        self,
+        *,
+        intent: PositionIntent,
+        ticket: str,
+        quantity: Decimal | None = None,
+        sequence: int = 0,
+    ) -> ExecutionCommand | None:
+        """Ticket-referenced REDUCE/CLOSE for a hedging account."""
+        if self._mode is not AccountMode.HEDGING:
+            raise RuntimeError("command_for_hedging_exit requires a HEDGING account")
+        if intent.action not in (PositionAction.REDUCE, PositionAction.CLOSE):
+            raise ValueError("exit command requires a REDUCE/CLOSE intent")
+
+        plan = self.prepare_exit(ticket)
+        if plan.result is ExitPreparation.ALREADY_CLOSED:
+            return None
+        assert plan.position is not None
+
+        if quantity is not None:
+            exit_quantity = quantity
+        elif intent.action is PositionAction.CLOSE:
+            exit_quantity = plan.position.quantity
+        elif intent.delta_quantity is not None:
+            exit_quantity = intent.delta_quantity
+        else:
+            # A REDUCE with no quantity anywhere must never silently become a
+            # full close.
+            raise ValueError(
+                "REDUCE requires an explicit quantity or intent.delta_quantity"
+            )
+        # A system exit cannot reverse a position: never exit more than exists.
+        exit_quantity = min(exit_quantity, plan.position.quantity)
+
+        return self._command(
+            intent,
+            symbol=plan.position.symbol,
+            side=execution_side(plan.position.direction, intent.action),
+            quantity=exit_quantity,
+            ticket=ticket,
+            sequence=sequence,
+        )
+
+    def validate_command(self, command: ExecutionCommand) -> None:
+        """Structural invariant: on hedging accounts an exit must reference a
+        broker position ticket."""
+        is_exit = command.action in (PositionAction.REDUCE, PositionAction.CLOSE)
+        if (
+            is_exit
+            and self._mode is AccountMode.HEDGING
+            and command.broker_position_ticket is None
+        ):
+            raise NakedExitError(
+                "exit is never a naked market order: broker_position_ticket required"
+            )
+
+    def _command(
+        self,
+        intent: PositionIntent,
+        *,
+        symbol: str,
+        side: ExecutionSide,
+        quantity: Decimal,
+        ticket: str | None = None,
+        sequence: int = 0,
+    ) -> ExecutionCommand:
+        """`sequence` distinguishes legitimate follow-up commands from the
+        same intent (e.g. a re-delta after a partial fill), and the ticket
+        distinguishes per-ticket exits from one intent (a hedging CLOSE can
+        span several tickets) — while the key stays deterministic for true
+        retries of the same logical command."""
+        now: datetime = self._clock.now()
+        command = ExecutionCommand(
+            command_id=uuid4(),
+            intent_id=intent.intent_id,
+            idempotency_key=(
+                f"{intent.intent_id}:{intent.action}:{symbol}:{ticket or '-'}:{sequence}"
+            ),
+            symbol=symbol,
+            side=side,
+            action=intent.action,
+            direction=intent.direction,
+            quantity=quantity,
+            stop_loss_price=(
+                intent.protection.stop_loss_price if intent.protection else None
+            ),
+            take_profit_price=(
+                intent.protection.take_profit_price if intent.protection else None
+            ),
+            broker_position_ticket=ticket,
+            state=CommandState.CREATED,
+            created_at=now,
+        )
+        self.validate_command(command)
+        return command

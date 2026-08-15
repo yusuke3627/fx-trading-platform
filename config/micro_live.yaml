@@ -1,0 +1,13 @@
+# Micro live: 1,000-unit cap, broker-side SL mandatory. Requires every item
+# of the Production Gate checklist (docs/SYSTEM_SPEC.md) verified first.
+risk:
+  trading_enabled: true
+  max_open_positions: 1
+  max_units_per_symbol:
+    USDJPY: 1000
+  require_broker_stop_loss: true
+
+strategies:
+  post_event_failed_breakout:
+    enabled: true
+    status: MICRO_LIVE

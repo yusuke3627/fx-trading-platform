@@ -225,6 +225,44 @@ def test_late_old_tick_does_not_rewind_valuation():
     assert with_late.metrics["unrealized_pnl"] == without.metrics["unrealized_pnl"]
 
 
+def test_hourly_snapshots_restore_loss_window_baselines():
+    # Risk loss windows (JST daily / rolling 24h) need baselines between
+    # fills: a position held across a time boundary must leave periodic
+    # snapshots, not only fill-time ones.
+    ticks = synthetic_ticks(
+        spec=usdjpy_spec(),
+        start=DATASET_START,
+        count=180,
+        seed=7,
+        interval_seconds=60,
+    )
+    engine = build_engine(
+        STRESS_SCENARIOS["normal"], plan={10: PositionDirection.LONG}
+    )
+    result = engine.run(ticks)
+    hours = {
+        s.observed_at.replace(minute=0, second=0, microsecond=0)
+        for s in result.snapshots
+    }
+    assert DATASET_START + timedelta(hours=1) in hours
+    assert DATASET_START + timedelta(hours=2) in hours
+
+
+def test_open_positions_marked_at_stressed_spread():
+    # Fills and protection use the STRESSED bid/ask, so an open position at
+    # the end must be marked with the same stressed executable price —
+    # otherwise final equity omits the widened close-side spread.
+    costs = CostModel(spread_multiplier=2.0, latency_ms=0.0, slippage_sigma_pips=0.0)
+    ticks = synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=2000, seed=7)
+    result = build_engine(costs, plan={300: PositionDirection.LONG}).run(ticks)
+
+    entry_tick, last_tick = ticks[300], ticks[-1]
+    stressed_entry = entry_tick.mid + entry_tick.spread  # x2 spread ask
+    stressed_mark = last_tick.mid - last_tick.spread  # x2 spread bid
+    expected_unrealized = (stressed_mark - stressed_entry) * Decimal(5000)
+    assert Decimal(result.metrics["unrealized_pnl"]) == expected_unrealized
+
+
 def test_pending_entries_reserve_the_position_cap():
     # Latency longer than the tick interval: the first OPEN is approved but
     # unfilled when the second signal arrives, and its queued command must

@@ -73,6 +73,14 @@ class ExecutionSimulator:
         """Earliest instant a fill for this command may occur (latency)."""
         return command.created_at + timedelta(milliseconds=self._costs.latency_ms)
 
+    def marking_price(self, direction: PositionDirection, tick: Tick) -> Decimal:
+        """STRESSED executable price for closing a position of this
+        direction — open positions must be marked with the same spread the
+        simulator would charge on the close."""
+        if direction is PositionDirection.LONG:
+            return self._stressed_bid(tick)
+        return self._stressed_ask(tick)
+
     def open_positions(self, symbol: str | None = None) -> list[SimulatedPosition]:
         return [
             p

@@ -48,16 +48,28 @@ def synthetic_usdjpy_spec(symbol: str) -> InstrumentSpec:
     )
 
 
-def git_commit() -> str:
-    try:
+def git_state() -> dict:
+    """Reproduction inputs: commit, and — because uncommitted changes make a
+    commit hash alone unreproducible — a dirty flag plus a hash of the
+    working-tree delta when dirty."""
+
+    def _run(*args: str) -> str:
         return subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+            ["git", *args], capture_output=True, text=True, check=True
+        ).stdout
+
+    try:
+        commit = _run("rev-parse", "HEAD").strip()
+        status = _run("status", "--porcelain")
+        state = {"git_commit": commit, "git_dirty": bool(status.strip())}
+        if state["git_dirty"]:
+            diff = _run("diff", "HEAD")
+            state["git_diff_sha256"] = hashlib.sha256(
+                (status + diff).encode()
+            ).hexdigest()
+        return state
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return "unknown"
+        return {"git_commit": "unknown", "git_dirty": None}
 
 
 def main() -> None:
@@ -104,7 +116,7 @@ def main() -> None:
     manifest = {
         "run_id": str(uuid4()),
         "created_at": datetime.now(UTC).isoformat(),
-        "git_commit": git_commit(),
+        **git_state(),
         "environment": args.env,
         "strategy_id": ScriptedStrategy.strategy_id,
         "strategy_version": ScriptedStrategy.strategy_version,

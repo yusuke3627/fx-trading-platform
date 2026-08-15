@@ -162,6 +162,7 @@ class BacktestResult:
     symbol: str
     fills: list[FillRecord]
     equity_curve: list[tuple[datetime, Decimal]]
+    snapshots: list[AccountSnapshot]
     risk_rejections: list[tuple[datetime, tuple[str, ...]]]
     rejected_commands: int
     metrics: dict[str, str]
@@ -212,6 +213,7 @@ class _RunState:
     # Latest KNOWN price on the broker timeline: valuation must never rewind
     # to a late-received tick with an older broker time.
     marking_tick: Tick | None = None
+    last_snapshot_hour: datetime | None = None
     # Signals held back while an entry for their slot is still in flight.
     deferred: dict[tuple[str, str], list[StrategySignal]] = field(default_factory=dict)
 
@@ -283,6 +285,17 @@ class BacktestEngine:
             w.market.add_tick(item)
             if state.marking_tick is None or item.time >= state.marking_tick.time:
                 state.marking_tick = item
+            # Risk loss windows (JST daily / rolling 24h) need baselines
+            # between fills: a position held across a boundary must leave
+            # periodic snapshots, not only fill-time ones.
+            hour = w.clock.now().replace(minute=0, second=0, microsecond=0)
+            if state.last_snapshot_hour is None:
+                state.last_snapshot_hour = hour
+            elif hour > state.last_snapshot_hour:
+                state.last_snapshot_hour = hour
+                state.snapshots.append(
+                    self._snapshot(state, w.simulator, w.clock.now())
+                )
 
             # Broker events precede strategy evaluation: pending command
             # fills first, then broker-side protection on the same price.
@@ -677,7 +690,7 @@ class BacktestEngine:
             return Decimal(0)
         total = Decimal(0)
         for p in simulator.open_positions(self._spec.symbol):
-            exit_price = tick.bid if p.direction is PositionDirection.LONG else tick.ask
+            exit_price = simulator.marking_price(p.direction, tick)
             total += signed_pnl(p.direction, p.entry_price, exit_price, p.quantity)
         return total
 
@@ -753,6 +766,7 @@ class BacktestEngine:
             symbol=self._spec.symbol,
             fills=state.fills,
             equity_curve=state.equity_curve,
+            snapshots=state.snapshots,
             risk_rejections=state.risk_rejections,
             rejected_commands=state.rejected_commands,
             metrics=metrics,

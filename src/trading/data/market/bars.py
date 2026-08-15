@@ -7,7 +7,7 @@ which is why OHLC follows the bid series MT5 charts FX on rather than the mid.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
@@ -60,6 +60,12 @@ class BarBuilder:
         close_time against the replay clock.
         """
         start = self._bucket_start(tick.time)
+        if tick.known_time > start + timedelta(seconds=self._seconds):
+            # Reached us only after its own bar had closed. A bar is what was
+            # knowable by its close — and it is persisted with
+            # known_at = close_time — so folding this quote in would let a
+            # later replay read the bar before its contents existed.
+            return None
         bucket = self._bucket
         if bucket is None:
             self._bucket = _open_bucket(start, tick)

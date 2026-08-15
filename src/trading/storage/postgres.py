@@ -362,12 +362,16 @@ class PostgresMarketTickRepository:
     def known_before(
         self, symbol: str, t: datetime, since: datetime
     ) -> Sequence[Tick]:
+        # Several quotes may share an event_time (the uniqueness key includes
+        # bid/ask), so the identity column breaks the tie: without it the
+        # order is planner-dependent, and which quote lands last decides a
+        # bar's close and the marking price of a replay.
         rows = self._conn.execute(
             """
             SELECT symbol, bid, ask, event_time, received_at
             FROM market_ticks
             WHERE symbol = %s AND event_time >= %s AND received_at <= %s
-            ORDER BY event_time
+            ORDER BY event_time, id
             """,
             (symbol, since, t),
         ).fetchall()

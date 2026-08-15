@@ -90,6 +90,41 @@ def test_late_tick_for_a_closed_bucket_is_dropped():
     assert second is not None and second.high == Decimal("158.900")
 
 
+def test_tick_received_after_its_own_bucket_closed_never_enters_the_bar():
+    # The broker time falls inside the first minute, but the quote only
+    # reached us during the third. The bar for [00:00, 00:01) is stored with
+    # known_at = 00:01, so folding this in would let a later replay read a
+    # candle whose contents did not exist yet — look-ahead through the store.
+    builder = BarBuilder("USDJPY", "1m")
+    builder.on_tick(make_tick("158.840", "158.844", time=T0))
+    assert (
+        builder.on_tick(
+            make_tick("159.500", "159.504", time=at(seconds=30), received_at=at(minutes=2))
+        )
+        is None
+    )
+
+    bar = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=3)))
+    assert bar is not None
+    assert bar.start == T0
+    assert bar.high == Decimal("158.840")
+    assert bar.tick_volume == 1
+
+
+def test_tick_known_exactly_at_its_bucket_close_still_counts():
+    # Visibility is `<=`: a quote known at the closing instant was knowable
+    # to anyone reading the bar at that instant, so it belongs to it.
+    builder = BarBuilder("USDJPY", "1m")
+    builder.on_tick(make_tick("158.840", "158.844", time=T0))
+    builder.on_tick(
+        make_tick("158.900", "158.904", time=at(seconds=30), received_at=at(minutes=1))
+    )
+    bar = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=1, seconds=1)))
+    assert bar is not None
+    assert bar.high == Decimal("158.900")
+    assert bar.tick_volume == 2
+
+
 def test_trailing_incomplete_bucket_is_never_published():
     # There is no flush(): the last, still-open bucket has no completed bar,
     # so a run that ends mid-candle simply has one fewer bar.

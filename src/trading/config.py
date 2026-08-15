@@ -31,7 +31,10 @@ class MarketConfig(BaseModel):
 
     primary_instruments: list[str] = Field(default_factory=lambda: ["USDJPY"])
     quote_max_age_seconds: float = 5.0
-    tick_poll_interval_seconds: float = 0.2
+    # Zero would turn collection into an unthrottled fetch/commit loop, and a
+    # negative value only fails once time.sleep() is reached — after the
+    # collector has already started, so the host just restarts it in a loop.
+    tick_poll_interval_seconds: float = Field(default=0.2, gt=0, allow_inf_nan=False)
 
 
 class StorageConfig(BaseModel):

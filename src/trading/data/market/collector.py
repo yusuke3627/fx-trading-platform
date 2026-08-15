@@ -27,11 +27,12 @@ Usage (Windows host with MT5 terminal):
 from __future__ import annotations
 
 import argparse
+import math
 import time
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 from trading.backtest.clock import Clock, SystemClock
@@ -51,6 +52,8 @@ INSERT_CHUNK_SIZE = 10_000
 BACKFILL_WINDOW = timedelta(days=1)
 
 SOURCE_MT5 = "MT5"
+
+_T = TypeVar("_T")
 
 
 def _utc_from_msc(time_msc: int) -> datetime:
@@ -103,9 +106,9 @@ def _windows(start: datetime, end: datetime) -> Iterator[tuple[datetime, datetim
         start = window_end
 
 
-def _chunks(ticks: Sequence[Tick]) -> Iterator[Sequence[Tick]]:
-    for offset in range(0, len(ticks), INSERT_CHUNK_SIZE):
-        yield ticks[offset : offset + INSERT_CHUNK_SIZE]
+def _chunks(items: Sequence[_T]) -> Iterator[Sequence[_T]]:
+    for offset in range(0, len(items), INSERT_CHUNK_SIZE):
+        yield items[offset : offset + INSERT_CHUNK_SIZE]
 
 
 class TickCollector:
@@ -181,9 +184,13 @@ class TickCollector:
                     f"failed: {self._mt5.last_error()}"
                 )
             received_at = self._clock.now()
-            stored += self._write(
-                [tick_from_row(row, symbol, received_at) for row in rows]
-            )
+            # Converted a chunk at a time: a busy day is 10^6 rows, and
+            # building every Tick up front would hold the whole day as objects
+            # on top of the array the terminal already returned.
+            for chunk in _chunks(rows):
+                stored += self._write(
+                    [tick_from_row(row, symbol, received_at) for row in chunk]
+                )
         return stored
 
     def run(self, symbol: str, interval_seconds: float) -> None:
@@ -192,11 +199,8 @@ class TickCollector:
             time.sleep(interval_seconds)
 
     def _write(self, ticks: Sequence[Tick]) -> int:
-        return sum(
-            self._repository.insert_many(
-                chunk, source=self._source, ingestion_run=self._ingestion_run
-            )
-            for chunk in _chunks(ticks)
+        return self._repository.insert_many(
+            ticks, source=self._source, ingestion_run=self._ingestion_run
         )
 
 
@@ -210,6 +214,16 @@ def _aware_utc(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _poll_interval(value: str) -> float:
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a positive interval; a zero or negative value "
+            "would poll without pause or fail only once the loop sleeps"
+        )
+    return seconds
+
+
 def main() -> None:
     import os
 
@@ -218,7 +232,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MT5 tick collector")
     parser.add_argument("--env", default="demo")
     parser.add_argument("--symbol", default=None)
-    parser.add_argument("--interval-seconds", type=float, default=None)
+    parser.add_argument("--interval-seconds", type=_poll_interval, default=None)
     parser.add_argument("--backfill-from", type=_aware_utc, default=None)
     parser.add_argument("--backfill-to", type=_aware_utc, default=None)
     args = parser.parse_args()

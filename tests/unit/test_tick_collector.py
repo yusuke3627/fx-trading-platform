@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.support import FixedClock
+from trading.data.market import collector as collector_module
 from trading.data.market.collector import TickCollector
 from trading.execution.mt5.adapter import MT5ConnectionError
 
@@ -80,10 +81,12 @@ def _row_time(row: dict) -> datetime:
 class FakeTickRepository:
     def __init__(self) -> None:
         self.ticks = []
+        self.batches: list[list] = []
         self.calls: list[dict] = []
 
     def insert_many(self, ticks, *, source, ingestion_run) -> int:
         self.ticks.extend(ticks)
+        self.batches.append(list(ticks))
         self.calls.append({"source": source, "ingestion_run": ingestion_run})
         return len(ticks)
 
@@ -226,6 +229,22 @@ def test_connect_selects_the_symbol_and_surfaces_failures():
     failed_select, _ = make_collector(FakeMT5(select_ok=False))
     with pytest.raises(MT5ConnectionError):
         failed_select.connect(SYMBOL)
+
+
+def test_backfill_converts_and_writes_in_chunks(monkeypatch):
+    # A busy day returns ~10^6 rows. Converting the window in one pass would
+    # hold every Tick object on top of the array the terminal returned, so the
+    # rows themselves are sliced before any Tick is built.
+    monkeypatch.setattr(collector_module, "INSERT_CHUNK_SIZE", 2)
+    start = T0 - timedelta(hours=1)
+    rows = [
+        range_row(int((start + timedelta(minutes=i)).timestamp() * 1000), "158.840", "158.844")
+        for i in range(5)
+    ]
+    collector, repository = make_collector(FakeMT5(range_rows=rows))
+
+    assert collector.backfill(SYMBOL, start, T0) == 5
+    assert [len(batch) for batch in repository.batches] == [2, 2, 1]
 
 
 def test_long_backfill_is_split_into_windows():

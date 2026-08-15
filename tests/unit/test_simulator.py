@@ -89,6 +89,21 @@ def test_fill_waits_for_tick_reception_not_broker_time():
     assert result.fill.price == Decimal("158.844")
 
 
+def test_fill_received_at_records_reception_time_of_late_tick():
+    # An audit/replay of the fill stream must not see the fill as known
+    # before the tick that produced it was received.
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    ticks = [
+        make_tick("158.840", "158.844", time=at(seconds=1), received_at=at(minutes=5))
+    ]
+    result = sim.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG), ticks
+    )
+    assert result.fill is not None
+    assert result.fill.broker_time == at(seconds=1)
+    assert result.fill.received_at == at(minutes=5)
+
+
 def test_no_fill_when_no_tick_after_latency_window():
     costs = CostModel(latency_ms=10_000, slippage_sigma_pips=0.0)
     sim = ExecutionSimulator(costs, usdjpy_spec(), seed=1)
@@ -129,6 +144,18 @@ def test_protection_fill_on_stop_loss_cross():
     assert fill.protection_reason is ProtectionReason.STOP_LOSS
     assert fill.side is ExecutionSide.SELL
     assert fill.broker_position_ticket == position.position_id
+
+
+def test_protection_fill_received_at_uses_tick_reception():
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    position = open_long(sim, stop_loss="158.80")
+    fill = sim.check_protection(
+        position,
+        make_tick("158.790", "158.794", time=at(minutes=1), received_at=at(minutes=2)),
+    )
+    assert fill is not None
+    assert fill.broker_time == at(minutes=1)
+    assert fill.received_at == at(minutes=2)
 
 
 def test_protection_never_fires_twice():

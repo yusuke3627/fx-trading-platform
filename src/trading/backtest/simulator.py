@@ -163,7 +163,7 @@ class ExecutionSimulator:
             quantity=quantity,
             price=price,
             broker_time=fill_tick.time,
-            received_at=fill_tick.time,
+            received_at=fill_tick.known_time,
         )
 
         if opening:
@@ -294,7 +294,7 @@ class ExecutionSimulator:
             quantity=position.quantity,
             price=price,
             broker_time=tick.time,
-            received_at=tick.time,
+            received_at=tick.known_time,
         )
 
     def _execution_price(self, tick: Tick, side: ExecutionSide) -> Decimal:

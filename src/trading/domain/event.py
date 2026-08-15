@@ -7,13 +7,43 @@ backtest can only see what was known at replay time:
 """
 from __future__ import annotations
 
-import json
+import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _ensure_json_native(value: object) -> None:
+    """Reject anything json.dumps would silently coerce (tuples to lists,
+    non-str keys to str, NaN/Infinity to invalid JSON): serializable is not
+    enough, the JSONB round-trip must preserve types exactly."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("payload floats must be finite (no NaN/Infinity)")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                # ValueError, not TypeError: pydantic only wraps ValueError
+                # into a ValidationError at the model boundary.
+                raise ValueError(  # noqa: TRY004
+                    f"payload dict keys must be str, got {type(key).__name__}"
+                )
+            _ensure_json_native(item)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _ensure_json_native(item)
+        return
+    raise ValueError(
+        f"payload contains non-JSON-native {type(value).__name__}; convert "
+        "Decimals/datetimes/tuples at the collector boundary"
+    )
 
 
 class EventEnvelope(BaseModel):
@@ -33,13 +63,7 @@ class EventEnvelope(BaseModel):
     @field_validator("payload")
     @classmethod
     def _payload_is_json_native(cls, value: dict[str, Any]) -> dict[str, Any]:
-        try:
-            json.dumps(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "payload must contain only JSON-native types; convert Decimals/"
-                "datetimes at the collector boundary"
-            ) from exc
+        _ensure_json_native(value)
         return value
     payload_hash: str | None = None
     raw_uri: str | None = None

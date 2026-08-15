@@ -5,13 +5,13 @@ the queue-like execution_commands table without lock contention.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from trading.domain.account import AccountSnapshot
 from trading.domain.event import EventEnvelope
@@ -315,9 +315,11 @@ class PostgresEventRepository:
                 "event_type": e.event_type,
                 "source": e.source,
                 "source_uri": e.source_uri,
-                # Strict dump: EventEnvelope already guarantees JSON-native
-                # payloads, so the round-trip preserves types exactly.
-                "payload": json.dumps(e.payload),
+                # Jsonb adapts the dict for the JSONB column (a plain str
+                # would bind as text and fail the type check); EventEnvelope
+                # already guarantees JSON-native payloads, so the round-trip
+                # preserves types exactly.
+                "payload": Jsonb(e.payload),
                 "payload_hash": e.payload_hash,
                 "raw_uri": e.raw_uri,
                 "effective_at": e.effective_at,

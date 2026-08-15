@@ -273,13 +273,13 @@ def test_bea_maps_gdp_line_only():
                 "Data": [
                     {
                         "LineNumber": "1",
-                        "SeriesCode": "A191RL1",
+                        "SeriesCode": "A191RL",
                         "TimePeriod": "2026Q1",
                         "DataValue": "3.0",
                     },
                     {
                         "LineNumber": "2",
-                        "SeriesCode": "DPCERL1",
+                        "SeriesCode": "DPCERL",
                         "TimePeriod": "2026Q1",
                         "DataValue": "2.1",
                     },
@@ -299,6 +299,9 @@ def test_bea_maps_gdp_line_only():
     assert gdp.value == Decimal("3.0")
     assert gdp.known_at == RETRIEVED
     assert transport.get_calls[0][1]["Year"] == "2025,2026"
+    # Table 1.1.1 (percent change from preceding period, SAAR) — T10111 is
+    # the year-over-year table and does not match the ALFRED vintage series.
+    assert transport.get_calls[0][1]["TableName"] == "T10101"
 
 
 def test_bea_error_raises():

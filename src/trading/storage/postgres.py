@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from trading.domain.account import AccountSnapshot
+from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope, ensure_json_native
 from trading.domain.fill import Fill
 from trading.domain.market import Bar, Tick
@@ -433,6 +434,80 @@ class PostgresMarketBarRepository:
             (symbol, timeframe, t, count),
         ).fetchall()
         return [_row_to_bar(r) for r in reversed(rows)]
+
+
+def _row_to_observation(row: dict[str, Any]) -> EconomicObservation:
+    return EconomicObservation(
+        observation_id=row["id"],
+        series=row["series"],
+        observation_period=row["observation_period"],
+        value=row["value"],
+        unit=row["unit"],
+        source=row["source"],
+        source_uri=row["source_uri"],
+        payload_hash=row["payload_hash"],
+        published_at=row["published_at"],
+        retrieved_at=row["retrieved_at"],
+        known_at=row["known_at"],
+    )
+
+
+class PostgresMacroObservationRepository:
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    def insert_many(self, observations: Sequence[EconomicObservation]) -> int:
+        if not observations:
+            return 0
+        cursor = self._conn.cursor()
+        cursor.executemany(
+            """
+            INSERT INTO macro_observations (
+                id, series, observation_period, value, unit, source,
+                source_uri, payload_hash, published_at, retrieved_at, known_at
+            ) VALUES (
+                %(id)s, %(series)s, %(observation_period)s, %(value)s, %(unit)s,
+                %(source)s, %(source_uri)s, %(payload_hash)s, %(published_at)s,
+                %(retrieved_at)s, %(known_at)s
+            )
+            ON CONFLICT (series, observation_period, known_at) DO NOTHING
+            """,
+            [
+                {
+                    "id": o.observation_id,
+                    "series": o.series,
+                    "observation_period": o.observation_period,
+                    "value": o.value,
+                    "unit": o.unit,
+                    "source": o.source,
+                    "source_uri": o.source_uri,
+                    "payload_hash": o.payload_hash,
+                    "published_at": o.published_at,
+                    "retrieved_at": o.retrieved_at,
+                    "known_at": o.known_at,
+                }
+                for o in observations
+            ],
+        )
+        self._conn.commit()
+        # An already-stored vintage conflicts and counts zero, so this is what
+        # the batch actually added.
+        return cursor.rowcount
+
+    def known_before(self, series: str, t: datetime) -> Sequence[EconomicObservation]:
+        # id breaks ties when two vintages share a known_at (UUIDs order
+        # arbitrarily but stably), keeping replay order planner-independent.
+        rows = self._conn.execute(
+            """
+            SELECT id, series, observation_period, value, unit, source,
+                   source_uri, payload_hash, published_at, retrieved_at, known_at
+            FROM macro_observations
+            WHERE series = %s AND known_at <= %s
+            ORDER BY known_at, id
+            """,
+            (series, t),
+        ).fetchall()
+        return [_row_to_observation(r) for r in rows]
 
 
 class PostgresEventRepository:

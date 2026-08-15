@@ -5,7 +5,7 @@ idempotency, snapshot queries). They require a database:
 
 ```bash
 export TRADING_DB_DSN=postgresql://localhost/trading_test
-psql "$TRADING_DB_DSN" -f migrations/0001_initial.sql
+for f in migrations/*.sql; do psql "$TRADING_DB_DSN" -v ON_ERROR_STOP=1 -f "$f"; done
 pytest tests/integration
 ```
 

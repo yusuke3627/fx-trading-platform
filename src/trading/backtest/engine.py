@@ -35,6 +35,7 @@ from trading.backtest.costs import CostModel
 from trading.backtest.replay import ReplayEngine
 from trading.backtest.simulator import ExecutionSimulator
 from trading.data.market import InMemoryMarketData
+from trading.data.market.bars import BarBuilder
 from trading.domain.account import AccountMode, AccountSnapshot
 from trading.domain.event import EventEnvelope
 from trading.domain.instrument import InstrumentSpec
@@ -58,7 +59,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.3.1"
+ENGINE_VERSION = "0.4.0"
 
 
 class ScriptedStrategy(Strategy):
@@ -233,6 +234,7 @@ class _Wiring:
 
     clock: ReplayClock
     market: InMemoryMarketData
+    bar_builders: list[BarBuilder]
     simulator: ExecutionSimulator
     broker: SimulatedBroker
     oms: OMSService
@@ -282,6 +284,12 @@ class BacktestEngine:
         def handle(item: EventEnvelope | Tick | Bar) -> None:
             assert isinstance(item, Tick)
             w.market.add_tick(item)
+            # Bars close before the strategy is evaluated, so the candle that
+            # this tick completed is readable on the very tick that closed it.
+            for builder in w.bar_builders:
+                bar = builder.on_tick(item)
+                if bar is not None:
+                    w.market.add_bar(bar)
             if state.marking_tick is None or item.time >= state.marking_tick.time:
                 state.marking_tick = item
             # Risk loss windows (JST daily / rolling 24h) need baselines
@@ -365,6 +373,12 @@ class BacktestEngine:
         return _Wiring(
             clock=clock,
             market=market,
+            # Configuration owns timeframe selection: a strategy that declares
+            # no timeframes gets no bars, and none are built for it.
+            bar_builders=[
+                BarBuilder(self._spec.symbol, timeframe)
+                for timeframe in self._strategy_config.timeframes.all()
+            ],
             simulator=simulator,
             broker=broker,
             oms=OMSService(account_mode=self._mode, broker=broker, clock=clock),

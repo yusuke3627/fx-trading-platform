@@ -42,7 +42,7 @@ from trading.domain.intent import PositionIntent
 from trading.domain.market import Bar, Tick
 from trading.domain.order import ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
-from trading.domain.risk import EventRiskMode, KillSwitchLevel
+from trading.domain.risk import KillSwitchLevel
 from trading.domain.signal import StrategySignal
 from trading.indicators import IndicatorService
 from trading.intelligence.features import InMemoryFeatureStore
@@ -58,7 +58,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.2.0"
+ENGINE_VERSION = "0.3.0"
 
 
 class ScriptedStrategy(Strategy):
@@ -169,9 +169,13 @@ class BacktestResult:
 
 @dataclass
 class _Barrier:
-    """Fires the follow-up intents once every close leg of a flip resolved."""
+    """Releases the follow-up intents of a flip only when every targeted
+    ticket is confirmed flat by a fresh select — a partially filled or
+    rejected close leg withholds the reversal instead of stacking LONG and
+    SHORT."""
 
-    remaining: int
+    tickets: list[str]
+    outstanding: int
     follow_up: list[PositionIntent]
     signal: StrategySignal
 
@@ -268,7 +272,6 @@ class BacktestEngine:
         state = _RunState(initial_equity=self._initial_equity)
         state.high_water_mark = self._initial_equity
         state.snapshots.append(self._snapshot(state, w.simulator, ordered[0], w.clock.now()))
-        mid_by_time = {t.time: t.mid for t in ordered}
 
         def handle(item: EventEnvelope | Tick | Bar) -> None:
             assert isinstance(item, Tick)
@@ -276,7 +279,7 @@ class BacktestEngine:
 
             # Broker events precede strategy evaluation: pending command
             # fills first, then broker-side protection on the same price.
-            self._apply_pending(state, w, item, mid_by_time)
+            self._apply_pending(state, w, item)
             for position in w.simulator.open_positions(symbol):
                 fill = w.simulator.check_protection(position, item)
                 if fill is None:
@@ -289,7 +292,7 @@ class BacktestEngine:
                     quantity=fill.quantity,
                     price=fill.price,
                     at=fill.broker_time,
-                    mid=mid_by_time[fill.broker_time],
+                    mid=item.mid,
                     action="PROTECTION_CLOSE",
                     side=fill.side,
                     origin=fill.origin.value,
@@ -310,7 +313,7 @@ class BacktestEngine:
                 self._process_signal(state, w, signal, tick=item)
             # Zero-latency commands created this tick fill on this tick;
             # anything slower stays queued for a later tick.
-            self._apply_pending(state, w, item, mid_by_time)
+            self._apply_pending(state, w, item)
 
             equity = self._equity(state, w.simulator, item)
             state.high_water_mark = max(state.high_water_mark, equity)
@@ -409,7 +412,12 @@ class BacktestEngine:
             self._process_intents(state, w, signal, rest, tick)
             return
         barrier = (
-            _Barrier(remaining=len(tickets), follow_up=rest, signal=signal)
+            _Barrier(
+                tickets=tickets,
+                outstanding=len(tickets),
+                follow_up=rest,
+                signal=signal,
+            )
             if rest
             else None
         )
@@ -434,17 +442,16 @@ class BacktestEngine:
     ) -> None:
         if barrier is None:
             return
-        barrier.remaining -= 1
-        if barrier.remaining == 0 and barrier.follow_up:
-            self._process_intents(state, w, barrier.signal, barrier.follow_up, tick)
+        barrier.outstanding -= 1
+        if barrier.outstanding > 0 or not barrier.follow_up:
+            return
+        # Resolution alone is not flatness: a partial fill or a rejected leg
+        # leaves its ticket open, and the reversal must then stay withheld.
+        if any(w.simulator.position(t) is not None for t in barrier.tickets):
+            return
+        self._process_intents(state, w, barrier.signal, barrier.follow_up, tick)
 
-    def _apply_pending(
-        self,
-        state: _RunState,
-        w: _Wiring,
-        tick: Tick,
-        mid_by_time: dict[datetime, Decimal],
-    ) -> None:
+    def _apply_pending(self, state: _RunState, w: _Wiring, tick: Tick) -> None:
         """Fill every pending command whose latency window the clock has
         reached, on THIS tick only — state never changes ahead of the clock.
         Loops because a resolved close leg can enqueue a zero-latency
@@ -461,15 +468,10 @@ class BacktestEngine:
             for p in ready:
                 state.pending.remove(p)
             for p in ready:
-                self._fill_pending(state, w, p, tick, mid_by_time)
+                self._fill_pending(state, w, p, tick)
 
     def _fill_pending(
-        self,
-        state: _RunState,
-        w: _Wiring,
-        pending: _Pending,
-        tick: Tick,
-        mid_by_time: dict[datetime, Decimal],
+        self, state: _RunState, w: _Wiring, pending: _Pending, tick: Tick
     ) -> None:
         if pending.kind == "EXIT":
             ticket = pending.command.broker_position_ticket
@@ -494,7 +496,7 @@ class BacktestEngine:
                 quantity=fill.quantity,
                 price=fill.price,
                 at=fill.broker_time,
-                mid=mid_by_time[fill.broker_time],
+                mid=tick.mid,
                 action=pending.action,
                 side=fill.side,
                 origin=fill.origin.value,
@@ -512,7 +514,7 @@ class BacktestEngine:
         strategy_id = pending.strategy_id
         state.ticket_owner[ticket] = strategy_id
         state.entry_price[ticket] = fill.price
-        state.entry_mid[ticket] = mid_by_time[fill.broker_time]
+        state.entry_mid[ticket] = tick.mid
         state.open_tickets.setdefault((strategy_id, self._spec.symbol), []).append(ticket)
         w.ledger.apply_fill(
             strategy_id, self._spec.symbol, fill.side, fill.quantity, fill.price
@@ -526,7 +528,7 @@ class BacktestEngine:
                 direction=result.position.direction.value,
                 quantity=fill.quantity,
                 price=fill.price,
-                mid=mid_by_time[fill.broker_time],
+                mid=tick.mid,
                 origin=fill.origin.value,
             )
         )
@@ -581,6 +583,26 @@ class BacktestEngine:
             state.entry_price.pop(ticket, None)
             state.entry_mid.pop(ticket, None)
 
+    def _pending_entry_load(
+        self, state: _RunState, symbol: str
+    ) -> tuple[int, Decimal, Decimal]:
+        """(count, signed units, gross units) of queued entry commands: an
+        approved-but-unfilled entry already reserves its position slot and
+        exposure, or several signals would share the same free capacity."""
+        count = 0
+        signed = Decimal(0)
+        gross = Decimal(0)
+        for p in state.pending:
+            if p.kind != "ENTRY" or p.command.symbol != symbol:
+                continue
+            count += 1
+            quantity = p.command.quantity
+            signed += (
+                quantity if p.command.side is ExecutionSide.BUY else -quantity
+            )
+            gross += quantity
+        return count, signed, gross
+
     def _pretrade_context(
         self,
         state: _RunState,
@@ -590,6 +612,9 @@ class BacktestEngine:
         tick: Tick,
     ) -> PreTradeContext:
         symbol = signal.symbol
+        pending_count, pending_signed, pending_gross = self._pending_entry_load(
+            state, symbol
+        )
         return PreTradeContext(
             now=w.clock.now(),
             execution_enabled=True,
@@ -599,13 +624,17 @@ class BacktestEngine:
             instrument=self._spec,
             account=self._snapshot(state, w.simulator, tick, w.clock.now()),
             snapshots=state.snapshots,
-            open_positions_count=len(w.simulator.open_positions(symbol)),
-            symbol_exposure_units=w.broker.net_exposure(symbol),
-            event_mode=EventRiskMode.NORMAL,
+            open_positions_count=len(w.simulator.open_positions(symbol))
+            + pending_count,
+            symbol_exposure_units=w.broker.net_exposure(symbol) + pending_signed,
+            # No event calendar in the slice: the configured default mode
+            # applies to every evaluation.
+            event_mode=self._risk_config.event_mode_default,
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,
             account_mode=self._mode,
-            symbol_gross_exposure_units=w.broker.gross_exposure(symbol),
+            symbol_gross_exposure_units=w.broker.gross_exposure(symbol)
+            + pending_gross,
             stop_distance_pips=signal.stop_distance_pips,
             requested_quantity=intent.target_quantity or Decimal(0),
         )

@@ -15,6 +15,7 @@ from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.data import dataset_hash, synthetic_ticks
 from trading.backtest.engine import BacktestEngine, BacktestResult, ScriptedStrategy
 from trading.domain.position import PositionDirection
+from trading.domain.risk import EventRiskMode
 from trading.risk.engine import RiskConfig
 from trading.strategy.base import StrategyConfig
 
@@ -31,6 +32,7 @@ def slice_risk_config() -> RiskConfig:
         daily_loss_halt_pct=Decimal(50),
         rolling_24h_loss_halt_pct=Decimal(50),
         high_water_mark_drawdown_halt_pct=Decimal(50),
+        event_mode_default=EventRiskMode.NORMAL,
     )
 
 
@@ -157,11 +159,11 @@ def test_full_lifecycle_flows_through_the_pipeline():
     )
 
 
-def test_partial_exit_keeps_remainder_tracked():
+def test_partial_exit_keeps_remainder_tracked_and_withholds_reversal():
     # With partial fills forced on, the flip's CLOSE only half-fills. The
-    # remainder must stay attributed: its later protection fill settles
-    # against the original entry instead of crashing or going untracked,
-    # and the reversal OPEN is refused while the remainder occupies the cap.
+    # remainder must stay attributed — its later protection fill settles
+    # against the original entry — and the reversal OPEN stays withheld
+    # because the targeted ticket never went flat.
     costs = CostModel(
         latency_ms=0.0, slippage_sigma_pips=0.0, partial_fill_probability=1.0
     )
@@ -174,13 +176,27 @@ def test_partial_exit_keeps_remainder_tracked():
     assert closes and closes[0].quantity == Decimal(2000)  # half of the 5000 held
     protection = [f for f in result.fills if f.origin == "PROTECTION"]
     assert protection and protection[0].quantity == Decimal(3000)  # the remainder
-    assert any("MAX_OPEN_POSITIONS" in codes for _, codes in result.risk_rejections)
+    # The reversal never opens: no SHORT fill, LONG and SHORT never coexist.
+    assert not any(f.direction == "SHORT" and f.action == "OPEN" for f in result.fills)
     assert result.metrics["open_positions_at_end"] == "0"
     assert Decimal(result.metrics["final_equity"]) == (
         Decimal(result.metrics["initial_equity"])
         + Decimal(result.metrics["realized_pnl"])
         + Decimal(result.metrics["unrealized_pnl"])
     )
+
+
+def test_pending_entries_reserve_the_position_cap():
+    # Latency longer than the tick interval: the first OPEN is approved but
+    # unfilled when the second signal arrives, and its queued command must
+    # already occupy the position cap.
+    costs = CostModel(latency_ms=2500.0, slippage_sigma_pips=0.0)
+    result = run_slice(
+        costs, plan={300: PositionDirection.LONG, 301: PositionDirection.LONG}
+    )
+    opens = [f for f in result.fills if f.action == "OPEN"]
+    assert len(opens) == 1
+    assert any("MAX_OPEN_POSITIONS" in codes for _, codes in result.risk_rejections)
 
 
 def test_flip_closes_every_held_ticket():

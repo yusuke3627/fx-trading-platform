@@ -95,7 +95,9 @@ class MarketBarRepository(Protocol):
 class MacroObservationRepository(Protocol):
     # Returns the number of rows actually stored: re-collecting a period that
     # is already ingested is the normal way to pick up revisions, and only
-    # genuinely new vintages count.
+    # genuinely new vintages count. A row whose value equals the vintage
+    # immediately preceding its known_at is not a revision and is skipped —
+    # scheduled forward re-collection must not grow the chain.
     def insert_many(self, observations: Sequence[EconomicObservation]) -> int: ...
 
     # All vintages of a series visible at `t`, oldest first. The caller

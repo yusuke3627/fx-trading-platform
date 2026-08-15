@@ -460,16 +460,31 @@ class PostgresMacroObservationRepository:
         if not observations:
             return 0
         cursor = self._conn.cursor()
+        # A row is a vintage only if its value differs from the vintage
+        # immediately preceding it (known_at order). Forward collectors stamp
+        # known_at = retrieved_at, so without this check every scheduled
+        # re-collection would append a full copy of unchanged values as fake
+        # revisions. Comparing against the latest vintage BEFORE the
+        # candidate's known_at (not the latest overall) keeps an ALFRED
+        # backfill insertable after later forward rows already exist.
         cursor.executemany(
             """
             INSERT INTO macro_observations (
                 id, series, observation_period, value, unit, source,
                 source_uri, payload_hash, published_at, retrieved_at, known_at
-            ) VALUES (
+            )
+            SELECT
                 %(id)s, %(series)s, %(observation_period)s, %(value)s, %(unit)s,
                 %(source)s, %(source_uri)s, %(payload_hash)s, %(published_at)s,
                 %(retrieved_at)s, %(known_at)s
-            )
+            WHERE (
+                SELECT m.value FROM macro_observations m
+                WHERE m.series = %(series)s
+                  AND m.observation_period = %(observation_period)s
+                  AND m.known_at < %(known_at)s
+                ORDER BY m.known_at DESC, m.id DESC
+                LIMIT 1
+            ) IS DISTINCT FROM %(value)s
             ON CONFLICT (series, observation_period, known_at) DO NOTHING
             """,
             [
@@ -490,8 +505,8 @@ class PostgresMacroObservationRepository:
             ],
         )
         self._conn.commit()
-        # An already-stored vintage conflicts and counts zero, so this is what
-        # the batch actually added.
+        # Unchanged values and already-stored vintages count zero, so this is
+        # the number of genuinely new vintages the batch added.
         return cursor.rowcount
 
     def known_before(self, series: str, t: datetime) -> Sequence[EconomicObservation]:

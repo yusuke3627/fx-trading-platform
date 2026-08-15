@@ -179,23 +179,44 @@ def test_hedging_opposite_direction_still_counts_against_cap():
     assert "MAX_OPEN_POSITIONS" in decision.reject_codes
 
 
-def test_opposite_direction_order_headroom_allows_net_reduction():
-    # At the SHORT cap, a LONG order shrinks |net| and must not be blocked.
+def test_netting_headroom_allows_net_reduction():
+    # NETTING at the SHORT cap: a LONG order shrinks |net| and must not be
+    # blocked by the unit cap.
     decision = engine(enabled_config()).evaluate(
         make_intent(direction=PositionDirection.LONG),
         make_context(
             symbol_exposure_units=Decimal(-10000),
             requested_quantity=Decimal(2000),
+            account_mode=AccountMode.NETTING,
         ),
     )
     assert decision.approved, decision.reject_codes
     assert decision.approved_quantity == Decimal(2000)
 
 
-def test_same_direction_at_cap_rejected():
+def test_netting_same_direction_at_cap_rejected():
     decision = engine(enabled_config()).evaluate(
         make_intent(direction=PositionDirection.SHORT),
-        make_context(symbol_exposure_units=Decimal(-10000)),
+        make_context(
+            symbol_exposure_units=Decimal(-10000),
+            account_mode=AccountMode.NETTING,
+        ),
+    )
+    assert not decision.approved
+    assert "MINIMUM_BROKER_SIZE_EXCEEDS_RISK" in decision.reject_codes
+
+
+def test_hedging_cap_is_gross_even_when_net_flat():
+    # LONG 10k + SHORT 10k on hedging is net-flat but consumes margin on
+    # both tickets: the unit cap bounds the GROSS sum, so a further order is
+    # rejected.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(
+            symbol_exposure_units=Decimal(0),
+            symbol_gross_exposure_units=Decimal(10000),
+            requested_quantity=Decimal(2000),
+        ),
     )
     assert not decision.approved
     assert "MINIMUM_BROKER_SIZE_EXCEEDS_RISK" in decision.reject_codes

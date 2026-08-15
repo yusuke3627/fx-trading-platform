@@ -187,8 +187,21 @@ def run_preflight(
 
 
 def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> None:
-    """OPEN min size with SL/TP -> verify protection -> modify SL/TP ->
-    partial REDUCE -> full CLOSE -> history check."""
+    """OPEN volume_min + one step with SL/TP -> verify protection -> modify
+    SL/TP -> partial REDUCE -> full CLOSE -> history check."""
+    # Manual terminal orders carry magic 0: without our own nonzero magic the
+    # cycle could never safely re-identify its positions from deal history.
+    if magic == 0:
+        step(
+            "trade_cycle_open",
+            False,
+            detail=(
+                "refused: a nonzero magic number is required so the cycle can "
+                "always re-identify its own positions"
+            ),
+        )
+        return
+
     # On a netting account an OPEN merges into any existing position on the
     # symbol: the cycle could then neither track its own position nor restore
     # the prior exposure. Require a flat symbol before touching it.
@@ -482,6 +495,18 @@ def _cleanup_leftover_ticket(
     if ticket != "0":
         tickets = [ticket]
     else:
+        if magic == 0:
+            # Manual terminal orders also carry magic 0: re-identification
+            # would risk closing a position the preflight never opened.
+            step(
+                step_name,
+                False,
+                detail=(
+                    "cannot re-identify without a nonzero magic; verify "
+                    "manually that no position remains"
+                ),
+            )
+            return
         tickets = _own_position_tickets_from_history(adapter, symbol, magic, clock)
         if not tickets:
             step(

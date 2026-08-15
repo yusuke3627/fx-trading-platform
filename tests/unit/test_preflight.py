@@ -95,3 +95,12 @@ def test_trade_cycle_skipped_by_default():
     report = run(FakeMT5())
     assert "trade_cycle" not in [s.name for s in report.steps]
     assert "trade_cycle" in [m["name"] for m in report.manual_pending]
+
+
+def test_trade_cycle_requires_nonzero_magic():
+    # Manual terminal orders carry magic 0: without our own magic the cycle
+    # could never safely re-identify its positions.
+    report = run(FakeMT5(margin_mode=2, trade_mode=0), allow_trade_cycle=True)
+    open_step = step(report, "trade_cycle_open")
+    assert open_step.passed is False
+    assert "magic" in (open_step.detail or "")

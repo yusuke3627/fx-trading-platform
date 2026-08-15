@@ -69,6 +69,8 @@ class PreTradeContext:
     snapshots: Sequence[AccountSnapshot]
 
     open_positions_count: int
+    # SIGNED net exposure in units (+long / -short); the netting cap and the
+    # position-cap exemption both depend on the sign.
     symbol_exposure_units: Decimal
 
     event_mode: EventRiskMode
@@ -77,6 +79,9 @@ class PreTradeContext:
     unknown_commands: int
     # HEDGING is the safe default: the position cap then always applies.
     account_mode: AccountMode = AccountMode.HEDGING
+    # Sum of |quantity| across the symbol's tickets. Hedging cap semantics:
+    # offsetting tickets consume margin even when the net is flat.
+    symbol_gross_exposure_units: Decimal = Decimal(0)
     position_mismatch: bool = False
     untracked_fills: int = 0
     duplicate: bool = False
@@ -235,13 +240,18 @@ class RiskEngine:
         )
         if max_units is None:
             return None
-        # Headroom is direction-aware on the SIGNED net exposure: an order
-        # that shrinks |net| (opposite-direction strategy) has more room, not
-        # less. Bound is |net_after_fill| <= max_units.
-        if intent.direction is PositionDirection.LONG:
-            headroom = Decimal(max_units) - ctx.symbol_exposure_units
+        if ctx.account_mode is AccountMode.NETTING:
+            # Netting: one net position. Headroom is direction-aware on the
+            # SIGNED exposure — an order that shrinks |net| has more room,
+            # not less. Bound is |net_after_fill| <= max_units.
+            if intent.direction is PositionDirection.LONG:
+                headroom = Decimal(max_units) - ctx.symbol_exposure_units
+            else:
+                headroom = Decimal(max_units) + ctx.symbol_exposure_units
         else:
-            headroom = Decimal(max_units) + ctx.symbol_exposure_units
+            # Hedging: every ticket adds GROSS exposure (and consumes margin)
+            # even when the net is flat, so the cap bounds the ticket sum.
+            headroom = Decimal(max_units) - ctx.symbol_gross_exposure_units
         allowed = min(allowed, max(headroom, Decimal(0)))
 
         if ctx.event_mode is EventRiskMode.REDUCED:

@@ -40,6 +40,18 @@ def test_ticks_and_latest_tick_respect_clock():
     assert all(t.time <= at(minutes=95) for t in store.ticks("USDJPY", 86400))
 
 
+def test_late_received_tick_hidden_until_reception():
+    clock = FixedClock(at(minutes=2))
+    store = InMemoryMarketData(clock)
+    store.add_tick(
+        make_tick("158.840", "158.844", time=at(minutes=1), received_at=at(minutes=5))
+    )
+    assert store.latest_tick("USDJPY") is None
+
+    clock.advance(minutes=3)
+    assert store.latest_tick("USDJPY") is not None
+
+
 def test_without_clock_everything_is_visible():
     store = loaded_store(None)
     assert len(store.bars("USDJPY", "1h", 10)) == 3

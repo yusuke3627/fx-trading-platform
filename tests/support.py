@@ -51,8 +51,15 @@ def make_tick(
     ask: str,
     time: datetime = T0,
     symbol: str = "USDJPY",
+    received_at: datetime | None = None,
 ) -> Tick:
-    return Tick(symbol=symbol, bid=Decimal(bid), ask=Decimal(ask), time=time)
+    return Tick(
+        symbol=symbol,
+        bid=Decimal(bid),
+        ask=Decimal(ask),
+        time=time,
+        received_at=received_at,
+    )
 
 
 def make_bar(

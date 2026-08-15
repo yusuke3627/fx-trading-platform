@@ -26,7 +26,16 @@ class Tick(BaseModel):
     symbol: str
     bid: Decimal
     ask: Decimal
+    # Broker quote time.
     time: datetime
+    # When WE received the quote (late arrival after a reconnect can be much
+    # later than `time`). Replay visibility uses this: a price is usable only
+    # from the moment it was actually known.
+    received_at: datetime | None = None
+
+    @property
+    def known_time(self) -> datetime:
+        return self.received_at or self.time
 
     @property
     def mid(self) -> Decimal:

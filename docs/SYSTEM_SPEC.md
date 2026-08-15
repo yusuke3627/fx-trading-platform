@@ -80,7 +80,9 @@ daily 0.75% / rolling24h 1.00% / HWM 3.00%）。
 ## Backtest
 
 - Strategy コードは Replay / Live で共有。`datetime.now()` 直接呼び出し禁止（Clock 注入）
-- 可視性: `known_at <= replay_clock.now()`
+- 可視性: `known_at <= replay_clock.now()`。Tick の可視時刻は **受信時刻**
+  （`received_at`、無ければ Broker 時刻）— 遅延受信した価格を Broker 時刻で
+  遡って見せない
 - Execution Simulator は Bid/Ask/Spread/Latency/Slippage/Partial/Reject/Gap/
   Protection Fill を含み、固定スプレッドを持たない。Stress: spread x2/x5/x10、
   fat-tail slippage、reject burst、stop-through

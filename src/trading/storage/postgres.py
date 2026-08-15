@@ -315,7 +315,9 @@ class PostgresEventRepository:
                 "event_type": e.event_type,
                 "source": e.source,
                 "source_uri": e.source_uri,
-                "payload": json.dumps(e.payload, default=str),
+                # Strict dump: EventEnvelope already guarantees JSON-native
+                # payloads, so the round-trip preserves types exactly.
+                "payload": json.dumps(e.payload),
                 "payload_hash": e.payload_hash,
                 "raw_uri": e.raw_uri,
                 "effective_at": e.effective_at,

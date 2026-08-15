@@ -46,6 +46,19 @@ def test_replay_delivers_in_known_at_order_with_clock_advanced():
     assert seen[2][1] == at(minutes=30).isoformat()
 
 
+def test_late_received_tick_is_delivered_at_reception_time():
+    # A quote that arrived late (reconnect) was not usable at its broker
+    # timestamp; replay must deliver it when it was actually received.
+    clock = ReplayClock(T0)
+    engine = ReplayEngine(clock)
+    tick = make_tick(
+        "158.840", "158.844", time=at(minutes=1), received_at=at(minutes=5)
+    )
+    delivered_at: list[str] = []
+    engine.run([tick], lambda item: delivered_at.append(clock.now().isoformat()))
+    assert delivered_at == [at(minutes=5).isoformat()]
+
+
 def test_bar_is_delivered_at_close_time_not_start():
     # A 1h bar's close does not exist at the bar's start; delivering it there
     # would leak one hour of the future into every bar-driven backtest.

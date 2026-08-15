@@ -44,9 +44,10 @@ class ExecutionSimulator:
     """Holds the simulated broker's position book: exits are validated
     against it exactly like a real broker validates them.
 
-    Hedging (default): exits reference a position ticket. Netting: exits are
-    ticketless delta orders and are applied against the symbol's positions on
-    the command's direction side.
+    Hedging (default): exits reference a position ticket. Netting: ticketless
+    orders offset the symbol's opposite-side book (decided by the order side,
+    not the action label) and same-side fills merge into the single net
+    position.
     """
 
     def __init__(

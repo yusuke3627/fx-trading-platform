@@ -36,6 +36,10 @@ def allocate_pro_rata(
     """
     if filled_quantity < 0:
         raise ValueError("filled_quantity must be >= 0")
+    if filled_quantity % volume_step != 0:
+        # Brokers fill in step multiples; silently flooring a misaligned fill
+        # here would drop quantity from the ledger.
+        raise ValueError("filled_quantity must be a multiple of volume_step")
 
     requested: dict[str, Decimal] = {}
     for r in requests:

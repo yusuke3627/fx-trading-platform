@@ -74,6 +74,17 @@ def test_duplicate_strategy_requests_are_aggregated():
     assert result.pending == {}
 
 
+def test_misaligned_fill_rejected():
+    # Brokers fill in step multiples; a misaligned quantity would silently
+    # lose its fraction in the largest-remainder distribution.
+    with pytest.raises(ValueError):
+        allocate_pro_rata(
+            [AllocationRequest("strategy_a", Decimal(3000))],
+            Decimal(1500),
+            volume_step=Decimal(1000),
+        )
+
+
 def test_overfill_rejected():
     with pytest.raises(ValueError):
         allocate_pro_rata(

@@ -76,4 +76,6 @@ class InMemoryMarketData:
         if self._clock is None:
             return ticks
         now = self._clock.now()
-        return [t for t in ticks if t.time <= now]
+        # Visibility follows the reception time: a late-arriving tick was not
+        # usable at its broker timestamp.
+        return [t for t in ticks if t.known_time <= now]

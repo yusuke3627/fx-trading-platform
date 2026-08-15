@@ -7,12 +7,13 @@ backtest can only see what was known at replay time:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EventEnvelope(BaseModel):
@@ -23,7 +24,23 @@ class EventEnvelope(BaseModel):
     source: str
     source_uri: str | None = None
 
+    # JSON-native values only (str/int/float/bool/None/list/dict). Decimals,
+    # datetimes etc. must be converted at the collector boundary: a JSONB
+    # round-trip would otherwise silently change types between live and
+    # replay, violating "same input -> same decision".
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload")
+    @classmethod
+    def _payload_is_json_native(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "payload must contain only JSON-native types; convert Decimals/"
+                "datetimes at the collector boundary"
+            ) from exc
+        return value
     payload_hash: str | None = None
     raw_uri: str | None = None
 

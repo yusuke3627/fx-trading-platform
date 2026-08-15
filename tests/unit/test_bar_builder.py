@@ -113,6 +113,26 @@ def test_tick_received_after_its_own_bucket_closed_never_enters_the_bar():
     assert bar.tick_volume == 1
 
 
+def test_out_of_order_quotes_in_a_bucket_take_open_and_close_from_broker_time():
+    # A reconnect flushes an older quote after a newer one, both still inside
+    # the minute and both known before it closes. High and low do not care
+    # about order, but open and close do: taking them from arrival order
+    # would hand indicators a close that the market printed 30s earlier.
+    builder = BarBuilder("USDJPY", "1m")
+    builder.on_tick(make_tick("158.900", "158.904", time=at(seconds=50)))
+    builder.on_tick(
+        make_tick("158.700", "158.704", time=at(seconds=20), received_at=at(seconds=55))
+    )
+
+    bar = builder.on_tick(make_tick("158.800", "158.804", time=at(minutes=1)))
+    assert bar is not None
+    assert bar.open == Decimal("158.700")  # 00:00:20, received second
+    assert bar.close == Decimal("158.900")  # 00:00:50, received first
+    assert bar.high == Decimal("158.900")
+    assert bar.low == Decimal("158.700")
+    assert bar.tick_volume == 2
+
+
 def test_a_stale_quote_still_closes_a_bucket_that_already_finished():
     # The quote misses its own bar (broker time 00:02:30, received 00:04), so
     # it joins nothing. The 00:00 bar is finished on its own merits though,

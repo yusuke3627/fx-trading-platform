@@ -28,6 +28,11 @@ class _Bucket:
     low: Decimal
     close: Decimal
     tick_volume: int
+    # Broker times of the quotes that currently set open and close. Arrival
+    # order is not price order, so the extremes of the bar are tracked on the
+    # broker timeline rather than assumed from the order ticks came in.
+    first_time: datetime
+    last_time: datetime
 
 
 def _open_bucket(start: datetime, tick: Tick) -> _Bucket:
@@ -38,13 +43,24 @@ def _open_bucket(start: datetime, tick: Tick) -> _Bucket:
         low=tick.bid,
         close=tick.bid,
         tick_volume=1,
+        first_time=tick.time,
+        last_time=tick.time,
     )
 
 
 def _fold(bucket: _Bucket, tick: Tick) -> None:
     bucket.high = max(bucket.high, tick.bid)
     bucket.low = min(bucket.low, tick.bid)
-    bucket.close = tick.bid
+    # A quote that arrives late but timestamps earlier must not become the
+    # close, and one that fills a gap at the front must become the open.
+    # Quotes sharing a broker time fall back to arrival order, matching how
+    # stored ticks are read back (ORDER BY event_time, id).
+    if tick.time >= bucket.last_time:
+        bucket.close = tick.bid
+        bucket.last_time = tick.time
+    if tick.time < bucket.first_time:
+        bucket.open = tick.bid
+        bucket.first_time = tick.time
     bucket.tick_volume += 1
 
 

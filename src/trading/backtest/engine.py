@@ -58,7 +58,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.3.0"
+ENGINE_VERSION = "0.3.1"
 
 
 class ScriptedStrategy(Strategy):
@@ -270,7 +270,6 @@ class BacktestEngine:
         self._mode = account_mode
 
     def run(self, ticks: list[Tick]) -> BacktestResult:
-        symbol = self._spec.symbol
         ordered = sorted(ticks, key=lambda t: t.known_time)
         if not ordered:
             raise ValueError("backtest requires at least one tick")
@@ -300,26 +299,7 @@ class BacktestEngine:
             # Broker events precede strategy evaluation: pending command
             # fills first, then broker-side protection on the same price.
             self._apply_pending(state, w, item)
-            for position in w.simulator.open_positions(symbol):
-                fill = w.simulator.check_protection(position, item)
-                if fill is None:
-                    continue
-                self._settle_close(
-                    state,
-                    w,
-                    ticket=position.position_id,
-                    direction=position.direction,
-                    quantity=fill.quantity,
-                    price=fill.price,
-                    at=fill.broker_time,
-                    mid=item.mid,
-                    action="PROTECTION_CLOSE",
-                    side=fill.side,
-                    origin=fill.origin.value,
-                )
-                state.snapshots.append(
-                    self._snapshot(state, w.simulator, w.clock.now())
-                )
+            self._apply_protection(state, w, item)
 
             envelope = EventEnvelope(
                 event_id=uuid4(),
@@ -332,8 +312,11 @@ class BacktestEngine:
             for signal in signals:
                 self._process_signal(state, w, signal, tick=item)
             # Zero-latency commands created this tick fill on this tick;
-            # anything slower stays queued for a later tick.
+            # anything slower stays queued for a later tick. A position born
+            # here is under broker protection from the instant it exists, so
+            # it is swept on THIS tick too — not only from the next one.
             self._apply_pending(state, w, item)
+            self._apply_protection(state, w, item)
 
             equity = self._equity(state, w.simulator)
             state.high_water_mark = max(state.high_water_mark, equity)
@@ -343,6 +326,33 @@ class BacktestEngine:
             ReplayEngine(w.clock).run(ordered, handle)
 
         return self._result(state, w.simulator)
+
+    def _apply_protection(self, state: _RunState, w: _Wiring, tick: Tick) -> None:
+        """Broker-side SL/TP sweep of the whole book at this tick's price.
+
+        Re-running it after a later batch of fills is safe and required: the
+        check consumes no randomness and is idempotent for a given
+        (position, tick), so a position that survived an earlier sweep cannot
+        fire on a second one at the same price — only positions that did not
+        yet exist can."""
+        for position in w.simulator.open_positions(self._spec.symbol):
+            fill = w.simulator.check_protection(position, tick)
+            if fill is None:
+                continue
+            self._settle_close(
+                state,
+                w,
+                ticket=position.position_id,
+                direction=position.direction,
+                quantity=fill.quantity,
+                price=fill.price,
+                at=fill.broker_time,
+                mid=tick.mid,
+                action="PROTECTION_CLOSE",
+                side=fill.side,
+                origin=fill.origin.value,
+            )
+            state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
 
     def _wire(self, start: datetime) -> _Wiring:
         clock = ReplayClock(start)
@@ -489,7 +499,13 @@ class BacktestEngine:
         """Fill every pending command whose latency window the clock has
         reached, on THIS tick only — state never changes ahead of the clock.
         Loops because a resolved close leg can enqueue a zero-latency
-        follow-up that is itself executable on the same tick."""
+        follow-up that is itself executable on the same tick.
+
+        Each command leaves the queue immediately before its own fill, never
+        as a batch up front: the queue is what tells a held signal that legs
+        are still in flight, and what reserves capacity for approved-but-
+        unfilled entries. Emptying it early lets a multi-ticket exit release
+        held signals — and size a reversal — as if it had already finished."""
         while True:
             ready = [
                 p
@@ -501,7 +517,6 @@ class BacktestEngine:
                 return
             for p in ready:
                 state.pending.remove(p)
-            for p in ready:
                 self._fill_pending(state, w, p, tick)
 
     def _fill_pending(

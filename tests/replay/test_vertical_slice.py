@@ -326,6 +326,66 @@ def test_flip_closes_every_held_ticket():
     assert result.metrics["open_positions_at_end"] == "1"
 
 
+def test_multi_ticket_exit_batch_does_not_release_deferred_early():
+    # Two tickets means the flip queues two EXIT commands that become
+    # executable on the SAME tick. A signal held while they are in flight
+    # must stay held until the LAST leg resolves: released after the first
+    # one, it would target the still-open second ticket with a duplicate
+    # CLOSE and stack a second reversal OPEN on top of the real one.
+    costs = CostModel(latency_ms=2500.0, slippage_sigma_pips=0.0)
+    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    result = run_slice(
+        costs,
+        plan={
+            300: PositionDirection.LONG,
+            500: PositionDirection.LONG,
+            700: PositionDirection.SHORT,
+            701: PositionDirection.SHORT,
+        },
+        risk_config=config,
+    )
+    closes = [f for f in result.fills if f.action == "CLOSE"]
+    short_opens = [
+        f for f in result.fills if f.action == "OPEN" and f.direction == "SHORT"
+    ]
+    short_increases = [
+        f for f in result.fills if f.action == "INCREASE" and f.direction == "SHORT"
+    ]
+    # Both legs of the flip exit on the same tick: the batch the fix is about.
+    assert len(closes) == 2
+    assert len({f.at for f in closes}) == 1
+    assert len(short_opens) == 1
+    # The held signal resolves against the post-reversal book, as an INCREASE.
+    assert len(short_increases) == 1
+    assert result.rejected_commands == 0
+    assert result.risk_rejections == []
+
+
+def test_zero_latency_fill_is_protected_on_the_same_tick():
+    # A broker watches SL/TP from the instant a position exists. With no
+    # latency the entry fills on the signalling tick, and the stop sits
+    # inside the stressed spread, so protection belongs on THAT tick — not
+    # on the next one (nowhere at all, had it been the last tick).
+    # The stop is derived from the UNSTRESSED ask of the signalling tick
+    # while protection compares against the STRESSED bid, so the crossing
+    # condition on this 0.6-pip-spread dataset is
+    #   stop_distance_pips <= 0.3 + 0.3 * spread_multiplier
+    # i.e. 3 <= 3.3 here. No randomness enters that comparison.
+    costs = CostModel(spread_multiplier=10.0, latency_ms=0.0, slippage_sigma_pips=0.0)
+    result = run_slice(
+        costs,
+        count=400,
+        plan={300: PositionDirection.LONG},
+        stop_distance_pips=Decimal(3),
+    )
+    opens = [f for f in result.fills if f.action == "OPEN"]
+    protection = [f for f in result.fills if f.origin == "PROTECTION"]
+    assert len(opens) == 1
+    assert len(protection) == 1
+    assert protection[0].at == opens[0].at
+    assert result.metrics["open_positions_at_end"] == "0"
+
+
 def test_protection_fill_closes_position_and_is_tracked():
     # A tight stop on a random walk fires broker-side protection; the fill
     # is a first-class PROTECTION fill, never an untracked one.

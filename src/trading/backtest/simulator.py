@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -31,6 +31,9 @@ class SimulatedPosition:
     entry_price: Decimal
     stop_loss: Decimal | None
     take_profit: Decimal | None
+    # Broker time of the opening fill: protection never evaluates ticks from
+    # before the position existed.
+    opened_at: datetime
 
 
 @dataclass(frozen=True)
@@ -211,6 +214,7 @@ class ExecutionSimulator:
                 entry_price=price,
                 stop_loss=command.stop_loss_price,
                 take_profit=command.take_profit_price,
+                opened_at=fill_tick.time,
             )
             self._positions[position.position_id] = position
             return SimulationResult(fill=fill, rejected=False, position=position)
@@ -245,6 +249,11 @@ class ExecutionSimulator:
         if held is None:
             return None
         position = held
+        # Reception-ordered replay can deliver a tick whose broker time
+        # predates the position: protection must not fire at a price from
+        # before the position existed.
+        if tick.time < position.opened_at:
+            return None
         pip = self._spec.pip_size
         through = Decimal(str(self._costs.stop_through_pips)) * pip
 

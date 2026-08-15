@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from trading.domain.account import AccountSnapshot
-from trading.domain.event import EventEnvelope
+from trading.domain.event import EventEnvelope, ensure_json_native
 from trading.domain.fill import Fill
 from trading.domain.order import CommandState, ExecutionCommand
 from trading.storage.repository import StaleCommandStateError
@@ -298,6 +298,10 @@ class PostgresEventRepository:
         self._conn = conn
 
     def insert(self, e: EventEnvelope) -> None:
+        # Construction-time validation is not enough: frozen models do not
+        # deep-freeze nested containers, so re-verify right before the JSONB
+        # adaptation to keep the round trip type-exact.
+        ensure_json_native(e.payload)
         self._conn.execute(
             """
             INSERT INTO events (

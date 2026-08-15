@@ -16,10 +16,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-def _ensure_json_native(value: object) -> None:
+def ensure_json_native(value: object) -> None:
     """Reject anything json.dumps would silently coerce (tuples to lists,
     non-str keys to str, NaN/Infinity to invalid JSON): serializable is not
-    enough, the JSONB round-trip must preserve types exactly."""
+    enough, the JSONB round-trip must preserve types exactly.
+
+    Runs at model construction AND again at the persistence boundary —
+    frozen=True does not deep-freeze nested containers, so a payload can be
+    mutated after validation.
+    """
     if value is None or isinstance(value, (bool, int, str)):
         return
     if isinstance(value, float):
@@ -34,11 +39,11 @@ def _ensure_json_native(value: object) -> None:
                 raise ValueError(  # noqa: TRY004
                     f"payload dict keys must be str, got {type(key).__name__}"
                 )
-            _ensure_json_native(item)
+            ensure_json_native(item)
         return
     if isinstance(value, list):
         for item in value:
-            _ensure_json_native(item)
+            ensure_json_native(item)
         return
     raise ValueError(
         f"payload contains non-JSON-native {type(value).__name__}; convert "
@@ -63,7 +68,7 @@ class EventEnvelope(BaseModel):
     @field_validator("payload")
     @classmethod
     def _payload_is_json_native(cls, value: dict[str, Any]) -> dict[str, Any]:
-        _ensure_json_native(value)
+        ensure_json_native(value)
         return value
     payload_hash: str | None = None
     raw_uri: str | None = None

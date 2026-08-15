@@ -158,6 +158,22 @@ def test_protection_fill_received_at_uses_tick_reception():
     assert fill.received_at == at(minutes=2)
 
 
+def test_protection_ignores_late_tick_from_before_open():
+    # A late-received tick whose broker time predates the position must not
+    # fire SL at a price from before the position existed.
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    position = open_long(sim, stop_loss="158.80")
+    late_old = make_tick(
+        "158.790", "158.794", time=at(minutes=-5), received_at=at(minutes=1)
+    )
+    assert sim.check_protection(position, late_old) is None
+    # The position stays on the book; a genuine later cross still fires.
+    fill = sim.check_protection(
+        position, make_tick("158.790", "158.794", time=at(minutes=1))
+    )
+    assert fill is not None
+
+
 def test_protection_never_fires_twice():
     sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
     position = open_long(sim, stop_loss="158.80")
@@ -198,6 +214,7 @@ def test_protection_ignores_unregistered_position():
         entry_price=Decimal("158.90"),
         stop_loss=Decimal("158.80"),
         take_profit=None,
+        opened_at=T0,
     )
     assert sim.check_protection(ghost, make_tick("158.790", "158.794")) is None
 

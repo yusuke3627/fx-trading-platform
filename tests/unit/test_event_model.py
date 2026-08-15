@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.support import T0
-from trading.domain.event import EventEnvelope
+from trading.domain.event import EventEnvelope, ensure_json_native
 
 
 def envelope(payload: dict) -> EventEnvelope:
@@ -52,3 +52,12 @@ def test_non_finite_float_rejected():
     # NaN/Infinity serialize by default but are not valid JSON for JSONB.
     with pytest.raises(ValidationError):
         envelope({"value": float("nan")})
+
+
+def test_persistence_boundary_catches_post_construction_mutation():
+    # frozen=True does not deep-freeze nested containers; the storage layer
+    # re-runs ensure_json_native right before the JSONB adaptation.
+    event = envelope({"amount": 1})
+    event.payload["amount"] = Decimal(1)
+    with pytest.raises(ValueError):
+        ensure_json_native(event.payload)

@@ -206,6 +206,42 @@ def test_netting_exit_without_ticket_applies_to_symbol_book():
     assert closed.position is None
 
 
+def test_netting_open_labelled_buy_offsets_existing_short():
+    # A reducing delta from OMS arrives as BUY with action=OPEN (the intent's
+    # label). Netting must offset the short book, not add a coexisting LONG.
+    sim = ExecutionSimulator(
+        deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING
+    )
+    short = sim.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.SHORT,
+            action=PositionAction.OPEN,
+            quantity="80000",
+        ),
+        [make_tick("158.840", "158.844")],
+    ).position
+    assert short is not None
+
+    result = sim.submit(
+        make_command(
+            side=ExecutionSide.BUY,
+            direction=PositionDirection.LONG,
+            action=PositionAction.OPEN,
+            quantity="20000",
+        ),
+        [make_tick("158.840", "158.844")],
+    )
+    assert result.fill is not None and result.fill.quantity == Decimal(20000)
+    remaining = sim.position(short.position_id)
+    assert remaining is not None
+    assert remaining.direction is PositionDirection.SHORT
+    assert remaining.quantity == Decimal(60000)
+    # No LONG was created: the returned position is the reduced SHORT.
+    assert result.position is not None
+    assert result.position.direction is PositionDirection.SHORT
+
+
 def test_netting_exit_with_empty_book_does_not_execute():
     sim = ExecutionSimulator(
         deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING

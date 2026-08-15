@@ -96,24 +96,37 @@ class ExecutionSimulator:
 
         opening = command.action in (PositionAction.OPEN, PositionAction.INCREASE)
         book: list[SimulatedPosition] = []
-        if not opening:
-            ticket = command.broker_position_ticket
-            if ticket:
-                held = self._positions.get(ticket)
+        if command.broker_position_ticket:
+            if not opening:
+                held = self._positions.get(command.broker_position_ticket)
                 book = [held] if held is not None else []
-            elif self._mode is AccountMode.NETTING:
-                # Ticketless netting exit: delta applies to the symbol's
-                # exposure on the command's direction side.
-                book = [
-                    p
-                    for p in self._positions.values()
-                    if p.symbol == command.symbol
-                    and p.direction is command.direction
-                ]
-            if not book:
-                # Nothing to exit (e.g. protection closed it first): the
-                # order does not execute.
+                if not book:
+                    # The referenced position no longer exists (e.g.
+                    # protection closed it first): the order does not execute.
+                    return SimulationResult(fill=None, rejected=True, position=None)
+        elif self._mode is AccountMode.NETTING:
+            # Netting holds one net exposure per symbol: whether an order
+            # adds or offsets is decided by the order side against the book's
+            # side, never by the intent's action label. An OPEN-labelled BUY
+            # against a short book reduces it, exactly as the broker would.
+            offset_side = (
+                PositionDirection.SHORT
+                if command.side is ExecutionSide.BUY
+                else PositionDirection.LONG
+            )
+            book = [
+                p
+                for p in self._positions.values()
+                if p.symbol == command.symbol and p.direction is offset_side
+            ]
+            if book:
+                opening = False
+            elif not opening:
+                # Exit with nothing to offset does not execute.
                 return SimulationResult(fill=None, rejected=True, position=None)
+        elif not opening:
+            # Hedging exit without a position ticket never executes.
+            return SimulationResult(fill=None, rejected=True, position=None)
 
         price = self._execution_price(fill_tick, command.side)
 

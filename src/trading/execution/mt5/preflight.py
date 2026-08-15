@@ -334,20 +334,40 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     if fresh is None:
         step("trade_cycle_close", False, detail="position vanished before close")
         return
-    close_request = mapper.market_order_request(
-        symbol=symbol,
-        side=ExecutionSide.SELL,
-        units=fresh.quantity,
-        spec=spec,
-        position_ticket=fresh.broker_position_ticket,
-        magic=magic,
-        comment="preflight-close",
-    )
-    close_result = adapter.order_send(close_request)
+    # A CLOSE can itself fill partially (DONE_PARTIAL): keep closing until
+    # the fresh select confirms the position is gone, so the preflight never
+    # leaves exposure on the demo account.
+    last_retcode = None
+    for _ in range(4):
+        if fresh is None:
+            break
+        close_result = adapter.order_send(
+            mapper.market_order_request(
+                symbol=symbol,
+                side=ExecutionSide.SELL,
+                units=fresh.quantity,
+                spec=spec,
+                position_ticket=fresh.broker_position_ticket,
+                magic=magic,
+                comment="preflight-close",
+            )
+        )
+        last_retcode = getattr(close_result, "retcode", None)
+        if last_retcode not in (
+            mapper.TRADE_RETCODE_DONE,
+            mapper.TRADE_RETCODE_DONE_PARTIAL,
+        ):
+            break
+        fresh = adapter.position(position.broker_position_ticket)
+    flat = fresh is None
     step(
         "trade_cycle_close",
-        close_result is not None and close_result.retcode == mapper.TRADE_RETCODE_DONE,
-        {"retcode": getattr(close_result, "retcode", None), "closed_units": str(fresh.quantity)},
+        flat,
+        {
+            "retcode": last_retcode,
+            "leftover_units": "0" if flat else str(fresh.quantity),
+        },
+        None if flat else "position not fully closed; leftover remains on the demo account",
     )
 
     deals = adapter.history_deals(

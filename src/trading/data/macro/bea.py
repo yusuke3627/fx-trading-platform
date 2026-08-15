@@ -19,8 +19,11 @@ from trading.domain.economic import EconomicObservation
 SOURCE_BEA = "BEA"
 DATA_URL = "https://apps.bea.gov/api/data/"
 
-# T10111: percent change from preceding period in real GDP; line 1 is GDP.
-NIPA_TABLE = "T10111"
+# T10101 is NIPA table 1.1.1 (percent change from preceding period, SAAR);
+# line 1 is GDP. Not T10111: that is table 1.1.11, percent change from quarter
+# one year ago — a different series than ALFRED's A191RL1Q225SBEA vintages
+# (confirmed live 2026-08-16: T10101 matches the latest vintages exactly).
+NIPA_TABLE = "T10101"
 GDP_LINE_NUMBER = "1"
 
 

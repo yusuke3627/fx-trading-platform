@@ -200,18 +200,21 @@ def test_timeframes_hanging_off_the_broker_session_anchor_are_refused():
         assert BarBuilder("USDJPY", timeframe).on_tick(make_tick("158.840", "158.844")) is None
 
 
-def test_tick_known_exactly_at_its_bucket_close_still_counts():
-    # Visibility is `<=`: a quote known at the closing instant was knowable
-    # to anyone reading the bar at that instant, so it belongs to it.
+def test_tick_known_exactly_at_its_bucket_close_joins_it_and_closes_it():
+    # Visibility is `<=`, so a quote known at the closing instant belongs to
+    # the bar; that same instant is also when the bar's end is reached, so it
+    # is published straight away instead of waiting for another tick.
     builder = BarBuilder("USDJPY", "1m")
     builder.on_tick(make_tick("158.840", "158.844", time=T0))
-    builder.on_tick(
+
+    bar = builder.on_tick(
         make_tick("158.900", "158.904", time=at(seconds=30), received_at=at(minutes=1))
     )
-    bar = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=1, seconds=1)))
     assert bar is not None
     assert bar.high == Decimal("158.900")
     assert bar.tick_volume == 2
+
+    assert builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=1, seconds=1))) is None
 
 
 def test_trailing_incomplete_bucket_is_never_published():

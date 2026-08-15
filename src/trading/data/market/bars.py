@@ -120,12 +120,13 @@ class BarBuilder:
             # have traded on.
             return None
         if start == bucket.start:
+            # Same bucket: the quote joins the bar when it was known by the
+            # close, and the bar is published once its end is known to have
+            # been reached. A quote known exactly at the close does both.
             if fresh:
                 _fold(bucket, tick)
+            if tick.known_time < bucket.start + timedelta(seconds=self._seconds):
                 return None
-            # Known only after this very bucket closed, so it cannot join the
-            # bar — but it is proof the bar ended, and withholding a finished
-            # candle because of a late arrival is what a strategy would feel.
             self._bucket = None
             return self._to_bar(bucket)
         if tick.known_time < bucket.start + timedelta(seconds=self._seconds):

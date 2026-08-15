@@ -64,6 +64,9 @@ class BrokerDeal(BaseModel):
 
     reason_code: int | None = None
     protection_reason: ProtectionReason | None = None
+    # Expert-advisor magic number of the originating order, when the broker
+    # exposes it: lets tooling re-identify its own deals.
+    magic: int | None = None
 
     side: ExecutionSide
     quantity: Decimal

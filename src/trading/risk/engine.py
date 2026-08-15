@@ -18,7 +18,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from trading.backtest.clock import Clock
-from trading.domain.account import AccountSnapshot
+from trading.domain.account import AccountMode, AccountSnapshot
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.market import Tick
@@ -75,6 +75,8 @@ class PreTradeContext:
     kill_switch: KillSwitchLevel
 
     unknown_commands: int
+    # HEDGING is the safe default: the position cap then always applies.
+    account_mode: AccountMode = AccountMode.HEDGING
     position_mismatch: bool = False
     untracked_fills: int = 0
     duplicate: bool = False
@@ -158,13 +160,17 @@ class RiskEngine:
                 )
 
             if intent.action is PositionAction.OPEN:
-                # A netting OPEN that shrinks |net| (opposite direction to
-                # the current signed exposure) does not add a broker
-                # position; counting it against the cap would block the very
-                # delta OMS is allowed to build.
-                reduces_net = ctx.symbol_exposure_units != 0 and (
-                    (ctx.symbol_exposure_units > 0)
-                    != (intent.direction is PositionDirection.LONG)
+                # ONLY on a netting account does an opposite-direction OPEN
+                # offset the existing exposure instead of adding a broker
+                # position. On hedging it opens a separate ticket, so the cap
+                # must always apply there.
+                reduces_net = (
+                    ctx.account_mode is AccountMode.NETTING
+                    and ctx.symbol_exposure_units != 0
+                    and (
+                        (ctx.symbol_exposure_units > 0)
+                        != (intent.direction is PositionDirection.LONG)
+                    )
                 )
                 if not reduces_net:
                     check(

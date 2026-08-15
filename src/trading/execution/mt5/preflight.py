@@ -238,7 +238,7 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     step("trade_cycle_open", opened, {"retcode": retcode})
     if not opened:
         _cleanup_leftover_position(
-            adapter, spec, symbol, magic, result, step, "trade_cycle_cleanup"
+            adapter, spec, symbol, magic, result, clock, step, "trade_cycle_cleanup"
         )
         return
 
@@ -258,7 +258,7 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         # The order DID succeed: whatever it created must not stay open just
         # because identification failed.
         _cleanup_leftover_ticket(
-            adapter, spec, symbol, magic, order_ticket, step, "trade_cycle_cleanup"
+            adapter, spec, symbol, magic, order_ticket, clock, step, "trade_cycle_cleanup"
         )
         step(
             "trade_cycle_protection_verify",
@@ -416,26 +416,40 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
 
 
 def _cleanup_leftover_position(
-    adapter, spec, symbol: str, magic: int, result, step, step_name: str
+    adapter, spec, symbol: str, magic: int, result, clock: Clock, step, step_name: str
 ) -> None:
     ticket = str(getattr(result, "order", 0) or 0) if result is not None else "0"
-    _cleanup_leftover_ticket(adapter, spec, symbol, magic, ticket, step, step_name)
+    _cleanup_leftover_ticket(adapter, spec, symbol, magic, ticket, clock, step, step_name)
 
 
-def _cleanup_leftover_ticket(
-    adapter, spec, symbol: str, magic: int, ticket: str, step, step_name: str
-) -> None:
-    """A failed or partial order may still have left a position on the demo
-    account; keep closing until a fresh select confirms it is gone. A cleanup
-    that leaves exposure is itself a failure, never a silent success."""
-    if ticket == "0":
-        return
+def _own_position_tickets_from_history(
+    adapter, symbol: str, magic: int, clock: Clock
+) -> list[str]:
+    """Re-identify positions this preflight created via its own magic number
+    in recent deals — the safe lookup when the broker result lacks an order
+    id (a foreign position can never match our magic)."""
+    deals = adapter.history_deals(
+        clock.now() - timedelta(minutes=10), clock.now() + timedelta(minutes=1)
+    )
+    return sorted(
+        {
+            d.broker_position_identifier
+            for d in deals
+            if d.magic == magic and d.broker_position_identifier
+        }
+    )
+
+
+def _close_until_flat(adapter, spec, symbol: str, magic: int, ticket: str):
+    """Close one ticket until a fresh select confirms it is gone. Returns
+    (leftover, found): leftover is the still-open position on failure."""
     leftover = adapter.position(ticket)
-    if leftover is None:
-        return
+    if leftover is None or leftover.symbol != symbol:
+        return None, False
     for _ in range(4):
         if leftover is None:
-            break
+            return None, True
+        # All preflight opens are BUY, so cleanup always sells.
         close_result = adapter.order_send(
             mapper.market_order_request(
                 symbol=symbol,
@@ -454,11 +468,46 @@ def _cleanup_leftover_ticket(
         ):
             break
         leftover = adapter.position(ticket)
-    flat = leftover is None
+    return leftover, True
+
+
+def _cleanup_leftover_ticket(
+    adapter, spec, symbol: str, magic: int, ticket: str, clock: Clock, step, step_name: str
+) -> None:
+    """A failed or partial order may still have left a position on the demo
+    account; keep closing until a fresh select confirms it is gone. A cleanup
+    that leaves exposure is itself a failure, never a silent success. With no
+    order id in the result, own positions are re-identified from recent deals
+    (magic) instead of being abandoned."""
+    if ticket != "0":
+        tickets = [ticket]
+    else:
+        tickets = _own_position_tickets_from_history(adapter, symbol, magic, clock)
+        if not tickets:
+            step(
+                step_name,
+                True,
+                detail="no own position found via magic re-identification",
+            )
+            return
+    leftovers = []
+    found_any = False
+    for candidate in tickets:
+        leftover, found = _close_until_flat(adapter, spec, symbol, magic, candidate)
+        found_any = found_any or found
+        if leftover is not None:
+            leftovers.append(leftover)
+    if not found_any:
+        return
+    flat = not leftovers
     step(
         step_name,
         flat,
-        {"leftover_units": "0" if flat else str(leftover.quantity)},
+        {
+            "leftover_units": (
+                "0" if flat else str(sum((p.quantity for p in leftovers), Decimal(0)))
+            )
+        },
         None if flat else "cleanup failed: leftover position remains on the demo account",
     )
 
@@ -501,7 +550,7 @@ def _protection_fill_probe(
     ):
         step("trade_cycle_protection_fill", False, {"retcode": probe_retcode})
         _cleanup_leftover_position(
-            adapter, spec, symbol, magic, result, step, "trade_cycle_protection_cleanup"
+            adapter, spec, symbol, magic, result, clock, step, "trade_cycle_protection_cleanup"
         )
         return
     ticket = str(getattr(result, "order", 0) or 0)
@@ -531,7 +580,7 @@ def _protection_fill_probe(
 
     if not fired:
         _cleanup_leftover_ticket(
-            adapter, spec, symbol, magic, ticket, step, "trade_cycle_protection_cleanup"
+            adapter, spec, symbol, magic, ticket, clock, step, "trade_cycle_protection_cleanup"
         )
         step(
             "trade_cycle_protection_fill",

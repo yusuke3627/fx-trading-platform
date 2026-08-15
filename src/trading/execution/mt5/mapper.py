@@ -218,6 +218,7 @@ def deal_from_raw(raw: Any, contract_size: Decimal) -> BrokerDeal:
         ),
         reason_code=reason,
         protection_reason=protection_reason_from(reason),
+        magic=int(raw.magic) if hasattr(raw, "magic") else None,
         side=side,
         quantity=lots_to_units(raw.volume, contract_size),
         price=Decimal(str(raw.price)),

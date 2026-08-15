@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from tests.support import T0, FixedClock, at, make_intent, make_snapshot, make_tick, usdjpy_spec
+from trading.domain.account import AccountMode
 from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
@@ -148,9 +149,24 @@ def test_execution_disabled_blocks_all_orders_including_exits():
     assert "EXECUTION_ENABLED" in decision.reject_codes
 
 
-def test_net_reducing_open_not_blocked_by_position_cap():
-    # max_open_positions=1 with one SHORT held: a LONG that shrinks |net|
-    # adds no broker position and must not be rejected by the cap.
+def test_netting_net_reducing_open_not_blocked_by_position_cap():
+    # NETTING with max_open_positions=1 and a SHORT book: a LONG that shrinks
+    # |net| adds no broker position and must not be rejected by the cap.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(
+            open_positions_count=1,
+            symbol_exposure_units=Decimal(-10000),
+            requested_quantity=Decimal(2000),
+            account_mode=AccountMode.NETTING,
+        ),
+    )
+    assert decision.approved, decision.reject_codes
+
+
+def test_hedging_opposite_direction_still_counts_against_cap():
+    # On HEDGING the opposite-direction OPEN is a separate ticket: the cap
+    # applies regardless of the net direction.
     decision = engine(enabled_config()).evaluate(
         make_intent(direction=PositionDirection.LONG),
         make_context(
@@ -159,7 +175,8 @@ def test_net_reducing_open_not_blocked_by_position_cap():
             requested_quantity=Decimal(2000),
         ),
     )
-    assert decision.approved, decision.reject_codes
+    assert not decision.approved
+    assert "MAX_OPEN_POSITIONS" in decision.reject_codes
 
 
 def test_opposite_direction_order_headroom_allows_net_reduction():

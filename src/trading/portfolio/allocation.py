@@ -28,36 +28,41 @@ def allocate_pro_rata(
     volume_step: Decimal = Decimal(1),
 ) -> AllocationResult:
     """Pro-rata allocation quantized to volume_step, deterministic by
-    largest-remainder then strategy_id ordering."""
+    largest-remainder then strategy_id ordering.
+
+    Requests sharing a strategy_id are aggregated first — a dict keyed by id
+    would otherwise let a later request overwrite an earlier one while the
+    total still counted both, silently losing filled quantity.
+    """
     if filled_quantity < 0:
         raise ValueError("filled_quantity must be >= 0")
-    total = sum((r.quantity for r in requests), Decimal(0))
+
+    requested: dict[str, Decimal] = {}
+    for r in requests:
+        requested[r.strategy_id] = requested.get(r.strategy_id, Decimal(0)) + r.quantity
+
+    total = sum(requested.values(), Decimal(0))
     if total <= 0:
         raise ValueError("total requested quantity must be > 0")
     if filled_quantity > total:
         raise ValueError("filled quantity exceeds requested total")
 
-    ordered = sorted(requests, key=lambda r: r.strategy_id)
+    ordered_ids = sorted(requested)
 
-    raw = {r.strategy_id: filled_quantity * r.quantity / total for r in ordered}
-    floored = {
-        sid: (value // volume_step) * volume_step for sid, value in raw.items()
-    }
+    raw = {sid: filled_quantity * requested[sid] / total for sid in ordered_ids}
+    floored = {sid: (value // volume_step) * volume_step for sid, value in raw.items()}
     remainder_steps = int(
         (filled_quantity - sum(floored.values(), Decimal(0))) / volume_step
     )
 
-    by_fraction = sorted(
-        ordered,
-        key=lambda r: (-(raw[r.strategy_id] - floored[r.strategy_id]), r.strategy_id),
-    )
+    by_fraction = sorted(ordered_ids, key=lambda sid: (-(raw[sid] - floored[sid]), sid))
     allocated = dict(floored)
-    for r in by_fraction[:remainder_steps]:
-        allocated[r.strategy_id] += volume_step
+    for sid in by_fraction[:remainder_steps]:
+        allocated[sid] += volume_step
 
     pending = {
-        r.strategy_id: r.quantity - allocated[r.strategy_id]
-        for r in ordered
-        if r.quantity - allocated[r.strategy_id] > 0
+        sid: requested[sid] - allocated[sid]
+        for sid in ordered_ids
+        if requested[sid] - allocated[sid] > 0
     }
     return AllocationResult(filled=allocated, pending=pending)

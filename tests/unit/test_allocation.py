@@ -59,6 +59,21 @@ def test_remainder_assignment_is_deterministic():
     }
 
 
+def test_duplicate_strategy_requests_are_aggregated():
+    # Two requests from one strategy must not overwrite each other while the
+    # total still counts both — that would silently lose filled quantity.
+    result = allocate_pro_rata(
+        [
+            AllocationRequest("strategy_a", Decimal(100)),
+            AllocationRequest("strategy_a", Decimal(100)),
+        ],
+        Decimal(200),
+        volume_step=Decimal(100),
+    )
+    assert result.filled == {"strategy_a": Decimal(200)}
+    assert result.pending == {}
+
+
 def test_overfill_rejected():
     with pytest.raises(ValueError):
         allocate_pro_rata(

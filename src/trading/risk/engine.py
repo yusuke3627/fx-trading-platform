@@ -97,7 +97,10 @@ class RiskEngine:
             checks.append(RiskCheck(name=name, passed=passed, detail=detail))
 
         # System-state checks apply to every order, exits included.
+        # execution_enabled=False signals a broken execution path (account
+        # mode mismatch etc.); building even an exit there mishandles tickets.
         check("BROKER_CONNECTED", ctx.broker_connected)
+        check("EXECUTION_ENABLED", ctx.execution_enabled)
         check(
             "KILL_SWITCH_ALLOWS_ORDER",
             ctx.kill_switch is not KillSwitchLevel.EMERGENCY
@@ -111,7 +114,6 @@ class RiskEngine:
 
         if opening:
             check("TRADING_ENABLED", cfg.trading_enabled)
-            check("EXECUTION_ENABLED", ctx.execution_enabled)
             check("EVENT_MODE_ALLOWS_ENTRY", ctx.event_mode is not EventRiskMode.HALT)
 
             # These halts stop NEW risk only. Blocking exits as well would
@@ -156,11 +158,20 @@ class RiskEngine:
                 )
 
             if intent.action is PositionAction.OPEN:
-                check(
-                    "MAX_OPEN_POSITIONS",
-                    ctx.open_positions_count < cfg.max_open_positions,
-                    f"open={ctx.open_positions_count} max={cfg.max_open_positions}",
+                # A netting OPEN that shrinks |net| (opposite direction to
+                # the current signed exposure) does not add a broker
+                # position; counting it against the cap would block the very
+                # delta OMS is allowed to build.
+                reduces_net = ctx.symbol_exposure_units != 0 and (
+                    (ctx.symbol_exposure_units > 0)
+                    != (intent.direction is PositionDirection.LONG)
                 )
+                if not reduces_net:
+                    check(
+                        "MAX_OPEN_POSITIONS",
+                        ctx.open_positions_count < cfg.max_open_positions,
+                        f"open={ctx.open_positions_count} max={cfg.max_open_positions}",
+                    )
 
             check(
                 "DAILY_LOSS_WITHIN_LIMIT",

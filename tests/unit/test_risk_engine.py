@@ -137,6 +137,31 @@ def test_incident_state_does_not_block_exits():
     assert decision.approved, decision.reject_codes
 
 
+def test_execution_disabled_blocks_all_orders_including_exits():
+    # execution_enabled=False signals a broken execution path (e.g. account
+    # mode mismatch); even exits must not be built there.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(action=PositionAction.CLOSE),
+        make_context(execution_enabled=False),
+    )
+    assert not decision.approved
+    assert "EXECUTION_ENABLED" in decision.reject_codes
+
+
+def test_net_reducing_open_not_blocked_by_position_cap():
+    # max_open_positions=1 with one SHORT held: a LONG that shrinks |net|
+    # adds no broker position and must not be rejected by the cap.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(
+            open_positions_count=1,
+            symbol_exposure_units=Decimal(-10000),
+            requested_quantity=Decimal(2000),
+        ),
+    )
+    assert decision.approved, decision.reject_codes
+
+
 def test_opposite_direction_order_headroom_allows_net_reduction():
     # At the SHORT cap, a LONG order shrinks |net| and must not be blocked.
     decision = engine(enabled_config()).evaluate(

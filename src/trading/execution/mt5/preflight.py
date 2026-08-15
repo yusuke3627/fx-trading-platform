@@ -246,12 +246,27 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     # Select exactly that position: guessing (e.g. "latest position on the
     # symbol") could touch a pre-existing position the cycle did not open.
     order_ticket = str(getattr(result, "order", 0) or 0)
-    position = adapter.position(order_ticket) if order_ticket != "0" else None
+    position = None
+    if order_ticket != "0":
+        # The position can be transiently invisible right after the fill.
+        for _ in range(3):
+            position = adapter.position(order_ticket)
+            if position is not None:
+                break
+            time.sleep(1)
     if position is None:
+        # The order DID succeed: whatever it created must not stay open just
+        # because identification failed.
+        _cleanup_leftover_ticket(
+            adapter, spec, symbol, magic, order_ticket, step, "trade_cycle_cleanup"
+        )
         step(
             "trade_cycle_protection_verify",
             False,
-            detail="opened position not identified from order ticket; refusing to guess",
+            detail=(
+                "opened position not identified from order ticket; cleanup "
+                "attempted — verify manually that no position remains"
+            ),
         )
         return
     # Both SL and TP must come back as stored values from a fresh select —
@@ -496,7 +511,14 @@ def _protection_fill_probe(
 
     # Deals reference the lifecycle identifier, so capture it while the
     # position still exists (identifier == opening order ticket as fallback).
-    probed = adapter.position(ticket)
+    # Retry: an empty select right after the fill can be transient, and
+    # mistaking it for "SL fired" would skip the wait loop.
+    probed = None
+    for _ in range(3):
+        probed = adapter.position(ticket)
+        if probed is not None:
+            break
+        time.sleep(1)
     identifier = probed.broker_position_identifier if probed is not None else ticket
 
     deadline = time.monotonic() + wait_seconds

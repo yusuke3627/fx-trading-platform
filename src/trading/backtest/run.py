@@ -13,6 +13,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -71,7 +72,10 @@ def main() -> None:
     config = load_config(args.env)
     seed = args.seed if args.seed is not None else config.simulator.seed
     scenario = args.scenario or config.simulator.scenario
-    costs = STRESS_SCENARIOS[scenario]
+    # The configured latency must actually reach the simulator: the manifest
+    # hashes the config, so a run must not LOOK latency-adjusted without
+    # being it.
+    costs = replace(STRESS_SCENARIOS[scenario], latency_ms=config.simulator.latency_ms)
     symbol = config.market.primary_instruments[0]
     spec = synthetic_usdjpy_spec(symbol)
 
@@ -88,7 +92,7 @@ def main() -> None:
         spec=spec,
         costs=costs,
         seed=seed,
-        strategy=ScriptedStrategy(plan),
+        strategy_factory=lambda: ScriptedStrategy(plan),
         strategy_config=StrategyConfig(
             strategy_id=ScriptedStrategy.strategy_id,
             enabled=True,

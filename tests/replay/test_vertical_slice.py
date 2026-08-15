@@ -7,7 +7,7 @@ The first acceptance criterion of the backtest system is NOT profitability:
 3. The full order lifecycle (OPEN -> ticket-referenced CLOSE -> reversal
    OPEN, protection fills) flows through Risk -> OMS -> Simulator -> Ledger.
 """
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from tests.support import usdjpy_spec
@@ -34,6 +34,35 @@ def slice_risk_config() -> RiskConfig:
     )
 
 
+def build_engine(
+    costs: CostModel,
+    *,
+    seed: int = 7,
+    plan: dict[int, PositionDirection] | None = None,
+    stop_distance_pips: Decimal = Decimal(200),
+    risk_config: RiskConfig | None = None,
+) -> BacktestEngine:
+    resolved_plan = (
+        plan
+        if plan is not None
+        else {300: PositionDirection.LONG, 1200: PositionDirection.SHORT}
+    )
+    return BacktestEngine(
+        risk_config=risk_config if risk_config is not None else slice_risk_config(),
+        spec=usdjpy_spec(),
+        costs=costs,
+        seed=seed,
+        strategy_factory=lambda: ScriptedStrategy(
+            resolved_plan, stop_distance_pips=stop_distance_pips
+        ),
+        strategy_config=StrategyConfig(
+            strategy_id=ScriptedStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+        ),
+    )
+
+
 def run_slice(
     costs: CostModel,
     *,
@@ -41,25 +70,17 @@ def run_slice(
     count: int = 2000,
     plan: dict[int, PositionDirection] | None = None,
     stop_distance_pips: Decimal = Decimal(200),
+    risk_config: RiskConfig | None = None,
 ) -> BacktestResult:
-    spec = usdjpy_spec()
-    ticks = synthetic_ticks(spec=spec, start=DATASET_START, count=count, seed=seed)
-    engine = BacktestEngine(
-        risk_config=slice_risk_config(),
-        spec=spec,
-        costs=costs,
+    ticks = synthetic_ticks(
+        spec=usdjpy_spec(), start=DATASET_START, count=count, seed=seed
+    )
+    engine = build_engine(
+        costs,
         seed=seed,
-        strategy=ScriptedStrategy(
-            plan
-            if plan is not None
-            else {300: PositionDirection.LONG, 1200: PositionDirection.SHORT},
-            stop_distance_pips=stop_distance_pips,
-        ),
-        strategy_config=StrategyConfig(
-            strategy_id=ScriptedStrategy.strategy_id,
-            enabled=True,
-            instruments=["USDJPY"],
-        ),
+        plan=plan,
+        stop_distance_pips=stop_distance_pips,
+        risk_config=risk_config,
     )
     return engine.run(ticks)
 
@@ -73,6 +94,28 @@ def test_same_dataset_config_seed_reproduces_identical_runs():
         assert other.metrics == base.metrics
         assert other.equity_curve == base.equity_curve
         assert other.risk_rejections == base.risk_rejections
+
+
+def test_rerunning_the_same_engine_instance_is_deterministic():
+    # Strategies hold per-run state (tick counters, setup memos); the engine
+    # builds them from a factory so a reused engine cannot leak state.
+    ticks = synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=2000, seed=7)
+    engine = build_engine(STRESS_SCENARIOS["normal"])
+    first = engine.run(ticks)
+    second = engine.run(ticks)
+    assert second.fills == first.fills
+    assert second.metrics == first.metrics
+
+
+def test_fills_never_apply_ahead_of_the_replay_clock():
+    # With 150ms latency and 1s ticks the OPEN signalled at ordinal 300
+    # fills on tick 301 — and equity must not move before that tick: a fill
+    # applied at signal time would leak the future into snapshots and sizing.
+    result = run_slice(STRESS_SCENARIOS["normal"])
+    initial = Decimal(result.metrics["initial_equity"])
+    assert result.fills[0].at == DATASET_START + timedelta(seconds=301)
+    assert all(equity == initial for _, equity in result.equity_curve[:301])
+    assert result.equity_curve[301][1] != initial
 
 
 def test_dataset_hash_is_stable_and_seed_sensitive():
@@ -138,6 +181,29 @@ def test_partial_exit_keeps_remainder_tracked():
         + Decimal(result.metrics["realized_pnl"])
         + Decimal(result.metrics["unrealized_pnl"])
     )
+
+
+def test_flip_closes_every_held_ticket():
+    # With the cap raised, a second same-direction signal INCREASEs via a
+    # second hedging ticket; the flip must close BOTH tickets before the
+    # reversal opens, not just the latest one.
+    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    result = run_slice(
+        STRESS_SCENARIOS["normal"],
+        plan={
+            300: PositionDirection.LONG,
+            500: PositionDirection.LONG,
+            1200: PositionDirection.SHORT,
+        },
+        risk_config=config,
+    )
+    closes = [f for f in result.fills if f.action == "CLOSE"]
+    assert len(closes) == 2
+    assert all(f.direction == "LONG" and f.side == "SELL" for f in closes)
+    reversal = [f for f in result.fills if f.action == "OPEN" and f.direction == "SHORT"]
+    assert reversal, "reversal OPEN must execute once every leg is flat"
+    assert result.risk_rejections == []
+    assert result.metrics["open_positions_at_end"] == "1"
 
 
 def test_protection_fill_closes_position_and_is_tracked():

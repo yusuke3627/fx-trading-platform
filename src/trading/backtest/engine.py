@@ -11,15 +11,20 @@ the acceptance criteria are determinism (same dataset + config + seed ->
 identical fills, PnL and metrics) and cost sensitivity (worse spread/slippage
 must worsen net PnL).
 
-Simplifications vs live, by design of the slice: fills are applied
-synchronously at decision time (no outbox/worker asynchronicity) with the
-simulator's fill timestamp recorded, there is no swap accrual, and open
-positions at the end of the replay are marked to market instead of being
-force-closed.
+Commands never fill ahead of the clock: an approved command waits in a
+pending queue until the replay reaches a tick at or past its latency window,
+and only that tick's fill mutates the book, the ledger and equity. Follow-up
+intents of a flip (the reversal OPEN) are risk-evaluated only after every
+close leg resolved — the OMS re-delta convention, collapsed to the slice.
+
+Simplifications vs live, by design: no outbox/worker processes, no swap
+accrual, and open positions at the end of the replay are marked to market
+instead of being force-closed.
 """
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -35,7 +40,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.market import Bar, Tick
-from trading.domain.order import ExecutionSide
+from trading.domain.order import ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.domain.signal import StrategySignal
@@ -53,7 +58,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.2.0"
 
 
 class ScriptedStrategy(Strategy):
@@ -163,6 +168,26 @@ class BacktestResult:
 
 
 @dataclass
+class _Barrier:
+    """Fires the follow-up intents once every close leg of a flip resolved."""
+
+    remaining: int
+    follow_up: list[PositionIntent]
+    signal: StrategySignal
+
+
+@dataclass
+class _Pending:
+    """A risk-approved command waiting for the clock to reach its fill."""
+
+    command: ExecutionCommand
+    strategy_id: str
+    action: str
+    kind: str  # "ENTRY" | "EXIT"
+    barrier: _Barrier | None = None
+
+
+@dataclass
 class _RunState:
     initial_equity: Decimal
     realized: Decimal = Decimal(0)
@@ -172,11 +197,13 @@ class _RunState:
     equity_curve: list[tuple[datetime, Decimal]] = field(default_factory=list)
     risk_rejections: list[tuple[datetime, tuple[str, ...]]] = field(default_factory=list)
     rejected_commands: int = 0
-    # ticket -> owning strategy / entry marks for PnL attribution.
+    pending: list[_Pending] = field(default_factory=list)
+    # ticket -> owning strategy / entry marks for PnL attribution; a strategy
+    # can hold several tickets (INCREASE opens a new one on hedging).
     ticket_owner: dict[str, str] = field(default_factory=dict)
     entry_price: dict[str, Decimal] = field(default_factory=dict)
     entry_mid: dict[str, Decimal] = field(default_factory=dict)
-    open_ticket: dict[tuple[str, str], str] = field(default_factory=dict)
+    open_tickets: dict[tuple[str, str], list[str]] = field(default_factory=dict)
     gross_mid_closed: Decimal = Decimal(0)
 
 
@@ -201,6 +228,7 @@ class _Wiring:
     ledger: VirtualPositionLedger
     portfolio: PortfolioManager
     risk: RiskEngine
+    strategy: Strategy
     context: StrategyContext
 
 
@@ -212,7 +240,7 @@ class BacktestEngine:
         spec: InstrumentSpec,
         costs: CostModel,
         seed: int,
-        strategy: Strategy,
+        strategy_factory: Callable[[], Strategy],
         strategy_config: StrategyConfig,
         initial_equity: Decimal = Decimal(1_000_000),
         account_mode: AccountMode = AccountMode.HEDGING,
@@ -223,7 +251,9 @@ class BacktestEngine:
         self._spec = spec
         self._costs = costs
         self._seed = seed
-        self._strategy = strategy
+        # A factory, not an instance: strategies hold per-run state (setup
+        # memos, tick counters), so sharing one across runs breaks determinism.
+        self._strategy_factory = strategy_factory
         self._strategy_config = strategy_config
         self._initial_equity = initial_equity
         self._mode = account_mode
@@ -239,17 +269,14 @@ class BacktestEngine:
         state.high_water_mark = self._initial_equity
         state.snapshots.append(self._snapshot(state, w.simulator, ordered[0], w.clock.now()))
         mid_by_time = {t.time: t.mid for t in ordered}
-        cursor = 0
 
         def handle(item: EventEnvelope | Tick | Bar) -> None:
-            nonlocal cursor
             assert isinstance(item, Tick)
-            index = cursor
-            cursor += 1
             w.market.add_tick(item)
 
-            # Broker-side protection evaluates the price before the decision
-            # layers see it (broker events precede strategy evaluation).
+            # Broker events precede strategy evaluation: pending command
+            # fills first, then broker-side protection on the same price.
+            self._apply_pending(state, w, item, mid_by_time)
             for position in w.simulator.open_positions(symbol):
                 fill = w.simulator.check_protection(position, item)
                 if fill is None:
@@ -278,12 +305,12 @@ class BacktestEngine:
                 retrieved_at=item.known_time,
                 known_at=item.known_time,
             )
-            signals = runner_loop.run(self._strategy.on_event(envelope, w.context))
+            signals = runner_loop.run(w.strategy.on_event(envelope, w.context))
             for signal in signals:
-                self._process_signal(
-                    state, w, signal, tick=item, remaining=ordered[index:],
-                    mid_by_time=mid_by_time,
-                )
+                self._process_signal(state, w, signal, tick=item)
+            # Zero-latency commands created this tick fill on this tick;
+            # anything slower stays queued for a later tick.
+            self._apply_pending(state, w, item, mid_by_time)
 
             equity = self._equity(state, w.simulator, item)
             state.high_water_mark = max(state.high_water_mark, equity)
@@ -311,6 +338,7 @@ class BacktestEngine:
             ledger=ledger,
             portfolio=PortfolioManager(ledger, clock),
             risk=RiskEngine(self._risk_config, clock),
+            strategy=self._strategy_factory(),
             context=StrategyContext(
                 clock=clock,
                 market=market,
@@ -323,14 +351,7 @@ class BacktestEngine:
         )
 
     def _process_signal(
-        self,
-        state: _RunState,
-        w: _Wiring,
-        signal: StrategySignal,
-        *,
-        tick: Tick,
-        remaining: list[Tick],
-        mid_by_time: dict[datetime, Decimal],
+        self, state: _RunState, w: _Wiring, signal: StrategySignal, *, tick: Tick
     ) -> None:
         entry_price = (
             tick.ask if signal.desired_direction is PositionDirection.LONG else tick.bid
@@ -342,107 +363,172 @@ class BacktestEngine:
             volume_step=self._spec.volume_step,
             entry_price=entry_price,
         )
-        for intent in w.portfolio.intents_from_signal(signal, sizing):
-            decision = w.risk.evaluate(
-                intent, self._pretrade_context(state, w, signal, intent, tick)
-            )
-            if not decision.approved:
-                state.risk_rejections.append(
-                    (w.clock.now(), tuple(decision.reject_codes))
-                )
-                continue
-            if intent.action in (PositionAction.OPEN, PositionAction.INCREASE):
-                self._execute_entry(state, w, intent, decision.approved_quantity,
-                                    tick=tick, remaining=remaining, mid_by_time=mid_by_time)
-            else:
-                self._execute_exit(state, w, intent, tick=tick, remaining=remaining,
-                                   mid_by_time=mid_by_time)
+        self._process_intents(
+            state, w, signal, w.portfolio.intents_from_signal(signal, sizing), tick
+        )
 
-    def _execute_entry(
+    def _process_intents(
         self,
         state: _RunState,
         w: _Wiring,
-        intent: PositionIntent,
-        approved_quantity: Decimal | None,
-        *,
+        signal: StrategySignal,
+        intents: list[PositionIntent],
         tick: Tick,
-        remaining: list[Tick],
+    ) -> None:
+        if not intents:
+            return
+        head, rest = intents[0], intents[1:]
+        decision = w.risk.evaluate(
+            head, self._pretrade_context(state, w, signal, head, tick)
+        )
+        if not decision.approved:
+            state.risk_rejections.append((w.clock.now(), tuple(decision.reject_codes)))
+            self._process_intents(state, w, signal, rest, tick)
+            return
+        if head.action in (PositionAction.OPEN, PositionAction.INCREASE):
+            assert decision.approved_quantity is not None
+            command = w.oms.command_for_entry(
+                intent=head, symbol=head.symbol, quantity=decision.approved_quantity
+            )
+            state.pending.append(
+                _Pending(
+                    command=command,
+                    strategy_id=head.strategy_id,
+                    action=head.action.value,
+                    kind="ENTRY",
+                )
+            )
+            self._process_intents(state, w, signal, rest, tick)
+            return
+        # CLOSE/REDUCE targets every ticket the strategy holds; the follow-up
+        # intents (a flip's reversal OPEN) wait until all legs resolved.
+        tickets = list(state.open_tickets.get((head.strategy_id, head.symbol), []))
+        if not tickets:
+            # Already closed (e.g. broker-side protection): NOOP, never a
+            # reversal order; follow-ups proceed immediately.
+            self._process_intents(state, w, signal, rest, tick)
+            return
+        barrier = (
+            _Barrier(remaining=len(tickets), follow_up=rest, signal=signal)
+            if rest
+            else None
+        )
+        for ticket in tickets:
+            command = w.oms.command_for_hedging_exit(intent=head, ticket=ticket)
+            if command is None:
+                # Fresh select found nothing: this leg is already flat.
+                self._barrier_step(state, w, barrier, tick)
+                continue
+            state.pending.append(
+                _Pending(
+                    command=command,
+                    strategy_id=head.strategy_id,
+                    action=head.action.value,
+                    kind="EXIT",
+                    barrier=barrier,
+                )
+            )
+
+    def _barrier_step(
+        self, state: _RunState, w: _Wiring, barrier: _Barrier | None, tick: Tick
+    ) -> None:
+        if barrier is None:
+            return
+        barrier.remaining -= 1
+        if barrier.remaining == 0 and barrier.follow_up:
+            self._process_intents(state, w, barrier.signal, barrier.follow_up, tick)
+
+    def _apply_pending(
+        self,
+        state: _RunState,
+        w: _Wiring,
+        tick: Tick,
         mid_by_time: dict[datetime, Decimal],
     ) -> None:
-        assert approved_quantity is not None
-        symbol = intent.symbol
-        command = w.oms.command_for_entry(
-            intent=intent, symbol=symbol, quantity=approved_quantity
-        )
-        result = w.simulator.submit(command, remaining)
+        """Fill every pending command whose latency window the clock has
+        reached, on THIS tick only — state never changes ahead of the clock.
+        Loops because a resolved close leg can enqueue a zero-latency
+        follow-up that is itself executable on the same tick."""
+        while True:
+            ready = [
+                p
+                for p in state.pending
+                if tick.known_time >= w.simulator.executable_from(p.command)
+                and tick.time >= w.simulator.executable_from(p.command)
+            ]
+            if not ready:
+                return
+            for p in ready:
+                state.pending.remove(p)
+            for p in ready:
+                self._fill_pending(state, w, p, tick, mid_by_time)
+
+    def _fill_pending(
+        self,
+        state: _RunState,
+        w: _Wiring,
+        pending: _Pending,
+        tick: Tick,
+        mid_by_time: dict[datetime, Decimal],
+    ) -> None:
+        if pending.kind == "EXIT":
+            ticket = pending.command.broker_position_ticket
+            assert ticket is not None
+            held = w.simulator.position(ticket)
+            if held is None:
+                # Closed while queued (broker-side protection): NOOP, never
+                # a reversal.
+                self._barrier_step(state, w, pending.barrier, tick)
+                return
+            result = w.simulator.submit(pending.command, [tick])
+            if result.fill is None:
+                state.rejected_commands += 1
+                self._barrier_step(state, w, pending.barrier, tick)
+                return
+            fill = result.fill
+            self._settle_close(
+                state,
+                w,
+                ticket=ticket,
+                direction=held.direction,
+                quantity=fill.quantity,
+                price=fill.price,
+                at=fill.broker_time,
+                mid=mid_by_time[fill.broker_time],
+                action=pending.action,
+                side=fill.side,
+                origin=fill.origin.value,
+            )
+            state.snapshots.append(self._snapshot(state, w.simulator, tick, w.clock.now()))
+            self._barrier_step(state, w, pending.barrier, tick)
+            return
+
+        result = w.simulator.submit(pending.command, [tick])
         if result.fill is None or result.position is None:
             state.rejected_commands += 1
             return
         fill = result.fill
         ticket = result.position.position_id
-        # open_ticket targets the LATEST entry for flip closes; an earlier
-        # ticket left open (e.g. a partially filled exit) stays fully tracked
-        # through the per-ticket maps: protection fills and end-of-run
-        # marking attribute against ticket_owner/entry_*, not this slot.
-        state.ticket_owner[ticket] = intent.strategy_id
+        strategy_id = pending.strategy_id
+        state.ticket_owner[ticket] = strategy_id
         state.entry_price[ticket] = fill.price
         state.entry_mid[ticket] = mid_by_time[fill.broker_time]
-        state.open_ticket[(intent.strategy_id, symbol)] = ticket
+        state.open_tickets.setdefault((strategy_id, self._spec.symbol), []).append(ticket)
         w.ledger.apply_fill(
-            intent.strategy_id, symbol, fill.side, fill.quantity, fill.price
+            strategy_id, self._spec.symbol, fill.side, fill.quantity, fill.price
         )
         state.fills.append(
             FillRecord(
                 at=fill.broker_time,
-                strategy_id=intent.strategy_id,
-                action=intent.action.value,
+                strategy_id=strategy_id,
+                action=pending.action,
                 side=fill.side.value,
-                direction=intent.direction.value,
+                direction=result.position.direction.value,
                 quantity=fill.quantity,
                 price=fill.price,
                 mid=mid_by_time[fill.broker_time],
                 origin=fill.origin.value,
             )
-        )
-        state.snapshots.append(self._snapshot(state, w.simulator, tick, w.clock.now()))
-
-    def _execute_exit(
-        self,
-        state: _RunState,
-        w: _Wiring,
-        intent: PositionIntent,
-        *,
-        tick: Tick,
-        remaining: list[Tick],
-        mid_by_time: dict[datetime, Decimal],
-    ) -> None:
-        symbol = intent.symbol
-        ticket = state.open_ticket.get((intent.strategy_id, symbol))
-        if ticket is None:
-            # Already closed (e.g. broker-side protection): NOOP, never a
-            # reversal order.
-            return
-        held = w.simulator.position(ticket)
-        command = w.oms.command_for_hedging_exit(intent=intent, ticket=ticket)
-        if command is None or held is None:
-            return
-        result = w.simulator.submit(command, remaining)
-        if result.fill is None:
-            state.rejected_commands += 1
-            return
-        fill = result.fill
-        self._settle_close(
-            state,
-            w,
-            ticket=ticket,
-            direction=held.direction,
-            quantity=fill.quantity,
-            price=fill.price,
-            at=fill.broker_time,
-            mid=mid_by_time[fill.broker_time],
-            action=intent.action.value,
-            side=fill.side,
-            origin=fill.origin.value,
         )
         state.snapshots.append(self._snapshot(state, w.simulator, tick, w.clock.now()))
 
@@ -485,8 +571,12 @@ class BacktestEngine:
         # attribution (entry basis unchanged) so a later protection fill or
         # the end-of-run marking still resolves the ticket.
         if w.simulator.position(ticket) is None:
-            if state.open_ticket.get((strategy_id, self._spec.symbol)) == ticket:
-                state.open_ticket.pop((strategy_id, self._spec.symbol))
+            slot = (strategy_id, self._spec.symbol)
+            tickets = state.open_tickets.get(slot, [])
+            if ticket in tickets:
+                tickets.remove(ticket)
+            if not tickets:
+                state.open_tickets.pop(slot, None)
             state.ticket_owner.pop(ticket, None)
             state.entry_price.pop(ticket, None)
             state.entry_mid.pop(ticket, None)
@@ -598,6 +688,7 @@ class BacktestEngine:
             "open_positions_at_end": str(
                 len(simulator.open_positions(self._spec.symbol))
             ),
+            "pending_commands_at_end": str(len(state.pending)),
         }
         return BacktestResult(
             symbol=self._spec.symbol,

@@ -69,6 +69,10 @@ class ExecutionSimulator:
     def position(self, position_id: str) -> SimulatedPosition | None:
         return self._positions.get(position_id)
 
+    def executable_from(self, command: ExecutionCommand) -> datetime:
+        """Earliest instant a fill for this command may occur (latency)."""
+        return command.created_at + timedelta(milliseconds=self._costs.latency_ms)
+
     def open_positions(self, symbol: str | None = None) -> list[SimulatedPosition]:
         return [
             p
@@ -97,8 +101,7 @@ class ExecutionSimulator:
         # Latency runs from the command's creation, not from whatever history
         # happens to sit at the head of the tick window: an order must never
         # fill on ticks that predate it.
-        submit_time = command.created_at
-        fill_after = submit_time + timedelta(milliseconds=self._costs.latency_ms)
+        fill_after = self.executable_from(command)
         # A tick is fillable only once it has BOTH happened (broker time) and
         # been received (known_time): a late-received tick was not usable at
         # its broker timestamp, and the earliest-received eligible tick wins

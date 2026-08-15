@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from trading.config import load_config
+from trading.config import MarketConfig, load_config
 from trading.strategy.base import StrategyStatus
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
@@ -51,6 +52,14 @@ def test_backtest_enables_risk_gate_for_simulated_orders():
     # trading_enabled must not zero out simulated fills.
     config = load_config("backtest", CONFIG_DIR)
     assert config.risk.trading_enabled is True
+
+
+@pytest.mark.parametrize("interval", [0, -0.1, float("inf"), float("nan")])
+def test_tick_poll_interval_must_be_a_positive_duration(interval):
+    # An unusable interval has to fail at load: reaching time.sleep() with it
+    # means the collector already started, so the host just restarts it.
+    with pytest.raises(ValidationError):
+        MarketConfig(tick_poll_interval_seconds=interval)
 
 
 def test_unknown_environment_rejected():

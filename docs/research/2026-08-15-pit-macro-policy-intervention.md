@@ -4,7 +4,9 @@
 実装に着手する際、設計へ固定する決定は `docs/adr/` へ ADR として起こす。
 
 出典: deep-research 最終リサーチ（2026-08-15 受領）。マクロ PIT データ調達・政策期待
-Proxy・介入 Dataset・Walk Forward 手法の調査結果を蒸留したもの。
+Proxy・介入 Dataset・Walk Forward 手法の調査結果を蒸留したもの。本文中の金額・
+料金・公表予定などの具体値は 2026-08-15 時点の取得値。検証用の一次資料は末尾の
+「一次資料」節を参照。
 
 ## 結論サマリー（データ調達の優先順位）
 
@@ -99,8 +101,10 @@ Surprise の定義: `actual_first_print - consensus` を指標ごとの過去 fo
 - **US2Y** → 米財務省 Daily Treasury Par Yield Curve Rates（無料・公式）。
   `US2Y_LEVEL / US2Y_CHANGE_1D / US2Y_CHANGE_5D / US2Y_ZSCORE_20D` を作る。
 - **BOJ** → 公式文書（決定・Statement・Outlook・Summary of Opinions・Minutes）
-  から `BOJ_POLICY_SHIFT_SCORE`（-2〜+2）をイベント駆動で算出。LLM の主観で
-  点数を付けず、初期は機械ルール:
+  から `BOJ_POLICY_SHIFT_SCORE` をイベント駆動で算出。解釈スケールは
+  -2 = strongly dovish 〜 +2 = strongly hawkish。LLM の主観で点数を付けず、
+  初期は機械ルールの加算とし、**合計を [-2, +2] へ clip して最終スコアにする**
+  （利上げ + hawkish dissent 等が重なるとルール合計は +2 を超えるため）:
 
   ```yaml
   boj_policy_scoring:
@@ -271,3 +275,31 @@ Phase A〜D は `US_DATA_SURPRISE = UNKNOWN` を正式に許容した状態で�
 - Preflight 結果は表示して終わりにせず DB へ保存する（margin_mode / digits /
   volume_min/step/max / trade_stops_level / filling_mode / rollover 挙動 /
   swap 実付与と公式 calendar の一致 / latency p50-p99 / session 別 spread 分布）
+
+## 一次資料（検証用）
+
+本 Note の具体値（データ公開範囲・料金・介入額・公表予定）は 2026-08-15 時点の
+取得値であり、実装・契約の判断時には以下の一次資料で再確認する。
+
+- **BLS**（bls.gov）: 公式 News Release アーカイブ（archive 内の値は後日改定
+  され得る旨の注記、CPI 季節調整の年次再計算を含む）
+- **BEA**（bea.gov）: GDP の Advance/Second/Third estimate と改定幅の公式研究
+- **U.S. Census Bureau**（census.gov）: Advance Monthly Retail Trade と
+  公式リリース日程
+- **ALFRED / FRED API**（alfred.stlouisfed.org / fred.stlouisfed.org）:
+  `realtime_start` / `realtime_end` / `vintage_dates`
+- **米財務省**（home.treasury.gov）: Daily Treasury Par Yield Curve Rates
+- **CME Group**（cmegroup.com）: FedWatch Tool と EOD データ（$25/月〜、
+  2015 年以降）の料金ページ
+- **Trading Economics**（tradingeconomics.com）: Economic Calendar API
+  ドキュメントと料金ページ（Standard $199/月）
+- **財務省**（mof.go.jp）: 外国為替平衡操作の実施状況（月次総額・四半期
+  日次内訳・1991 年以降の CSV、公表予定日時）
+- **日本銀行**（boj.or.jp）: 金融政策決定会合の公表資料・2026 年会合日程・
+  現行の政策金利ガイドライン
+- **FRB**（federalreserve.gov）: FOMC Meeting calendars / Statement・
+  政策金利の公式履歴
+- **OANDA Japan**（oanda.jp）: 東京サーバー Swap Point Calendar
+  （2020-05-02 以降）、MT5 Demo と本番の差異・Demo 期限に関する FAQ
+- **MetaQuotes**（mql5.com）: `copy_ticks_range` / `COPY_TICKS_*` /
+  `TICK_FLAG_*` の Python API 公式ドキュメント

@@ -209,6 +209,11 @@ class _RunState:
     entry_mid: dict[str, Decimal] = field(default_factory=dict)
     open_tickets: dict[tuple[str, str], list[str]] = field(default_factory=dict)
     gross_mid_closed: Decimal = Decimal(0)
+    # Latest KNOWN price on the broker timeline: valuation must never rewind
+    # to a late-received tick with an older broker time.
+    marking_tick: Tick | None = None
+    # Signals held back while an entry for their slot is still in flight.
+    deferred: dict[tuple[str, str], list[StrategySignal]] = field(default_factory=dict)
 
 
 def signed_pnl(
@@ -271,11 +276,13 @@ class BacktestEngine:
         w = self._wire(ordered[0].known_time - timedelta(seconds=1))
         state = _RunState(initial_equity=self._initial_equity)
         state.high_water_mark = self._initial_equity
-        state.snapshots.append(self._snapshot(state, w.simulator, ordered[0], w.clock.now()))
+        state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
 
         def handle(item: EventEnvelope | Tick | Bar) -> None:
             assert isinstance(item, Tick)
             w.market.add_tick(item)
+            if state.marking_tick is None or item.time >= state.marking_tick.time:
+                state.marking_tick = item
 
             # Broker events precede strategy evaluation: pending command
             # fills first, then broker-side protection on the same price.
@@ -298,7 +305,7 @@ class BacktestEngine:
                     origin=fill.origin.value,
                 )
                 state.snapshots.append(
-                    self._snapshot(state, w.simulator, item, w.clock.now())
+                    self._snapshot(state, w.simulator, w.clock.now())
                 )
 
             envelope = EventEnvelope(
@@ -315,14 +322,14 @@ class BacktestEngine:
             # anything slower stays queued for a later tick.
             self._apply_pending(state, w, item)
 
-            equity = self._equity(state, w.simulator, item)
+            equity = self._equity(state, w.simulator)
             state.high_water_mark = max(state.high_water_mark, equity)
             state.equity_curve.append((w.clock.now(), equity))
 
         with asyncio.Runner() as runner_loop:
             ReplayEngine(w.clock).run(ordered, handle)
 
-        return self._result(state, w.simulator, ordered[-1])
+        return self._result(state, w.simulator)
 
     def _wire(self, start: datetime) -> _Wiring:
         clock = ReplayClock(start)
@@ -356,11 +363,25 @@ class BacktestEngine:
     def _process_signal(
         self, state: _RunState, w: _Wiring, signal: StrategySignal, *, tick: Tick
     ) -> None:
+        slot = (signal.strategy_id, signal.symbol)
+        if any(
+            p.kind == "ENTRY"
+            and p.strategy_id == signal.strategy_id
+            and p.command.symbol == signal.symbol
+            for p in state.pending
+        ):
+            # An in-flight entry WILL fill; intents must see the post-fill
+            # book, or an opposite signal becomes a parallel OPEN instead of
+            # a flip (CLOSE -> OPEN). Held signals resolve at the fill tick.
+            state.deferred.setdefault(slot, []).append(signal)
+            return
+        mark = state.marking_tick
+        assert mark is not None
         entry_price = (
-            tick.ask if signal.desired_direction is PositionDirection.LONG else tick.bid
+            mark.ask if signal.desired_direction is PositionDirection.LONG else mark.bid
         )
         sizing = SizingInput(
-            equity=self._equity(state, w.simulator, tick),
+            equity=self._equity(state, w.simulator),
             max_risk_per_trade_pct=self._risk_config.max_risk_per_trade_pct,
             pip_size=self._spec.pip_size,
             volume_step=self._spec.volume_step,
@@ -501,13 +522,14 @@ class BacktestEngine:
                 side=fill.side,
                 origin=fill.origin.value,
             )
-            state.snapshots.append(self._snapshot(state, w.simulator, tick, w.clock.now()))
+            state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
             self._barrier_step(state, w, pending.barrier, tick)
             return
 
         result = w.simulator.submit(pending.command, [tick])
         if result.fill is None or result.position is None:
             state.rejected_commands += 1
+            self._release_deferred(state, w, pending.strategy_id, tick)
             return
         fill = result.fill
         ticket = result.position.position_id
@@ -532,7 +554,8 @@ class BacktestEngine:
                 origin=fill.origin.value,
             )
         )
-        state.snapshots.append(self._snapshot(state, w.simulator, tick, w.clock.now()))
+        state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
+        self._release_deferred(state, w, strategy_id, tick)
 
     def _settle_close(
         self,
@@ -583,6 +606,13 @@ class BacktestEngine:
             state.entry_price.pop(ticket, None)
             state.entry_mid.pop(ticket, None)
 
+    def _release_deferred(
+        self, state: _RunState, w: _Wiring, strategy_id: str, tick: Tick
+    ) -> None:
+        released = state.deferred.pop((strategy_id, self._spec.symbol), [])
+        for signal in released:
+            self._process_signal(state, w, signal, tick=tick)
+
     def _pending_entry_load(
         self, state: _RunState, symbol: str
     ) -> tuple[int, Decimal, Decimal]:
@@ -620,9 +650,9 @@ class BacktestEngine:
             execution_enabled=True,
             broker_connected=True,
             account_reconciled=True,
-            quote=tick,
+            quote=state.marking_tick if state.marking_tick is not None else tick,
             instrument=self._spec,
-            account=self._snapshot(state, w.simulator, tick, w.clock.now()),
+            account=self._snapshot(state, w.simulator, w.clock.now()),
             snapshots=state.snapshots,
             open_positions_count=len(w.simulator.open_positions(symbol))
             + pending_count,
@@ -639,27 +669,28 @@ class BacktestEngine:
             requested_quantity=intent.target_quantity or Decimal(0),
         )
 
-    def _unrealized(self, simulator: ExecutionSimulator, tick: Tick) -> Decimal:
-        """Unrealized PnL of the open book, marked at the executable side."""
+    def _unrealized(self, state: _RunState, simulator: ExecutionSimulator) -> Decimal:
+        """Unrealized PnL of the open book, marked at the executable side of
+        the latest KNOWN broker-time price."""
+        tick = state.marking_tick
+        if tick is None:
+            return Decimal(0)
         total = Decimal(0)
         for p in simulator.open_positions(self._spec.symbol):
             exit_price = tick.bid if p.direction is PositionDirection.LONG else tick.ask
             total += signed_pnl(p.direction, p.entry_price, exit_price, p.quantity)
         return total
 
-    def _equity(
-        self, state: _RunState, simulator: ExecutionSimulator, tick: Tick
-    ) -> Decimal:
-        return state.initial_equity + state.realized + self._unrealized(simulator, tick)
+    def _equity(self, state: _RunState, simulator: ExecutionSimulator) -> Decimal:
+        return state.initial_equity + state.realized + self._unrealized(state, simulator)
 
     def _snapshot(
         self,
         state: _RunState,
         simulator: ExecutionSimulator,
-        tick: Tick,
         now: datetime,
     ) -> AccountSnapshot:
-        unrealized = self._unrealized(simulator, tick)
+        unrealized = self._unrealized(state, simulator)
         equity = state.initial_equity + state.realized + unrealized
         hwm = max(state.high_water_mark, equity)
         return AccountSnapshot(
@@ -676,19 +707,18 @@ class BacktestEngine:
             broker_connected=True,
         )
 
-    def _result(
-        self, state: _RunState, simulator: ExecutionSimulator, last_tick: Tick
-    ) -> BacktestResult:
-        unrealized = self._unrealized(simulator, last_tick)
-        # Open positions: gross-mid marks entry AND current price at mid, so
-        # the mid-vs-actual gap of the entry shows up as execution cost.
+    def _result(self, state: _RunState, simulator: ExecutionSimulator) -> BacktestResult:
+        unrealized = self._unrealized(state, simulator)
+        # Open positions: gross-mid marks entry AND current price at mid (of
+        # the latest known broker-time tick), so the mid-vs-actual gap of the
+        # entry shows up as execution cost.
         open_gross_mid = Decimal(0)
         for ticket, entry_mid in state.entry_mid.items():
             held = simulator.position(ticket)
-            if held is None:
+            if held is None or state.marking_tick is None:
                 continue
             open_gross_mid += signed_pnl(
-                held.direction, entry_mid, last_tick.mid, held.quantity
+                held.direction, entry_mid, state.marking_tick.mid, held.quantity
             )
         gross_mid = state.gross_mid_closed + open_gross_mid
         net = state.realized + unrealized

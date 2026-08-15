@@ -10,7 +10,7 @@ The first acceptance criterion of the backtest system is NOT profitability:
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from tests.support import usdjpy_spec
+from tests.support import make_tick, usdjpy_spec
 from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.data import dataset_hash, synthetic_ticks
 from trading.backtest.engine import BacktestEngine, BacktestResult, ScriptedStrategy
@@ -184,6 +184,45 @@ def test_partial_exit_keeps_remainder_tracked_and_withholds_reversal():
         + Decimal(result.metrics["realized_pnl"])
         + Decimal(result.metrics["unrealized_pnl"])
     )
+
+
+def test_opposite_signal_during_entry_latency_becomes_a_flip():
+    # A SHORT signal while the LONG entry is still in flight must resolve as
+    # CLOSE -> reversal OPEN after the entry fills — never as a parallel
+    # opposite OPEN that leaves LONG and SHORT on the book together.
+    costs = CostModel(latency_ms=2500.0, slippage_sigma_pips=0.0)
+    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    result = run_slice(
+        costs,
+        plan={300: PositionDirection.LONG, 301: PositionDirection.SHORT},
+        risk_config=config,
+    )
+    actions = [(f.action, f.direction) for f in result.fills]
+    assert ("OPEN", "LONG") in actions
+    assert ("CLOSE", "LONG") in actions
+    assert ("OPEN", "SHORT") in actions
+    assert result.metrics["open_positions_at_end"] == "1"
+
+
+def test_late_old_tick_does_not_rewind_valuation():
+    # The last DELIVERED tick can carry an older broker time (reception
+    # order); final equity must stay marked at the newest broker-time price
+    # already known, exactly like InMemoryMarketData.latest_tick().
+    spec = usdjpy_spec()
+    base = synthetic_ticks(spec=spec, start=DATASET_START, count=500, seed=7)
+    late_old = make_tick(
+        "158.500",
+        "158.504",
+        time=DATASET_START + timedelta(seconds=100),
+        received_at=DATASET_START + timedelta(seconds=600),
+    )
+    plan = {300: PositionDirection.LONG}
+    without = build_engine(STRESS_SCENARIOS["normal"], plan=plan).run(base)
+    with_late = build_engine(STRESS_SCENARIOS["normal"], plan=plan).run(
+        [*base, late_old]
+    )
+    assert with_late.metrics["final_equity"] == without.metrics["final_equity"]
+    assert with_late.metrics["unrealized_pnl"] == without.metrics["unrealized_pnl"]
 
 
 def test_pending_entries_reserve_the_position_cap():

@@ -59,6 +59,25 @@ def test_missing_baseline_falls_back_to_earliest_snapshot():
     assert daily_loss_pct(snapshots, current, now) == Decimal("0.75")
 
 
+def test_future_snapshots_are_never_a_baseline():
+    # Pre-loaded backtest data: snapshots observed after `now` must not leak
+    # into the baseline (look-ahead), neither directly nor via the fallback.
+    now = datetime(2026, 8, 13, 3, 0, tzinfo=UTC)
+    future_only = [
+        make_snapshot("2000000", observed_at=datetime(2026, 8, 13, 6, 0, tzinfo=UTC)),
+    ]
+    current = make_snapshot("990000", observed_at=now)
+    assert daily_loss_pct(future_only, current, now) == Decimal(0)
+
+    mixed = [
+        make_snapshot("2000000", observed_at=datetime(2026, 8, 13, 6, 0, tzinfo=UTC)),
+        make_snapshot("1000000", observed_at=datetime(2026, 8, 12, 20, 0, tzinfo=UTC)),
+    ]
+    current = make_snapshot("992500", observed_at=now)
+    # Fallback picks the earliest KNOWN snapshot, not the future one.
+    assert daily_loss_pct(mixed, current, now) == Decimal("0.75")
+
+
 def test_no_baseline_means_zero_loss():
     now = datetime(2026, 8, 13, 3, 0, tzinfo=UTC)
     current = make_snapshot("990000", observed_at=now)

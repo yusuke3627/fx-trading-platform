@@ -21,20 +21,23 @@ def jst_day_start(now: datetime) -> datetime:
     return day_start.astimezone(UTC)
 
 
-def _equity_at_or_before(
-    snapshots: Sequence[AccountSnapshot], t: datetime
+def _baseline_equity(
+    snapshots: Sequence[AccountSnapshot], window_start: datetime, now: datetime
 ) -> Decimal | None:
     """Baseline equity for a loss window.
 
     When no snapshot exists at or before the window start (first day of
-    operation, recording gaps), fall back to the earliest available snapshot:
-    under-reporting a loss as 0% would let real losses through the halts.
+    operation, recording gaps), fall back to the earliest snapshot already
+    known at `now`: under-reporting a loss as 0% would let real losses
+    through the halts. Snapshots observed after `now` (pre-loaded backtest
+    data) are never a baseline — that would be look-ahead.
     """
-    eligible = [s for s in snapshots if s.observed_at <= t]
+    known = [s for s in snapshots if s.observed_at <= now]
+    eligible = [s for s in known if s.observed_at <= window_start]
     if eligible:
         return max(eligible, key=lambda s: s.observed_at).equity
-    if snapshots:
-        return min(snapshots, key=lambda s: s.observed_at).equity
+    if known:
+        return min(known, key=lambda s: s.observed_at).equity
     return None
 
 
@@ -49,7 +52,7 @@ def daily_loss_pct(
     snapshots: Sequence[AccountSnapshot], current: AccountSnapshot, now: datetime
 ) -> Decimal:
     """Equity loss since the start of the current JST day, in percent."""
-    baseline = _equity_at_or_before(snapshots, jst_day_start(now))
+    baseline = _baseline_equity(snapshots, jst_day_start(now), now)
     return _loss_pct(baseline, current.equity)
 
 
@@ -57,7 +60,7 @@ def rolling_24h_loss_pct(
     snapshots: Sequence[AccountSnapshot], current: AccountSnapshot, now: datetime
 ) -> Decimal:
     """Equity loss versus 24 hours ago, in percent."""
-    baseline = _equity_at_or_before(snapshots, now - timedelta(hours=24))
+    baseline = _baseline_equity(snapshots, now - timedelta(hours=24), now)
     return _loss_pct(baseline, current.equity)
 
 

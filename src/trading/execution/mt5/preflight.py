@@ -403,10 +403,16 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
 def _cleanup_leftover_position(
     adapter, spec, symbol: str, magic: int, result, step, step_name: str
 ) -> None:
+    ticket = str(getattr(result, "order", 0) or 0) if result is not None else "0"
+    _cleanup_leftover_ticket(adapter, spec, symbol, magic, ticket, step, step_name)
+
+
+def _cleanup_leftover_ticket(
+    adapter, spec, symbol: str, magic: int, ticket: str, step, step_name: str
+) -> None:
     """A failed or partial order may still have left a position on the demo
     account; keep closing until a fresh select confirms it is gone. A cleanup
     that leaves exposure is itself a failure, never a silent success."""
-    ticket = str(getattr(result, "order", 0) or 0) if result is not None else "0"
     if ticket == "0":
         return
     leftover = adapter.position(ticket)
@@ -502,19 +508,9 @@ def _protection_fill_probe(
         time.sleep(2)
 
     if not fired:
-        leftover = adapter.position(ticket)
-        if leftover is not None:
-            adapter.order_send(
-                mapper.market_order_request(
-                    symbol=symbol,
-                    side=ExecutionSide.SELL,
-                    units=leftover.quantity,
-                    spec=spec,
-                    position_ticket=ticket,
-                    magic=magic,
-                    comment="preflight-protection-cleanup",
-                )
-            )
+        _cleanup_leftover_ticket(
+            adapter, spec, symbol, magic, ticket, step, "trade_cycle_protection_cleanup"
+        )
         step(
             "trade_cycle_protection_fill",
             False,

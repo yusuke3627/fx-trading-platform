@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import psycopg
 from psycopg.rows import dict_row
@@ -16,6 +17,7 @@ from psycopg.types.json import Jsonb
 from trading.domain.account import AccountSnapshot
 from trading.domain.event import EventEnvelope, ensure_json_native
 from trading.domain.fill import Fill
+from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand
 from trading.storage.repository import StaleCommandStateError
 
@@ -60,6 +62,31 @@ def _row_to_snapshot(row: dict[str, Any]) -> AccountSnapshot:
         high_water_mark=row["high_water_mark"],
         drawdown_from_hwm=row["drawdown_from_hwm"],
         broker_connected=row["broker_connected"],
+    )
+
+
+def _row_to_tick(row: dict[str, Any]) -> Tick:
+    return Tick(
+        symbol=row["symbol"],
+        bid=row["bid"],
+        ask=row["ask"],
+        time=row["event_time"],
+        received_at=row["received_at"],
+    )
+
+
+def _row_to_bar(row: dict[str, Any]) -> Bar:
+    # end_at and known_at are not read back: Bar.close_time re-derives both
+    # from start and timeframe, and one source for that value is enough.
+    return Bar(
+        symbol=row["symbol"],
+        timeframe=row["timeframe"],
+        start=row["start_at"],
+        open=row["open"],
+        high=row["high"],
+        low=row["low"],
+        close=row["close"],
+        tick_volume=row["tick_volume"],
     )
 
 
@@ -291,6 +318,117 @@ class PostgresAccountSnapshotRepository:
             "SELECT * FROM account_snapshots ORDER BY observed_at DESC LIMIT 1"
         ).fetchone()
         return _row_to_snapshot(row) if row else None
+
+
+class PostgresMarketTickRepository:
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    def insert_many(
+        self, ticks: Sequence[Tick], *, source: str, ingestion_run: UUID
+    ) -> int:
+        if not ticks:
+            return 0
+        cursor = self._conn.cursor()
+        cursor.executemany(
+            """
+            INSERT INTO market_ticks (
+                symbol, bid, ask, event_time, received_at, source, ingestion_run
+            ) VALUES (
+                %(symbol)s, %(bid)s, %(ask)s, %(event_time)s, %(received_at)s,
+                %(source)s, %(ingestion_run)s
+            )
+            ON CONFLICT (symbol, event_time, bid, ask) DO NOTHING
+            """,
+            [
+                {
+                    "symbol": t.symbol,
+                    "bid": t.bid,
+                    "ask": t.ask,
+                    "event_time": t.time,
+                    # Visibility follows reception, so what is stored is the
+                    # tick's known time, not its broker timestamp.
+                    "received_at": t.known_time,
+                    "source": source,
+                    "ingestion_run": ingestion_run,
+                }
+                for t in ticks
+            ],
+        )
+        self._conn.commit()
+        # Conflicting rows count zero, so this is what the batch actually added.
+        return cursor.rowcount
+
+    def known_before(
+        self, symbol: str, t: datetime, since: datetime
+    ) -> Sequence[Tick]:
+        rows = self._conn.execute(
+            """
+            SELECT symbol, bid, ask, event_time, received_at
+            FROM market_ticks
+            WHERE symbol = %s AND event_time >= %s AND received_at <= %s
+            ORDER BY event_time
+            """,
+            (symbol, since, t),
+        ).fetchall()
+        return [_row_to_tick(r) for r in rows]
+
+
+class PostgresMarketBarRepository:
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    def insert_many(self, bars: Sequence[Bar]) -> int:
+        if not bars:
+            return 0
+        cursor = self._conn.cursor()
+        cursor.executemany(
+            """
+            INSERT INTO market_bars (
+                symbol, timeframe, start_at, end_at, known_at,
+                open, high, low, close, tick_volume
+            ) VALUES (
+                %(symbol)s, %(timeframe)s, %(start_at)s, %(end_at)s, %(known_at)s,
+                %(open)s, %(high)s, %(low)s, %(close)s, %(tick_volume)s
+            )
+            ON CONFLICT (symbol, timeframe, start_at) DO NOTHING
+            """,
+            [
+                {
+                    "symbol": b.symbol,
+                    "timeframe": b.timeframe,
+                    "start_at": b.start,
+                    # A bar is complete, and therefore known, at its close.
+                    "end_at": b.close_time,
+                    "known_at": b.close_time,
+                    "open": b.open,
+                    "high": b.high,
+                    "low": b.low,
+                    "close": b.close,
+                    "tick_volume": b.tick_volume,
+                }
+                for b in bars
+            ],
+        )
+        self._conn.commit()
+        # A settled bar is never rewritten: a re-run reports zero, not an
+        # overwrite of history.
+        return cursor.rowcount
+
+    def known_before(
+        self, symbol: str, timeframe: str, t: datetime, count: int
+    ) -> Sequence[Bar]:
+        rows = self._conn.execute(
+            """
+            SELECT symbol, timeframe, start_at, open, high, low, close, tick_volume
+            FROM market_bars
+            WHERE symbol = %s AND timeframe = %s AND known_at <= %s
+            ORDER BY start_at DESC
+            LIMIT %s
+            """,
+            (symbol, timeframe, t, count),
+        ).fetchall()
+        return [_row_to_bar(r) for r in reversed(rows)]
 
 
 class PostgresEventRepository:

@@ -8,10 +8,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from trading.domain.account import AccountSnapshot
 from trading.domain.event import EventEnvelope
 from trading.domain.fill import Fill
+from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand
 
 
@@ -61,6 +63,32 @@ class EventRepository(Protocol):
     def known_before(
         self, t: datetime, event_type: str | None = None
     ) -> Sequence[EventEnvelope]: ...
+
+
+class MarketTickRepository(Protocol):
+    # Returns the number of ticks actually stored. Re-running an ingestion
+    # over an already-collected range is a normal way to fill a gap, and it
+    # has to be able to report what it filled rather than what it sent.
+    def insert_many(
+        self, ticks: Sequence[Tick], *, source: str, ingestion_run: UUID
+    ) -> int: ...
+
+    # `since` is mandatory: the tick table grows without bound, so a
+    # visibility query is a window over the series, never a scan of a
+    # symbol's whole history.
+    def known_before(
+        self, symbol: str, t: datetime, since: datetime
+    ) -> Sequence[Tick]: ...
+
+
+class MarketBarRepository(Protocol):
+    def insert_many(self, bars: Sequence[Bar]) -> int: ...
+
+    # Mirrors MarketDataService.bars(): the most recent `count` bars visible
+    # at `t`, oldest first.
+    def known_before(
+        self, symbol: str, timeframe: str, t: datetime, count: int
+    ) -> Sequence[Bar]: ...
 
 
 class IncidentRepository(Protocol):

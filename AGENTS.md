@@ -49,8 +49,8 @@ pytest tests/unit/<file> -k name  # テスト名で絞り込み
 ruff check .
 ruff check . --fix
 
-# DB スキーマ適用（DSN は環境変数 TRADING_DB_DSN）
-psql "$TRADING_DB_DSN" -f migrations/0001_initial.sql
+# DB スキーマ適用（DSN は環境変数 TRADING_DB_DSN）。連番順に全て流す
+for f in migrations/*.sql; do psql "$TRADING_DB_DSN" -v ON_ERROR_STOP=1 -f "$f"; done
 
 # MT5 Demo Preflight（Windows + MT5 ターミナルでのみ実行可）
 python -m trading.execution.mt5.preflight --env demo --symbol USDJPY

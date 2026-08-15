@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from trading.backtest.clock import Clock
 from trading.data.market import MarketDataService
 from trading.domain.event import EventEnvelope
+from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection, VirtualPosition
 from trading.domain.signal import StrategySignal
 from trading.indicators import IndicatorService
@@ -61,6 +62,16 @@ class TimeframeMap(BaseModel):
         if value is None:
             raise KeyError(f"timeframe role {name!r} is not configured")
         return str(value)
+
+    def all(self) -> tuple[str, ...]:
+        """Every configured timeframe once, shortest first.
+
+        Ordering by duration rather than by role name keeps anything derived
+        from this — the bar builders of a replay, for one — identical across
+        runs of the same configuration.
+        """
+        distinct = {str(value) for value in (self.model_extra or {}).values()}
+        return tuple(sorted(distinct, key=lambda timeframe: TIMEFRAME_SECONDS[timeframe]))
 
 
 class StrategyConfig(BaseModel):

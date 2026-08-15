@@ -124,6 +124,25 @@ class OMSService:
             intent, symbol=symbol, side=side, quantity=quantity, sequence=sequence
         )
 
+    def command_for_entry(
+        self,
+        *,
+        intent: PositionIntent,
+        symbol: str,
+        quantity: Decimal,
+        sequence: int = 0,
+    ) -> ExecutionCommand:
+        """Entry command (OPEN/INCREASE) for the risk-approved quantity."""
+        if intent.action not in (PositionAction.OPEN, PositionAction.INCREASE):
+            raise ValueError("entry command requires an OPEN/INCREASE intent")
+        return self._command(
+            intent,
+            symbol=symbol,
+            side=execution_side(intent.direction, intent.action),
+            quantity=quantity,
+            sequence=sequence,
+        )
+
     def prepare_exit(self, ticket: str) -> ExitPlan:
         """Fresh position select before any exit. A missing position means it
         was already closed (e.g. broker-side protection): NOOP, never a

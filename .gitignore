@@ -9,6 +9,7 @@ dist/
 build/
 .env
 *.local.yaml
+reports/
 .DS_Store
 .claude/worktrees/
 .claude/plans/

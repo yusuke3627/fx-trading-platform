@@ -69,6 +69,13 @@ class ExecutionSimulator:
     def position(self, position_id: str) -> SimulatedPosition | None:
         return self._positions.get(position_id)
 
+    def open_positions(self, symbol: str | None = None) -> list[SimulatedPosition]:
+        return [
+            p
+            for p in self._positions.values()
+            if symbol is None or p.symbol == symbol
+        ]
+
     def submit(
         self, command: ExecutionCommand, ticks: Sequence[Tick]
     ) -> SimulationResult:

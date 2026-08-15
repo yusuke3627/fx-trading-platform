@@ -75,20 +75,28 @@ consensus_snapshots                             # 今日から forward 蓄積
   raw_uri / payload_hash
 
 InterventionEvent                               # 認識段階ごとに別イベント。
-  event_id / intervention_id                    # 1 レコードへ集約しない。
+  event_id                                      # 1 レコードへ集約しない。
+  intervention_id?                              # 日次スコープの kind のみ持つ
+                                                # （同一介入の相関キー）
   kind                                          # MARKET_SUSPECTED / REPORTED /
                                                 # GOVERNMENT_CONFIRMED /
-                                                # OFFICIAL_MONTHLY_AMOUNT /
-                                                # OFFICIAL_DAILY_AMOUNT
+                                                # OFFICIAL_DAILY_AMOUNT /
+                                                # OFFICIAL_MONTHLY_AMOUNT
   known_at                                      # その段階を市場が知った時刻
   source_uri / retrieved_at / payload_hash
   kind 別 payload:
-    MARKET_SUSPECTED → suspected_start_at
-    REPORTED         → published_at / updated_at / reported_estimate_jpy
-                       # 初報時刻の保全のため published_at と updated_at を別管理
-    OFFICIAL_*       → official_action_date / official_amount_jpy
-  # 同一介入は intervention_id で相関。Replay は known_at <= ReplayClock の
-  # イベントだけを見る。後段の official 値で過去イベントを UPDATE しない
+    MARKET_SUSPECTED        → suspected_start_at
+    REPORTED                → published_at / updated_at / reported_estimate_jpy
+                              # 初報時刻の保全のため published/updated を別管理
+    OFFICIAL_DAILY_AMOUNT   → official_action_date / official_amount_jpy
+    OFFICIAL_MONTHLY_AMOUNT → period_start / period_end / official_total_jpy
+                              # 公表対象期間全体の集計値。期間内に複数介入が
+                              # あり得るため intervention_id を持たせず、単一の
+                              # 介入日に紐付けない。日次内訳は後日の四半期公表
+                              # （OFFICIAL_DAILY_AMOUNT）で相関させる
+  # 日次スコープのイベントは intervention_id で相関。Replay は
+  # known_at <= ReplayClock のイベントだけを見る。後段の official 値で
+  # 過去イベントを UPDATE しない
 ```
 
 Surprise の定義: `actual_first_print - consensus` を指標ごとの過去 forecast error

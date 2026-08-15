@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
     "PyYAML>=6.0",
+    # zoneinfo("America/New_York") for release-time conversion: Windows has no
+    # system tz database.
+    "tzdata; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]

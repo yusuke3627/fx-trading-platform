@@ -11,6 +11,7 @@ from typing import Protocol
 from uuid import UUID
 
 from trading.domain.account import AccountSnapshot
+from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope
 from trading.domain.fill import Fill
 from trading.domain.market import Bar, Tick
@@ -89,6 +90,18 @@ class MarketBarRepository(Protocol):
     def known_before(
         self, symbol: str, timeframe: str, t: datetime, count: int
     ) -> Sequence[Bar]: ...
+
+
+class MacroObservationRepository(Protocol):
+    # Returns the number of rows actually stored: re-collecting a period that
+    # is already ingested is the normal way to pick up revisions, and only
+    # genuinely new vintages count.
+    def insert_many(self, observations: Sequence[EconomicObservation]) -> int: ...
+
+    # All vintages of a series visible at `t`, oldest first. The caller
+    # derives first print vs revision from the known_at order within one
+    # (series, observation_period).
+    def known_before(self, series: str, t: datetime) -> Sequence[EconomicObservation]: ...
 
 
 class IncidentRepository(Protocol):

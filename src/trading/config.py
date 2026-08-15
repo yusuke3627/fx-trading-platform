@@ -44,6 +44,17 @@ class StorageConfig(BaseModel):
     dsn_env: str = "TRADING_DB_DSN"
 
 
+class MacroDataConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    # API keys come from the environment (dsn_env pattern). ALFRED and BEA
+    # reject keyless requests; BLS and Census only rate-limit them harder.
+    fred_api_key_env: str = "FRED_API_KEY"
+    bls_api_key_env: str = "BLS_API_KEY"
+    bea_api_key_env: str = "BEA_API_KEY"
+    census_api_key_env: str = "CENSUS_API_KEY"
+
+
 class EventRiskWindowSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -83,6 +94,7 @@ class AppConfig(BaseModel):
     broker: BrokerConfig = BrokerConfig()
     market: MarketConfig = MarketConfig()
     storage: StorageConfig = StorageConfig()
+    macro_data: MacroDataConfig = MacroDataConfig()
     risk: RiskConfig = RiskConfig()
     event_risk: dict[str, EventRiskWindowSettings] = Field(default_factory=dict)
     intelligence: IntelligenceConfig = IntelligenceConfig()

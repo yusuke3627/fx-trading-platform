@@ -113,6 +113,37 @@ def test_tick_received_after_its_own_bucket_closed_never_enters_the_bar():
     assert bar.tick_volume == 1
 
 
+def test_a_future_dated_quote_does_not_close_a_bucket_early():
+    # A broker clock running ahead of ours delivers a quote stamped in the
+    # next minute while this one is still running. Treating that as proof the
+    # bar ended would publish it early and drop the quotes still arriving for
+    # it — so the bar waits for evidence that its end has actually passed.
+    builder = BarBuilder("USDJPY", "1m")
+    builder.on_tick(make_tick("158.840", "158.844", time=at(seconds=10)))
+
+    assert (
+        builder.on_tick(
+            make_tick(
+                "159.900", "159.904", time=at(minutes=1, seconds=5), received_at=at(seconds=40)
+            )
+        )
+        is None
+    )
+    assert (
+        builder.on_tick(
+            make_tick("158.700", "158.704", time=at(seconds=30), received_at=at(seconds=50))
+        )
+        is None
+    )
+
+    bar = builder.on_tick(make_tick("158.800", "158.804", time=at(minutes=1, seconds=30)))
+    assert bar is not None
+    assert bar.start == T0
+    assert bar.low == Decimal("158.700")  # the 00:00:30 quote still made it in
+    assert bar.high == Decimal("158.840")  # the future-dated one stayed out
+    assert bar.tick_volume == 2
+
+
 def test_out_of_order_quotes_in_a_bucket_take_open_and_close_from_broker_time():
     # A reconnect flushes an older quote after a newer one, both still inside
     # the minute and both known before it closes. High and low do not care

@@ -123,10 +123,18 @@ class BarBuilder:
             if fresh:
                 _fold(bucket, tick)
             return None
-        # A later bucket. The open one is finished on its own merits, so it
-        # is published even when this tick is itself too late to seed the
-        # next one — otherwise one stale quote would withhold a finished bar,
-        # or lose it outright if nothing follows.
+        if tick.known_time < bucket.start + timedelta(seconds=self._seconds):
+            # A later bucket by broker time, but we do not yet KNOW that the
+            # open bar has ended — a broker clock running ahead of ours
+            # delivers future-dated quotes early. Closing on that evidence
+            # would drop the quotes still legitimately arriving for the open
+            # bar. The ambiguous quote stays out of bar building entirely; it
+            # remains in the tick series.
+            return None
+        # The open bucket is finished on its own merits, so it is published
+        # even when this tick is itself too late to seed the next one —
+        # otherwise one stale quote would withhold a finished bar, or lose it
+        # outright if nothing follows.
         self._bucket = _open_bucket(start, tick) if fresh else None
         return self._to_bar(bucket)
 

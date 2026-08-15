@@ -106,43 +106,36 @@ class BarBuilder:
         # folding it in would let a later replay read the candle before its
         # contents existed. Reception exactly at the close still counts —
         # visibility is `<=`.
-        fresh = tick.known_time <= start + timedelta(seconds=self._seconds)
+        joins = tick.known_time <= start + timedelta(seconds=self._seconds)
         bucket = self._bucket
 
-        if bucket is None:
-            if fresh:
-                self._bucket = _open_bucket(start, tick)
-            return None
-        if start < bucket.start:
-            # Belongs to a bucket that already closed. Replay delivers in
-            # reception order, so this is normal after a reconnect; rewriting
-            # a published bar would change a candle a strategy may already
-            # have traded on.
-            return None
-        if start == bucket.start:
-            # Same bucket: the quote joins the bar when it was known by the
-            # close, and the bar is published once its end is known to have
-            # been reached. A quote known exactly at the close does both.
-            if fresh:
-                _fold(bucket, tick)
-            if tick.known_time < bucket.start + timedelta(seconds=self._seconds):
-                return None
-            self._bucket = None
-            return self._to_bar(bucket)
-        if tick.known_time < bucket.start + timedelta(seconds=self._seconds):
-            # A later bucket by broker time, but we do not yet KNOW that the
-            # open bar has ended — a broker clock running ahead of ours
-            # delivers future-dated quotes early. Closing on that evidence
-            # would drop the quotes still legitimately arriving for the open
-            # bar. The ambiguous quote stays out of bar building entirely; it
-            # remains in the tick series.
-            return None
-        # The open bucket is finished on its own merits, so it is published
-        # even when this tick is itself too late to seed the next one —
-        # otherwise one stale quote would withhold a finished bar, or lose it
-        # outright if nothing follows.
-        self._bucket = _open_bucket(start, tick) if fresh else None
-        return self._to_bar(bucket)
+        # Fold before publishing: a quote known exactly at the close belongs
+        # to the very bar it closes.
+        if bucket is not None and joins and start == bucket.start:
+            _fold(bucket, tick)
+
+        # Any reception at or past the open bar's end is proof that the bar is
+        # over, whichever bucket the tick itself belongs to — so a straggler
+        # or a future-dated quote releases a finished candle without joining
+        # it, instead of leaving it withheld until some later tick.
+        completed: Bar | None = None
+        if bucket is not None and tick.known_time >= self._end_of(bucket):
+            completed = self._to_bar(bucket)
+            self._bucket = bucket = None
+
+        if joins and bucket is None and (completed is None or completed.start < start):
+            # Reopening the bucket just published would rewrite a candle a
+            # strategy may already have traded on.
+            self._bucket = _open_bucket(start, tick)
+
+        # Anything else sits outside the open bar: its bucket closed before it
+        # (a straggler), or a broker clock running ahead of ours put it in a
+        # later one that cannot be opened yet without losing the bar in
+        # progress. It stays in the tick series either way.
+        return completed
+
+    def _end_of(self, bucket: _Bucket) -> datetime:
+        return bucket.start + timedelta(seconds=self._seconds)
 
     def _bucket_start(self, at: datetime) -> datetime:
         epoch = int(at.timestamp())

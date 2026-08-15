@@ -114,6 +114,24 @@ def test_tick_received_after_its_own_bucket_closed_never_enters_the_bar():
     assert builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=3))) is None
 
 
+def test_a_straggler_from_an_older_bucket_still_closes_the_open_bar():
+    # The quote belongs to a bar published long ago, so it joins nothing —
+    # but its reception time is past the end of the bar currently open, which
+    # is all the evidence needed to publish that one.
+    builder = BarBuilder("USDJPY", "1m")
+    builder.on_tick(make_tick("158.840", "158.844", time=at(minutes=1)))
+
+    bar = builder.on_tick(
+        make_tick(
+            "159.500", "159.504", time=at(seconds=30), received_at=at(minutes=2, seconds=10)
+        )
+    )
+    assert bar is not None
+    assert bar.start == at(minutes=1)
+    assert bar.high == Decimal("158.840")
+    assert bar.tick_volume == 1
+
+
 def test_a_future_dated_quote_does_not_close_a_bucket_early():
     # A broker clock running ahead of ours delivers a quote stamped in the
     # next minute while this one is still running. Treating that as proof the

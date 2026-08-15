@@ -177,12 +177,18 @@ class RiskEngine:
                         != (intent.direction is PositionDirection.LONG)
                     )
                 )
-                if not reduces_net:
-                    check(
-                        "MAX_OPEN_POSITIONS",
-                        ctx.open_positions_count < cfg.max_open_positions,
-                        f"open={ctx.open_positions_count} max={cfg.max_open_positions}",
-                    )
+                adds_broker_position = not reduces_net
+            else:
+                # INCREASE merges into the single net position on netting,
+                # but on hedging EVERY order opens a new ticket — the cap
+                # applies exactly like an OPEN there.
+                adds_broker_position = ctx.account_mode is AccountMode.HEDGING
+            if adds_broker_position:
+                check(
+                    "MAX_OPEN_POSITIONS",
+                    ctx.open_positions_count < cfg.max_open_positions,
+                    f"open={ctx.open_positions_count} max={cfg.max_open_positions}",
+                )
 
             check(
                 "DAILY_LOSS_WITHIN_LIMIT",

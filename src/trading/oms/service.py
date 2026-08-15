@@ -156,7 +156,18 @@ class OMSService:
             return None
         assert plan.position is not None
 
-        exit_quantity = quantity if quantity is not None else plan.position.quantity
+        if quantity is not None:
+            exit_quantity = quantity
+        elif intent.action is PositionAction.CLOSE:
+            exit_quantity = plan.position.quantity
+        elif intent.delta_quantity is not None:
+            exit_quantity = intent.delta_quantity
+        else:
+            # A REDUCE with no quantity anywhere must never silently become a
+            # full close.
+            raise ValueError(
+                "REDUCE requires an explicit quantity or intent.delta_quantity"
+            )
         # A system exit cannot reverse a position: never exit more than exists.
         exit_quantity = min(exit_quantity, plan.position.quantity)
 

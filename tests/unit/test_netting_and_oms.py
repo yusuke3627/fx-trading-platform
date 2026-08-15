@@ -220,6 +220,39 @@ def test_exit_after_protection_close_is_noop_not_reversal():
     assert command is None  # never a naked opposite market order
 
 
+def test_reduce_without_any_quantity_is_rejected_not_full_close():
+    # Omitting the quantity must never silently close the whole position: the
+    # full-quantity default is a CLOSE semantic only.
+    broker = FakeBroker({"1001": short_position(quantity="20000")})
+    oms = OMSService(
+        account_mode=AccountMode.HEDGING, broker=broker, clock=SystemClock()
+    )
+    with pytest.raises(ValueError):
+        oms.command_for_hedging_exit(
+            intent=make_intent(
+                action=PositionAction.REDUCE, direction=PositionDirection.SHORT
+            ),
+            ticket="1001",
+        )
+
+
+def test_reduce_uses_intent_delta_quantity():
+    broker = FakeBroker({"1001": short_position(quantity="20000")})
+    oms = OMSService(
+        account_mode=AccountMode.HEDGING, broker=broker, clock=SystemClock()
+    )
+    command = oms.command_for_hedging_exit(
+        intent=make_intent(
+            action=PositionAction.REDUCE,
+            direction=PositionDirection.SHORT,
+            delta_quantity="5000",
+        ),
+        ticket="1001",
+    )
+    assert command is not None
+    assert command.quantity == Decimal(5000)
+
+
 def test_exit_cannot_exceed_existing_position():
     broker = FakeBroker({"1001": short_position(quantity="5000")})
     oms = OMSService(

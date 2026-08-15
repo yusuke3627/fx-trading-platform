@@ -179,6 +179,37 @@ def test_hedging_opposite_direction_still_counts_against_cap():
     assert "MAX_OPEN_POSITIONS" in decision.reject_codes
 
 
+def test_hedging_increase_counts_against_position_cap():
+    # On MT5 hedging every order opens a new ticket — a same-direction
+    # INCREASE adds a broker position exactly like an OPEN.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(action=PositionAction.INCREASE, direction=PositionDirection.SHORT),
+        make_context(
+            open_positions_count=1,
+            symbol_exposure_units=Decimal(-2000),
+            symbol_gross_exposure_units=Decimal(2000),
+            requested_quantity=Decimal(1000),
+        ),
+    )
+    assert not decision.approved
+    assert "MAX_OPEN_POSITIONS" in decision.reject_codes
+
+
+def test_netting_increase_not_blocked_by_position_cap():
+    # Netting merges an INCREASE into the single net position: no new broker
+    # position is created, so the cap does not apply.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(action=PositionAction.INCREASE, direction=PositionDirection.SHORT),
+        make_context(
+            open_positions_count=1,
+            symbol_exposure_units=Decimal(-2000),
+            requested_quantity=Decimal(1000),
+            account_mode=AccountMode.NETTING,
+        ),
+    )
+    assert decision.approved, decision.reject_codes
+
+
 def test_netting_headroom_allows_net_reduction():
     # NETTING at the SHORT cap: a LONG order shrinks |net| and must not be
     # blocked by the unit cap.

@@ -115,6 +115,7 @@ def make_intent(
     symbol: str = "USDJPY",
     protected: bool = True,
     target_quantity: str | None = "1000",
+    delta_quantity: str | None = None,
 ) -> PositionIntent:
     protection = None
     if protected:
@@ -132,7 +133,7 @@ def make_intent(
         action=action,
         direction=direction,
         target_quantity=Decimal(target_quantity) if target_quantity else None,
-        delta_quantity=None,
+        delta_quantity=Decimal(delta_quantity) if delta_quantity else None,
         protection=protection,
         reason_codes=["TEST"],
         generated_at=T0,

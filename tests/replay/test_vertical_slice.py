@@ -204,6 +204,33 @@ def test_opposite_signal_during_entry_latency_becomes_a_flip():
     assert result.metrics["open_positions_at_end"] == "1"
 
 
+def test_repeated_opposite_signal_during_exit_latency_does_not_duplicate_flip():
+    # A second SHORT signal while the flip's CLOSE is still in flight must
+    # wait for the exit sequence: exactly one reversal OPEN, the repeat
+    # resolves as an INCREASE afterwards — never a second CLOSE + barrier
+    # stacking two same-direction OPENs.
+    costs = CostModel(latency_ms=2500.0, slippage_sigma_pips=0.0)
+    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    result = run_slice(
+        costs,
+        plan={
+            300: PositionDirection.LONG,
+            301: PositionDirection.SHORT,
+            302: PositionDirection.SHORT,
+        },
+        risk_config=config,
+    )
+    closes = [f for f in result.fills if f.action == "CLOSE"]
+    short_opens = [
+        f for f in result.fills if f.action == "OPEN" and f.direction == "SHORT"
+    ]
+    increases = [f for f in result.fills if f.action == "INCREASE"]
+    assert len(closes) == 1
+    assert len(short_opens) == 1
+    assert len(increases) == 1
+    assert result.rejected_commands == 0
+
+
 def test_late_old_tick_does_not_rewind_valuation():
     # The last DELIVERED tick can carry an older broker time (reception
     # order); final equity must stay marked at the newest broker-time price

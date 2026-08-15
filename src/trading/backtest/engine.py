@@ -378,14 +378,14 @@ class BacktestEngine:
     ) -> None:
         slot = (signal.strategy_id, signal.symbol)
         if any(
-            p.kind == "ENTRY"
-            and p.strategy_id == signal.strategy_id
-            and p.command.symbol == signal.symbol
+            p.strategy_id == signal.strategy_id and p.command.symbol == signal.symbol
             for p in state.pending
         ):
-            # An in-flight entry WILL fill; intents must see the post-fill
-            # book, or an opposite signal becomes a parallel OPEN instead of
-            # a flip (CLOSE -> OPEN). Held signals resolve at the fill tick.
+            # Any in-flight command (entry OR exit sequence) means the book
+            # is about to change: intents must see the post-resolution book,
+            # or an opposite signal becomes a parallel OPEN instead of a
+            # flip, and a repeated one duplicates the CLOSE + reversal.
+            # Held signals resolve when the slot's queue drains.
             state.deferred.setdefault(slot, []).append(signal)
             return
         mark = state.marking_tick
@@ -515,11 +515,13 @@ class BacktestEngine:
                 # Closed while queued (broker-side protection): NOOP, never
                 # a reversal.
                 self._barrier_step(state, w, pending.barrier, tick)
+                self._release_deferred(state, w, pending.strategy_id, tick)
                 return
             result = w.simulator.submit(pending.command, [tick])
             if result.fill is None:
                 state.rejected_commands += 1
                 self._barrier_step(state, w, pending.barrier, tick)
+                self._release_deferred(state, w, pending.strategy_id, tick)
                 return
             fill = result.fill
             self._settle_close(
@@ -537,6 +539,7 @@ class BacktestEngine:
             )
             state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
             self._barrier_step(state, w, pending.barrier, tick)
+            self._release_deferred(state, w, pending.strategy_id, tick)
             return
 
         result = w.simulator.submit(pending.command, [tick])

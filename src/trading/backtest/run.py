@@ -63,10 +63,15 @@ def git_state() -> dict:
         status = _run("status", "--porcelain")
         state = {"git_commit": commit, "git_dirty": bool(status.strip())}
         if state["git_dirty"]:
-            diff = _run("diff", "HEAD")
-            state["git_diff_sha256"] = hashlib.sha256(
-                (status + diff).encode()
-            ).hexdigest()
+            digest = hashlib.sha256((status + _run("diff", "HEAD")).encode())
+            # `diff HEAD` excludes untracked files, so their CONTENT goes
+            # into the hash too — same paths with different contents must
+            # never produce the same reproduction hash.
+            untracked = _run("ls-files", "--others", "--exclude-standard")
+            for name in sorted(untracked.splitlines()):
+                digest.update(name.encode())
+                digest.update(Path(name).read_bytes())
+            state["git_diff_sha256"] = digest.hexdigest()
         return state
     except (subprocess.CalledProcessError, FileNotFoundError):
         return {"git_commit": "unknown", "git_dirty": None}

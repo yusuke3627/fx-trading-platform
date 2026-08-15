@@ -65,6 +65,10 @@ class BLSCollector:
                 # a release the market trades.
                 if not row["period"].startswith("M") or row["period"] == "M13":
                     continue
+                # "-" is BLS's missing-value marker (observed live: months
+                # unpublished during the 2025 lapse in appropriations).
+                if row["value"] == "-":
+                    continue
                 month = int(row["period"][1:])
                 observations.append(
                     EconomicObservation(

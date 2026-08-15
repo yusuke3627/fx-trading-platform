@@ -25,9 +25,9 @@ DATA_TYPE_CODE = "SM"
 
 
 class CensusCollector:
-    def __init__(
-        self, transport: Any, api_key: str | None = None, *, clock: Clock | None = None
-    ) -> None:
+    # api_key is required: since 2025 the Census API answers keyless requests
+    # with an HTML "Missing Key" page (confirmed live 2026-08-15).
+    def __init__(self, transport: Any, api_key: str, *, clock: Clock | None = None) -> None:
         self._transport = transport
         self._api_key = api_key
         self._clock = clock or SystemClock()
@@ -44,9 +44,8 @@ class CensusCollector:
                 "data_type_code": DATA_TYPE_CODE,
                 "seasonally_adj": "yes",
                 "time": str(year),
+                "key": self._api_key,
             }
-            if self._api_key:
-                params["key"] = self._api_key
             rows = self._transport.get_json(MARTS_URL, params)
             if not isinstance(rows, list) or not rows:
                 raise ValueError(f"Census MARTS response for {year} is not tabular: {rows!r}")

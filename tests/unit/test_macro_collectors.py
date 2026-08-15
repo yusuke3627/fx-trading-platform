@@ -207,6 +207,9 @@ def _bls_payload() -> dict:
                     "data": [
                         {"year": "2026", "period": "M07", "value": "321.500"},
                         {"year": "2025", "period": "M13", "value": "310.000"},
+                        # BLS marks unpublished months with "-" (observed live
+                        # for the 2025 lapse in appropriations).
+                        {"year": "2025", "period": "M10", "value": "-"},
                     ],
                 },
                 {
@@ -225,7 +228,9 @@ def test_bls_maps_monthly_series_and_skips_annual_average():
     )
 
     by_series = {o.series: o for o in batch.observations}
-    assert set(by_series) == {US_CPI_HEADLINE_SA, US_UNEMPLOYMENT_RATE_SA}  # M13 skipped
+    # M13 (annual average) and "-" (missing) are both skipped.
+    assert set(by_series) == {US_CPI_HEADLINE_SA, US_UNEMPLOYMENT_RATE_SA}
+    assert len(batch.observations) == 2
     cpi = by_series[US_CPI_HEADLINE_SA]
     assert cpi.observation_period == "2026-07"
     assert cpi.value == Decimal("321.500")
@@ -315,7 +320,7 @@ def test_census_parses_tabular_response():
         ["607123", "44X72", "2026-07", "1"],
     ]
     transport = FakeTransport([rows])
-    batch = CensusCollector(transport, None, clock=FixedClock(RETRIEVED)).collect(
+    batch = CensusCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
         years=[2026]
     )
 
@@ -325,9 +330,13 @@ def test_census_parses_tabular_response():
     assert batch.observations[0].known_at == RETRIEVED
     # Array payload is archived wrapped in an object.
     assert batch.raw_events[0].payload == {"rows": rows}
+    # The Census API rejects keyless requests, so the key always goes along.
+    assert transport.get_calls[0][1]["key"] == "test-key"
 
 
 def test_census_non_tabular_response_raises():
     transport = FakeTransport([{"error": "unsupported"}])
     with pytest.raises(ValueError, match="not tabular"):
-        CensusCollector(transport, None, clock=FixedClock(RETRIEVED)).collect(years=[2026])
+        CensusCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
+            years=[2026]
+        )

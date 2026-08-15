@@ -47,8 +47,8 @@ class StorageConfig(BaseModel):
 class MacroDataConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    # API keys come from the environment (dsn_env pattern). ALFRED and BEA
-    # reject keyless requests; BLS and Census only rate-limit them harder.
+    # API keys come from the environment (dsn_env pattern). ALFRED, BEA and
+    # Census reject keyless requests; BLS only rate-limits them harder.
     fred_api_key_env: str = "FRED_API_KEY"
     bls_api_key_env: str = "BLS_API_KEY"
     bea_api_key_env: str = "BEA_API_KEY"

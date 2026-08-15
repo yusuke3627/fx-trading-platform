@@ -109,7 +109,7 @@ def main() -> None:
             yield bea_collector.collect(years)
         else:
             census_collector = census.CensusCollector(
-                transport, os.environ.get(keys.census_api_key_env), clock=clock
+                transport, _require_key(keys.census_api_key_env), clock=clock
             )
             yield census_collector.collect(years)
 

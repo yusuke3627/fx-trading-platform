@@ -193,13 +193,17 @@ class OMSService:
         sequence: int = 0,
     ) -> ExecutionCommand:
         """`sequence` distinguishes legitimate follow-up commands from the
-        same intent (e.g. a re-delta after a partial fill) while keeping the
-        key deterministic for true retries of the same logical command."""
+        same intent (e.g. a re-delta after a partial fill), and the ticket
+        distinguishes per-ticket exits from one intent (a hedging CLOSE can
+        span several tickets) — while the key stays deterministic for true
+        retries of the same logical command."""
         now: datetime = self._clock.now()
         command = ExecutionCommand(
             command_id=uuid4(),
             intent_id=intent.intent_id,
-            idempotency_key=f"{intent.intent_id}:{intent.action}:{symbol}:{sequence}",
+            idempotency_key=(
+                f"{intent.intent_id}:{intent.action}:{symbol}:{ticket or '-'}:{sequence}"
+            ),
             symbol=symbol,
             side=side,
             action=intent.action,

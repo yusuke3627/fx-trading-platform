@@ -259,6 +259,25 @@ def test_idempotency_key_distinguishes_follow_up_commands():
     assert first.idempotency_key != follow_up.idempotency_key
 
 
+def test_hedging_exit_idempotency_key_distinguishes_tickets():
+    # One CLOSE intent can span several tickets on hedging; the key is UNIQUE
+    # in the DB, so per-ticket commands must not collide at sequence=0.
+    broker = FakeBroker(
+        {"1001": short_position("1001"), "1002": short_position("1002")}
+    )
+    oms = OMSService(
+        account_mode=AccountMode.HEDGING, broker=broker, clock=SystemClock()
+    )
+    intent = make_intent(action=PositionAction.CLOSE, direction=PositionDirection.SHORT)
+
+    first = oms.command_for_hedging_exit(intent=intent, ticket="1001")
+    second = oms.command_for_hedging_exit(intent=intent, ticket="1002")
+    retry = oms.command_for_hedging_exit(intent=intent, ticket="1001")
+    assert first is not None and second is not None and retry is not None
+    assert first.idempotency_key != second.idempotency_key
+    assert first.idempotency_key == retry.idempotency_key
+
+
 def test_naked_exit_command_is_rejected_on_hedging():
     oms = OMSService(
         account_mode=AccountMode.HEDGING, broker=FakeBroker(), clock=SystemClock()

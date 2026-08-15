@@ -241,10 +241,19 @@ class RiskEngine:
         if max_units is None:
             return None
         if ctx.account_mode is AccountMode.NETTING:
-            # Netting: one net position. Headroom is direction-aware on the
-            # SIGNED exposure — an order that shrinks |net| has more room,
-            # not less. Bound is |net_after_fill| <= max_units.
-            if intent.direction is PositionDirection.LONG:
+            # Netting: one net position, bound |net| <= max_units. An
+            # opposite-direction quantity either shrinks |net| (always within
+            # the cap) or, past zero, becomes the from-flat size of the new
+            # side — the OMS never crosses zero in one order, so a reversal
+            # re-opens from flat and the approved size must fit the cap by
+            # itself, never max_units + |current|.
+            opposes = ctx.symbol_exposure_units != 0 and (
+                (ctx.symbol_exposure_units > 0)
+                != (intent.direction is PositionDirection.LONG)
+            )
+            if opposes:
+                headroom = Decimal(max_units)
+            elif intent.direction is PositionDirection.LONG:
                 headroom = Decimal(max_units) - ctx.symbol_exposure_units
             else:
                 headroom = Decimal(max_units) + ctx.symbol_exposure_units

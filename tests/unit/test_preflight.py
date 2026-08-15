@@ -1,9 +1,14 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
+from tests.support import T0, FixedClock, usdjpy_spec
 from trading.domain.account import AccountMode
+from trading.domain.fill import BrokerDeal
+from trading.domain.order import ExecutionSide
+from trading.domain.position import BrokerPosition, PositionDirection
+from trading.execution.mt5 import mapper
 from trading.execution.mt5.adapter import MT5ExecutionAdapter
-from trading.execution.mt5.preflight import run_preflight
+from trading.execution.mt5.preflight import _protection_fill_probe, run_preflight
 
 
 class FakeMT5:
@@ -104,3 +109,67 @@ def test_trade_cycle_requires_nonzero_magic():
     open_step = step(report, "trade_cycle_open")
     assert open_step.passed is False
     assert "magic" in (open_step.detail or "")
+
+
+class MissingOrderIdProbeAdapter:
+    """Probe path where the OPEN fills (DONE) but the broker result carries no
+    order id: cleanup must re-identify the position via magic and flatten."""
+
+    def __init__(self, magic: int) -> None:
+        self._mt5 = SimpleNamespace(
+            symbol_info_tick=lambda symbol: SimpleNamespace(bid=158.840, ask=158.844)
+        )
+        self._positions = {
+            "777": BrokerPosition(
+                broker_position_ticket="777",
+                broker_position_identifier="777",
+                symbol="USDJPY",
+                direction=PositionDirection.LONG,
+                quantity=Decimal(1000),
+                entry_price=Decimal("158.840"),
+                observed_at=T0,
+            )
+        }
+        self._deals = [
+            BrokerDeal(
+                broker_deal_id="d1",
+                broker_position_identifier="777",
+                magic=magic,
+                side=ExecutionSide.BUY,
+                quantity=Decimal(1000),
+                price=Decimal("158.840"),
+                broker_time=T0,
+            )
+        ]
+
+    def order_send(self, request):
+        if "position" in request:
+            self._positions.pop(str(request["position"]), None)
+            return SimpleNamespace(retcode=mapper.TRADE_RETCODE_DONE, order=888)
+        return SimpleNamespace(retcode=mapper.TRADE_RETCODE_DONE, order=0)
+
+    def position(self, ticket):
+        return self._positions.get(ticket)
+
+    def history_deals(self, from_time, to_time):
+        return self._deals
+
+
+def test_protection_probe_cleans_up_when_order_id_missing():
+    adapter = MissingOrderIdProbeAdapter(magic=42)
+    steps = []
+
+    def record(name, passed, measured=None, detail=None):
+        steps.append((name, passed, measured, detail))
+
+    _protection_fill_probe(
+        adapter, usdjpy_spec(), "USDJPY", 42, FixedClock(), record
+    )
+
+    names = [s[0] for s in steps]
+    assert "trade_cycle_protection_fill" in names
+    cleanup = next(s for s in steps if s[0] == "trade_cycle_protection_cleanup")
+    assert cleanup[1] is True
+    assert cleanup[2] == {"leftover_units": "0"}
+    # The position opened by the probe really is gone from the account.
+    assert adapter.position("777") is None

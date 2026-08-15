@@ -68,30 +68,69 @@ def test_unknown_resolution_from_broker_history():
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=True,
+        broker_order_live=False,
         filled_quantity=Decimal(1000),
     )
-    assert filled.state is CommandState.FILLED
+    assert filled is not None and filled.state is CommandState.FILLED
 
     partial = resolve_unknown(
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=True,
+        broker_order_live=False,
         filled_quantity=Decimal(400),
     )
-    assert partial.state is CommandState.PARTIAL_FILL
+    assert partial is not None and partial.state is CommandState.PARTIAL_FILL
 
     cancelled = resolve_unknown(
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=True,
+        broker_order_live=False,
         filled_quantity=Decimal(0),
     )
-    assert cancelled.state is CommandState.CANCELLED
+    assert cancelled is not None and cancelled.state is CommandState.CANCELLED
 
     no_side_effect = resolve_unknown(
         unknown_command(),
         now=at(minutes=1),
         broker_order_found=False,
+        broker_order_live=False,
         filled_quantity=Decimal(0),
     )
-    assert no_side_effect.state is CommandState.REJECTED
+    assert no_side_effect is not None and no_side_effect.state is CommandState.REJECTED
+
+
+def test_live_broker_order_keeps_unknown_unresolved():
+    # An order still working on the book can fill after reconciliation ran;
+    # calling it CANCELLED would re-enable new risk while the fill is pending.
+    def unknown_command():
+        return make_command(state=CommandState.UNKNOWN, quantity="1000")
+
+    still_open = resolve_unknown(
+        unknown_command(),
+        now=at(minutes=1),
+        broker_order_found=True,
+        broker_order_live=True,
+        filled_quantity=Decimal(0),
+    )
+    assert still_open is None
+
+    partially_filled_live = resolve_unknown(
+        unknown_command(),
+        now=at(minutes=1),
+        broker_order_found=True,
+        broker_order_live=True,
+        filled_quantity=Decimal(400),
+    )
+    assert partially_filled_live is None
+
+    # A fully observed fill is terminal evidence regardless of order status.
+    fully_filled = resolve_unknown(
+        unknown_command(),
+        now=at(minutes=1),
+        broker_order_found=True,
+        broker_order_live=True,
+        filled_quantity=Decimal(1000),
+    )
+    assert fully_filled is not None and fully_filled.state is CommandState.FILLED

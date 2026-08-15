@@ -194,6 +194,22 @@ def test_netting_headroom_allows_net_reduction():
     assert decision.approved_quantity == Decimal(2000)
 
 
+def test_netting_reversal_open_capped_as_from_flat():
+    # The OMS never crosses zero in one order: a reversal OPEN executes from
+    # flat after the close leg, so its approved size must fit the cap alone
+    # (max 2000 with net -1000 approves 2000, never max + |current| = 3000).
+    decision = engine(enabled_config(max_units_per_symbol={"USDJPY": 2000})).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(
+            symbol_exposure_units=Decimal(-1000),
+            requested_quantity=Decimal(3000),
+            account_mode=AccountMode.NETTING,
+        ),
+    )
+    assert decision.approved, decision.reject_codes
+    assert decision.approved_quantity == Decimal(2000)
+
+
 def test_netting_same_direction_at_cap_rejected():
     decision = engine(enabled_config()).evaluate(
         make_intent(direction=PositionDirection.SHORT),

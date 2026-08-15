@@ -581,6 +581,11 @@ def _protection_fill_probe(
     ticket = str(getattr(result, "order", 0) or 0)
     if ticket == "0":
         step("trade_cycle_protection_fill", False, detail="opened position not identified")
+        # The order DID fill: without an order id the position must still be
+        # re-identified via magic and flattened, exactly like the trade cycle.
+        _cleanup_leftover_ticket(
+            adapter, spec, symbol, magic, ticket, clock, step, "trade_cycle_protection_cleanup"
+        )
         return
 
     # Deals reference the lifecycle identifier, so capture it while the

@@ -51,13 +51,23 @@ def resolve_unknown(
     *,
     now: datetime,
     broker_order_found: bool,
+    broker_order_live: bool,
     filled_quantity: Decimal,
-) -> ExecutionCommand:
-    """Resolve an UNKNOWN command from broker history evidence."""
+) -> ExecutionCommand | None:
+    """Resolve an UNKNOWN command from broker history evidence.
+
+    Returns None while the broker order is still live (working on the book):
+    any resolution then could be contradicted by a later fill, so the command
+    stays UNKNOWN — and keeps blocking new risk — until the broker order
+    reaches a terminal state. A fully observed fill is terminal evidence on
+    its own.
+    """
     if command.state is not CommandState.UNKNOWN:
         raise ValueError(f"command is {command.state}, not UNKNOWN")
     if filled_quantity >= command.quantity:
         new_state = CommandState.FILLED
+    elif broker_order_live:
+        return None
     elif filled_quantity > 0:
         new_state = CommandState.PARTIAL_FILL
     elif broker_order_found:

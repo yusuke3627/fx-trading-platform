@@ -29,9 +29,10 @@ class InMemoryMarketData:
 
     Replay MUST construct this with the ReplayClock: pre-loaded history is
     then filtered so only data already known at clock.now() is visible (bars
-    by close_time, ticks by their time) — without the clock a strategy could
-    read future highs/lows/closes straight past the replay engine. Omitting
-    the clock is for live/incremental feeding only.
+    by close_time, ticks by known_time = received_at or broker time) —
+    without the clock a strategy could read future highs/lows/closes straight
+    past the replay engine. Omitting the clock is for live/incremental
+    feeding only.
     """
 
     def __init__(self, clock: Clock | None = None) -> None:
@@ -60,13 +61,17 @@ class InMemoryMarketData:
         ticks = self._visible_ticks(symbol)
         if not ticks:
             return []
-        end = ticks[-1].time
+        # Arrival order is not price order once late ticks exist: the window
+        # is anchored and sorted on the broker timeline.
+        end = max(t.time for t in ticks)
         start = end - timedelta(seconds=window_seconds)
-        return [t for t in ticks if t.time >= start]
+        return sorted((t for t in ticks if t.time >= start), key=lambda t: t.time)
 
     def latest_tick(self, symbol: str) -> Tick | None:
+        # A late-arriving old tick must never rewind the latest price: latest
+        # is by broker time among visible ticks, not by arrival.
         ticks = self._visible_ticks(symbol)
-        return ticks[-1] if ticks else None
+        return max(ticks, key=lambda t: t.time) if ticks else None
 
     def instrument(self, symbol: str) -> InstrumentSpec | None:
         return self._instruments.get(symbol)

@@ -52,6 +52,23 @@ def test_late_received_tick_hidden_until_reception():
     assert store.latest_tick("USDJPY") is not None
 
 
+def test_late_old_tick_does_not_rewind_latest_price():
+    # ReplayEngine delivers in reception order, so a tick with an older
+    # broker time can be appended AFTER newer ones; latest must stay on the
+    # broker timeline instead of returning the last arrival.
+    clock = FixedClock(at(minutes=6))
+    store = InMemoryMarketData(clock)
+    store.add_tick(make_tick("158.850", "158.854", time=at(minutes=4)))
+    store.add_tick(
+        make_tick("158.800", "158.804", time=at(minutes=0), received_at=at(minutes=5))
+    )
+    latest = store.latest_tick("USDJPY")
+    assert latest is not None and latest.time == at(minutes=4)
+    # The window query is likewise anchored and sorted on broker time.
+    window = store.ticks("USDJPY", 86400)
+    assert [t.time for t in window] == [at(minutes=0), at(minutes=4)]
+
+
 def test_without_clock_everything_is_visible():
     store = loaded_store(None)
     assert len(store.bars("USDJPY", "1h", 10)) == 3

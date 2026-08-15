@@ -89,7 +89,15 @@ class ExecutionSimulator:
         # fill on ticks that predate it.
         submit_time = command.created_at
         fill_after = submit_time + timedelta(milliseconds=self._costs.latency_ms)
-        fill_tick = next((t for t in ticks if t.time >= fill_after), None)
+        # A tick is fillable only once it has BOTH happened (broker time) and
+        # been received (known_time): a late-received tick was not usable at
+        # its broker timestamp, and the earliest-received eligible tick wins
+        # regardless of the window's ordering. Both timelines are checked
+        # because broker and reception clocks can skew either way.
+        available = [
+            t for t in ticks if t.time >= fill_after and t.known_time >= fill_after
+        ]
+        fill_tick = min(available, key=lambda t: t.known_time, default=None)
         if fill_tick is None:
             # No market data after the latency window: not filled, rather than
             # optimistically filling at the last observed tick.

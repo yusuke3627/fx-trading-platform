@@ -72,6 +72,23 @@ def test_fill_time_is_at_or_after_command_creation():
     assert result.fill.price == Decimal("158.844")
 
 
+def test_fill_waits_for_tick_reception_not_broker_time():
+    # A late-received tick was not usable at its broker timestamp: the fill
+    # must land on the earliest RECEIVED tick after latency, or the backtest
+    # would price fills off data the system had not seen yet.
+    sim = ExecutionSimulator(deterministic_costs(), usdjpy_spec(), seed=1)
+    ticks = [
+        make_tick("158.900", "158.904", time=at(seconds=1), received_at=at(minutes=5)),
+        make_tick("158.840", "158.844", time=at(minutes=1)),
+    ]
+    result = sim.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG), ticks
+    )
+    assert result.fill is not None
+    assert result.fill.broker_time == at(minutes=1)
+    assert result.fill.price == Decimal("158.844")
+
+
 def test_no_fill_when_no_tick_after_latency_window():
     costs = CostModel(latency_ms=10_000, slippage_sigma_pips=0.0)
     sim = ExecutionSimulator(costs, usdjpy_spec(), seed=1)

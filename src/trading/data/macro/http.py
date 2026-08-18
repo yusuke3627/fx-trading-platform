@@ -29,6 +29,12 @@ class HttpTransport:
     def __init__(self, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self._timeout = timeout_seconds
 
+    def get_bytes(self, url: str) -> bytes:
+        """Raw fetch for non-JSON sources (MOF publishes Shift_JIS CSV and
+        HTML); the caller owns decoding."""
+        with urllib.request.urlopen(url, timeout=self._timeout) as response:
+            return response.read()
+
     def get_json(self, url: str, params: dict[str, str]) -> Any:
         query = urllib.parse.urlencode(params)
         with urllib.request.urlopen(

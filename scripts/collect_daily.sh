@@ -32,4 +32,9 @@ if ! "$PY" -m trading.data.policy.collector --env "$ENV_NAME"; then
   failed=1
 fi
 
+if ! "$PY" -m trading.data.intervention.collector --env "$ENV_NAME"; then
+  echo "FAILED: intervention"
+  failed=1
+fi
+
 exit "$failed"

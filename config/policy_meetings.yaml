@@ -1,0 +1,32 @@
+# 中央銀行会合ファクト（機械採点の入力）。
+#
+# - 1 会合 1 エントリ。値は公式 statement / 議事要旨から転記し、確認が取れたら
+#   verified: true にする。人名は記録しない（dissent は人数のみ）。
+# - statement_published_at が known_at になる。FOMC は 14:00 ET 固定。BOJ は
+#   時刻非固定のため、実際の公表時刻を確認するまでは保守側の遅い時刻
+#   （15:00 JST）を置く（look-ahead 防止が優先）。
+# - 過去会合（2024 政策転換期など）のバックフィルは issue 管理で一次資料と
+#   照合しながら追加する。verified: false のエントリは research run で除外可能。
+
+meetings:
+  - bank: FED
+    decision_date: 2026-07-29
+    statement_published_at: 2026-07-29T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 3
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: false  # 票数は research note 転記。公式 statement と要照合
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases.htm
+
+  - bank: BOJ
+    decision_date: 2026-07-31
+    statement_published_at: 2026-07-31T06:00:00+00:00  # 15:00 JST（保守置き・要実時刻確認）
+    rate_change_bp: 0
+    hawkish_dissents: 1
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: false  # 8対1（1名が25bp利上げ提案）は research note 転記。公式と要照合
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/index.htm

@@ -11,6 +11,7 @@ build/
 .envrc
 *.local.yaml
 reports/
+logs/
 .DS_Store
 .claude/worktrees/
 .claude/plans/

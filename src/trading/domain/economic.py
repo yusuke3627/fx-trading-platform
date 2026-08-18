@@ -15,8 +15,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-# "2026-07" (monthly) or "2026Q2" (quarterly).
-_PERIOD_PATTERN = re.compile(r"^\d{4}(-(0[1-9]|1[0-2])|Q[1-4])$")
+# "2026-07" (monthly), "2026Q2" (quarterly) or "2026-08-18" (daily).
+_PERIOD_PATTERN = re.compile(
+    r"^\d{4}(-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?|Q[1-4])$"
+)
 
 
 class EconomicObservation(BaseModel):
@@ -49,6 +51,6 @@ class EconomicObservation(BaseModel):
     def _period_format(cls, value: str) -> str:
         if not _PERIOD_PATTERN.match(value):
             raise ValueError(
-                f"observation_period {value!r} must be YYYY-MM or YYYYQn"
+                f"observation_period {value!r} must be YYYY-MM, YYYYQn or YYYY-MM-DD"
             )
         return value

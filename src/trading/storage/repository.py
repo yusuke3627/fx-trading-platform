@@ -61,6 +61,11 @@ class AccountSnapshotRepository(Protocol):
 class EventRepository(Protocol):
     def insert(self, event: EventEnvelope) -> None: ...
 
+    # Insert unless an event with the same id already exists; returns whether
+    # a row was added. For ingests whose event ids are deterministic
+    # (policy meeting scores), re-running is a no-op instead of an error.
+    def insert_new(self, event: EventEnvelope) -> bool: ...
+
     def known_before(
         self, t: datetime, event_type: str | None = None
     ) -> Sequence[EventEnvelope]: ...

@@ -93,9 +93,14 @@ def _alfred_page(observations: list[dict], count: int) -> dict:
     return {"count": count, "observations": observations}
 
 
+def _vintage_dates(dates: list[str]) -> dict:
+    return {"count": len(dates), "vintage_dates": dates}
+
+
 def test_alfred_maps_vintages_to_release_time_known_at():
     transport = FakeTransport(
         [
+            _vintage_dates(["2026-08-12", "2026-09-11"]),
             _alfred_page(
                 [
                     {
@@ -118,7 +123,7 @@ def test_alfred_maps_vintages_to_release_time_known_at():
                     },
                 ],
                 count=3,
-            )
+            ),
         ]
     )
     batch = AlfredCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
@@ -166,27 +171,67 @@ def test_alfred_paginates_until_count_reached():
         ],
         count=2,
     )
-    transport = FakeTransport([page1, page2])
+    transport = FakeTransport(
+        [_vintage_dates(["2026-08-12", "2026-09-11"]), page1, page2]
+    )
     batch = AlfredCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
         US_CPI_HEADLINE_SA
     )
 
     assert len(batch.observations) == 2
     assert len(batch.raw_events) == 2
-    assert [call[1]["offset"] for call in transport.get_calls] == ["0", "1"]
+    observation_calls = [c for c in transport.get_calls if "observations" in c[0]]
+    assert [call[1]["offset"] for call in observation_calls] == ["0", "1"]
+
+
+def test_alfred_splits_windows_at_vintage_limit(monkeypatch):
+    from trading.data.macro import alfred as alfred_module
+
+    monkeypatch.setattr(alfred_module, "MAX_VINTAGES_PER_WINDOW", 2)
+    dates = ["2026-01-05", "2026-02-11", "2026-03-11", "2026-04-10", "2026-05-12"]
+    empty = _alfred_page([], count=0)
+    transport = FakeTransport([_vintage_dates(dates), empty, empty, empty])
+    AlfredCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
+        US_CPI_HEADLINE_SA
+    )
+
+    observation_calls = [c for c in transport.get_calls if "observations" in c[0]]
+    windows = [
+        (call[1]["realtime_start"], call[1]["realtime_end"])
+        for call in observation_calls
+    ]
+    # Each vintage date lands in exactly one window; the last is open-ended.
+    assert windows == [
+        ("2026-01-05", "2026-03-10"),
+        ("2026-03-11", "2026-05-11"),
+        ("2026-05-12", "9999-12-31"),
+    ]
 
 
 def test_alfred_observation_start_is_forwarded():
-    transport = FakeTransport([_alfred_page([], count=0)])
+    transport = FakeTransport(
+        [_vintage_dates(["2026-08-12"]), _alfred_page([], count=0)]
+    )
     AlfredCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
         US_CPI_HEADLINE_SA, observation_start=date(2015, 1, 1)
     )
-    assert transport.get_calls[0][1]["observation_start"] == "2015-01-01"
+    observation_calls = [c for c in transport.get_calls if "observations" in c[0]]
+    assert observation_calls[0][1]["observation_start"] == "2015-01-01"
 
 
-def test_alfred_malformed_response_raises():
-    transport = FakeTransport([{"error_message": "Bad Request"}])
+def test_alfred_malformed_observations_raises():
+    transport = FakeTransport(
+        [_vintage_dates(["2026-08-12"]), {"error_message": "Bad Request"}]
+    )
     with pytest.raises(ValueError, match="no observations"):
+        AlfredCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
+            US_CPI_HEADLINE_SA
+        )
+
+
+def test_alfred_malformed_vintagedates_raises():
+    transport = FakeTransport([{"error_message": "Bad Request"}])
+    with pytest.raises(ValueError, match="vintagedates"):
         AlfredCollector(transport, "test-key", clock=FixedClock(RETRIEVED)).collect(
             US_CPI_HEADLINE_SA
         )

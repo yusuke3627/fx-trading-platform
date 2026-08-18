@@ -21,6 +21,10 @@ US_NONFARM_PAYROLLS_SA = "us_nonfarm_payrolls_sa"
 US_UNEMPLOYMENT_RATE_SA = "us_unemployment_rate_sa"
 US_REAL_GDP_GROWTH_SAAR = "us_real_gdp_growth_saar"
 US_RETAIL_SALES_ADVANCE_SA = "us_retail_sales_advance_sa"
+# Policy proxy input, not a "Fed expectation": the 2Y yield mixes policy
+# expectations with term/growth/inflation/risk premia (research note
+# 2026-08-15), so the series is named for what it is.
+US_TREASURY_2Y_YIELD = "us_treasury_2y_yield"
 
 
 class IndicatorSpec(BaseModel):
@@ -28,7 +32,7 @@ class IndicatorSpec(BaseModel):
 
     series: str
     unit: str
-    frequency: Literal["monthly", "quarterly"]
+    frequency: Literal["daily", "monthly", "quarterly"]
     # Official release time-of-day in the agency's timezone, used to place a
     # vintage date on the intraday timeline (all six initial indicators are
     # 08:30 ET releases).
@@ -97,6 +101,16 @@ INDICATORS: dict[str, IndicatorSpec] = {
             release_time=_0830,
             release_timezone=_ET,
         ),
+        IndicatorSpec(
+            series=US_TREASURY_2Y_YIELD,
+            unit="percent",
+            frequency="daily",
+            # H.15 / daily par yield publishes ~16:15 ET; 18:00 ET keeps the
+            # vintage on the safe side of look-ahead whether the ALFRED
+            # vintage date is the publication day or FRED's ingestion day.
+            release_time=time(18, 0),
+            release_timezone=_ET,
+        ),
     )
 }
 
@@ -104,6 +118,8 @@ INDICATORS: dict[str, IndicatorSpec] = {
 def period_from_date(observation_date: date, frequency: str) -> str:
     """Reference-period string for an observation date (FRED-style dates mark
     the period start: 2026-07-01 is July 2026, 2026-04-01 is 2026Q2)."""
+    if frequency == "daily":
+        return observation_date.isoformat()
     if frequency == "monthly":
         return f"{observation_date.year}-{observation_date.month:02d}"
     quarter = (observation_date.month - 1) // 3 + 1

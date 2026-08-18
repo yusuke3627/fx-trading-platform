@@ -21,6 +21,15 @@ FED_EXPECTED_PATH_CHANGE = "fed_expected_path_change"
 BOJ_EXPECTED_PATH_CHANGE = "boj_expected_path_change"
 BOJ_HAWKISH_SHIFT = "boj_hawkish_shift"
 
+# Policy proxies (data/policy). US2Y is a policy PROXY, not a Fed-expectation
+# measure; rate_differential_change stays unused until a JP2Y series exists.
+US2Y_LEVEL = "us2y_level"
+US2Y_CHANGE_1D = "us2y_change_1d"
+US2Y_CHANGE_5D = "us2y_change_5d"
+US2Y_ZSCORE_20D = "us2y_zscore_20d"
+BOJ_POLICY_SHIFT_SCORE = "boj_policy_shift_score"
+FED_POLICY_SHIFT_SCORE = "fed_policy_shift_score"
+
 
 class FeatureStore(Protocol):
     def get(self, name: str, symbol: str | None = None) -> float | None: ...

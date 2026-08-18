@@ -568,6 +568,40 @@ class PostgresEventRepository:
         )
         self._conn.commit()
 
+    def insert_new(self, e: EventEnvelope) -> bool:
+        ensure_json_native(e.payload)
+        cursor = self._conn.execute(
+            """
+            INSERT INTO events (
+                id, event_type, source, source_uri, payload, payload_hash,
+                raw_uri, effective_at, published_at, retrieved_at, known_at,
+                processed_at, superseded_at
+            ) VALUES (
+                %(id)s, %(event_type)s, %(source)s, %(source_uri)s, %(payload)s,
+                %(payload_hash)s, %(raw_uri)s, %(effective_at)s, %(published_at)s,
+                %(retrieved_at)s, %(known_at)s, %(processed_at)s, %(superseded_at)s
+            )
+            ON CONFLICT (id) DO NOTHING
+            """,
+            {
+                "id": e.event_id,
+                "event_type": e.event_type,
+                "source": e.source,
+                "source_uri": e.source_uri,
+                "payload": Jsonb(e.payload),
+                "payload_hash": e.payload_hash,
+                "raw_uri": e.raw_uri,
+                "effective_at": e.effective_at,
+                "published_at": e.published_at,
+                "retrieved_at": e.retrieved_at,
+                "known_at": e.known_at,
+                "processed_at": e.processed_at,
+                "superseded_at": e.superseded_at,
+            },
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
     def known_before(
         self, t: datetime, event_type: str | None = None
     ) -> Sequence[EventEnvelope]:

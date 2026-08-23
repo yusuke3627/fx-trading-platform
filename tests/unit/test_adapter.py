@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from trading.execution.mt5 import mapper
 from trading.execution.mt5.adapter import MT5ConnectionError, MT5ExecutionAdapter
 
 
@@ -39,6 +40,7 @@ class FakeMT5Positions:
             volume_step=1.0,
             volume_max=100.0,
             trade_stops_level=0,
+            filling_mode=mapper.SYMBOL_FILLING_IOC,
         )
 
     def last_error(self):

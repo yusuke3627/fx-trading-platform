@@ -24,7 +24,7 @@ from trading.backtest.data import dataset_hash, synthetic_ticks
 from trading.backtest.engine import ENGINE_VERSION, BacktestEngine, ScriptedStrategy
 from trading.backtest.report import write_report
 from trading.config import load_config
-from trading.domain.instrument import InstrumentSpec
+from trading.domain.instrument import FillingMode, InstrumentSpec
 from trading.domain.position import PositionDirection
 from trading.strategy.base import StrategyConfig
 
@@ -45,6 +45,7 @@ def synthetic_usdjpy_spec(symbol: str) -> InstrumentSpec:
         volume_step=Decimal(1000),
         volume_max=Decimal(1_000_000),
         stop_level_points=0,
+        accepted_filling_modes=frozenset({FillingMode.IMMEDIATE_OR_CANCEL}),
     )
 
 

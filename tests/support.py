@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from trading.domain.account import AccountSnapshot
 from trading.domain.event import EventEnvelope
-from trading.domain.instrument import InstrumentSpec
+from trading.domain.instrument import FillingMode, InstrumentSpec
 from trading.domain.intent import PositionIntent, ProtectionSpec
 from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand, ExecutionSide
@@ -41,6 +41,8 @@ def usdjpy_spec(**overrides) -> InstrumentSpec:
         "volume_step": Decimal(1000),
         "volume_max": Decimal(100000),
         "stop_level_points": 0,
+        # IOC only, as OANDA Japan reports for USD/JPY.
+        "accepted_filling_modes": frozenset({FillingMode.IMMEDIATE_OR_CANCEL}),
     }
     values.update(overrides)
     return InstrumentSpec(**values)

@@ -12,7 +12,7 @@ from typing import Any
 
 from trading.domain.account import AccountMode, AccountTradeMode
 from trading.domain.fill import BrokerDeal, ProtectionReason
-from trading.domain.instrument import InstrumentSpec
+from trading.domain.instrument import FillingMode, InstrumentSpec
 from trading.domain.order import ExecutionSide
 from trading.domain.position import BrokerPosition, PositionDirection
 
@@ -21,6 +21,24 @@ ORDER_TYPE_SELL = 1
 
 TRADE_ACTION_DEAL = 1
 TRADE_ACTION_SLTP = 6
+
+# SYMBOL_FILLING_* are the bits a symbol advertises; ORDER_FILLING_* are the
+# values an order carries. The two enumerations do not share their numbering.
+SYMBOL_FILLING_FOK = 1
+SYMBOL_FILLING_IOC = 2
+
+ORDER_FILLING_FOK = 0
+ORDER_FILLING_IOC = 1
+
+_FILLING_MODE_BY_SYMBOL_BIT = {
+    SYMBOL_FILLING_FOK: FillingMode.FILL_OR_KILL,
+    SYMBOL_FILLING_IOC: FillingMode.IMMEDIATE_OR_CANCEL,
+}
+
+_ORDER_FILLING_BY_MODE = {
+    FillingMode.FILL_OR_KILL: ORDER_FILLING_FOK,
+    FillingMode.IMMEDIATE_OR_CANCEL: ORDER_FILLING_IOC,
+}
 
 ACCOUNT_MARGIN_MODE_RETAIL_NETTING = 0
 ACCOUNT_MARGIN_MODE_EXCHANGE = 1
@@ -107,6 +125,31 @@ def pip_size_for_digits(digits: int) -> Decimal:
     raise ValueError(f"unsupported quote digits for pip derivation: {digits}")
 
 
+def accepted_filling_from_mask(mask: int) -> frozenset[FillingMode]:
+    """SYMBOL_FILLING_* bitmask -> the modes the symbol accepts.
+
+    Bits with no counterpart here are dropped: a mode the mapper cannot put on
+    a request is not one the broker can be asked for.
+    """
+    return frozenset(
+        mode for bit, mode in _FILLING_MODE_BY_SYMBOL_BIT.items() if mask & bit
+    )
+
+
+def order_filling_for(accepted: frozenset[FillingMode]) -> int:
+    """Accepted modes -> the ORDER_FILLING_* value to put on the request.
+
+    FOK is preferred: all-or-nothing keeps the filled size equal to the
+    requested size, so one command stays one position change. IOC is used when
+    the broker accepts nothing else, and its partial fills are what
+    reconciliation resolves.
+    """
+    for mode in (FillingMode.FILL_OR_KILL, FillingMode.IMMEDIATE_OR_CANCEL):
+        if mode in accepted:
+            return _ORDER_FILLING_BY_MODE[mode]
+    raise ValueError(f"broker accepts no supported filling mode: {sorted(accepted)}")
+
+
 def instrument_spec_from_symbol_info(info: Any) -> InstrumentSpec:
     """Build an InstrumentSpec from mt5.symbol_info() output.
 
@@ -123,6 +166,7 @@ def instrument_spec_from_symbol_info(info: Any) -> InstrumentSpec:
         volume_step=lots_to_units(info.volume_step, contract),
         volume_max=lots_to_units(info.volume_max, contract),
         stop_level_points=int(getattr(info, "trade_stops_level", 0)),
+        accepted_filling_modes=accepted_filling_from_mask(int(info.filling_mode)),
     )
 
 
@@ -144,6 +188,7 @@ def market_order_request(
         "symbol": symbol,
         "volume": units_to_lots(units, spec.contract_size),
         "type": side_to_order_type(side),
+        "type_filling": order_filling_for(spec.accepted_filling_modes),
         "deviation": deviation_points,
         "magic": magic,
         "comment": comment,

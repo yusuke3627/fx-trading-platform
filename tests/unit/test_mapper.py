@@ -2,8 +2,11 @@ from decimal import Decimal
 
 import pytest
 
+from tests.support import usdjpy_spec
 from trading.domain.account import AccountMode
 from trading.domain.fill import ProtectionReason
+from trading.domain.instrument import FillingMode
+from trading.domain.order import ExecutionSide
 from trading.execution.mt5 import mapper
 
 
@@ -39,3 +42,60 @@ def test_units_lots_roundtrip():
     contract = Decimal(1000)
     assert mapper.units_to_lots(Decimal(1500), contract) == 1.5
     assert mapper.lots_to_units(1.5, contract) == Decimal("1500.0")
+
+
+def test_accepted_filling_from_broker_mask():
+    assert mapper.accepted_filling_from_mask(mapper.SYMBOL_FILLING_IOC) == frozenset(
+        {FillingMode.IMMEDIATE_OR_CANCEL}
+    )
+    assert mapper.accepted_filling_from_mask(mapper.SYMBOL_FILLING_FOK) == frozenset(
+        {FillingMode.FILL_OR_KILL}
+    )
+    assert mapper.accepted_filling_from_mask(
+        mapper.SYMBOL_FILLING_FOK | mapper.SYMBOL_FILLING_IOC
+    ) == frozenset({FillingMode.FILL_OR_KILL, FillingMode.IMMEDIATE_OR_CANCEL})
+    assert mapper.accepted_filling_from_mask(0) == frozenset()
+
+
+def test_order_filling_prefers_fill_or_kill():
+    both = frozenset({FillingMode.FILL_OR_KILL, FillingMode.IMMEDIATE_OR_CANCEL})
+    assert mapper.order_filling_for(both) == mapper.ORDER_FILLING_FOK
+    assert (
+        mapper.order_filling_for(frozenset({FillingMode.IMMEDIATE_OR_CANCEL}))
+        == mapper.ORDER_FILLING_IOC
+    )
+    with pytest.raises(ValueError):
+        mapper.order_filling_for(frozenset())
+
+
+def test_market_order_request_carries_a_filling_the_broker_accepts():
+    """OANDA Japan accepts IOC only for USD/JPY; omitting type_filling makes
+    MT5 default to FOK and the broker rejects the order (retcode 10030)."""
+    spec = usdjpy_spec()
+    assert spec.accepted_filling_modes == frozenset({FillingMode.IMMEDIATE_OR_CANCEL})
+
+    request = mapper.market_order_request(
+        symbol="USDJPY",
+        side=ExecutionSide.BUY,
+        units=spec.volume_min,
+        spec=spec,
+    )
+
+    assert request["type_filling"] == mapper.ORDER_FILLING_IOC
+
+
+def test_market_order_request_uses_fill_or_kill_when_the_broker_accepts_it():
+    spec = usdjpy_spec(
+        accepted_filling_modes=frozenset(
+            {FillingMode.FILL_OR_KILL, FillingMode.IMMEDIATE_OR_CANCEL}
+        )
+    )
+
+    request = mapper.market_order_request(
+        symbol="USDJPY",
+        side=ExecutionSide.BUY,
+        units=spec.volume_min,
+        spec=spec,
+    )
+
+    assert request["type_filling"] == mapper.ORDER_FILLING_FOK

@@ -46,6 +46,7 @@ class FakeMT5:
             volume_step=1.0,
             volume_max=100.0,
             trade_stops_level=0,
+            filling_mode=mapper.SYMBOL_FILLING_IOC,
         )
 
     def order_check(self, request):

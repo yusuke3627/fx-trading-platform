@@ -22,6 +22,8 @@ DSN = os.environ.get("TRADING_DB_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="TRADING_DB_DSN is not set")
 
 T0 = datetime(2026, 8, 13, tzinfo=UTC)
+# Well past every row a test writes, for reads that are not about visibility.
+LATER = T0 + timedelta(days=1)
 
 
 @pytest.fixture
@@ -56,7 +58,7 @@ def test_a_snapshot_round_trips_through_the_database(repo):
     )
     r.insert(account_id, written)
 
-    (read,) = r.since(account_id, T0)
+    (read,) = r.known_before(account_id, LATER, T0)
 
     assert read == written
 
@@ -67,7 +69,7 @@ def test_an_absent_margin_level_round_trips_as_none(repo):
     r, account_id, _ = repo
     r.insert(account_id, make_snapshot("1000000", observed_at=T0))
 
-    (read,) = r.since(account_id, T0)
+    (read,) = r.known_before(account_id, LATER, T0)
 
     assert read.margin_level is None
 
@@ -77,7 +79,7 @@ def test_since_returns_the_window_oldest_first(repo):
     for hour in (2, 0, 1):
         r.insert(account_id, make_snapshot("1000000", observed_at=at(hours=hour)))
 
-    window = r.since(account_id, at(hours=1))
+    window = r.known_before(account_id, LATER, at(hours=1))
 
     assert [s.observed_at for s in window] == [at(hours=1), at(hours=2)]
 
@@ -87,11 +89,25 @@ def test_latest_returns_the_newest_observation(repo):
     r.insert(account_id, make_snapshot("1000000", observed_at=T0))
     r.insert(account_id, make_snapshot("1005000", observed_at=at(hours=3)))
 
-    latest = r.latest(account_id)
+    latest = r.latest_known_before(account_id, LATER)
 
     assert latest is not None
     assert latest.observed_at == at(hours=3)
     assert latest.equity == Decimal(1005000)
+
+
+def test_a_row_observed_after_the_cutoff_is_not_visible(repo):
+    # A live evaluation freezes its clock for the length of a cycle while the
+    # account collector writes from its own process, so a row can land partway
+    # through one. It was not knowable when the cycle began.
+    r, account_id, _ = repo
+    r.insert(account_id, make_snapshot("1000000", observed_at=T0))
+    r.insert(account_id, make_snapshot("2000000", observed_at=at(hours=2)))
+
+    latest = r.latest_known_before(account_id, at(hours=1))
+
+    assert latest is not None and latest.equity == Decimal(1000000)
+    assert [s.observed_at for s in r.known_before(account_id, at(hours=1), T0)] == [T0]
 
 
 def test_another_accounts_rows_are_never_read(repo):
@@ -101,7 +117,7 @@ def test_another_accounts_rows_are_never_read(repo):
     r.insert(other, make_snapshot("9000000", observed_at=at(hours=5)))
     r.insert(account_id, make_snapshot("1000000", observed_at=T0))
 
-    latest = r.latest(account_id)
+    latest = r.latest_known_before(account_id, LATER)
 
     assert latest is not None and latest.equity == Decimal(1000000)
-    assert [s.equity for s in r.since(account_id, T0)] == [Decimal(1000000)]
+    assert [s.equity for s in r.known_before(account_id, LATER, T0)] == [Decimal(1000000)]

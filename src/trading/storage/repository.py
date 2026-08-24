@@ -58,9 +58,17 @@ class AccountSnapshotRepository(Protocol):
     # drawdown.
     def insert(self, account_id: str, snapshot: AccountSnapshot) -> None: ...
 
-    def since(self, account_id: str, t: datetime) -> Sequence[AccountSnapshot]: ...
+    # Visibility is capped at `t`, the same as for ticks and bars: a row
+    # observed after it was not knowable then. A live evaluation freezes its
+    # clock for the length of a cycle, so a snapshot the collector writes
+    # midway through one must not appear inside it.
+    def known_before(
+        self, account_id: str, t: datetime, since: datetime
+    ) -> Sequence[AccountSnapshot]: ...
 
-    def latest(self, account_id: str) -> AccountSnapshot | None: ...
+    def latest_known_before(
+        self, account_id: str, t: datetime
+    ) -> AccountSnapshot | None: ...
 
 
 class EventRepository(Protocol):

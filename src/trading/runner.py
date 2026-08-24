@@ -57,9 +57,7 @@ class StrategyRunner:
         away from the live pipeline."""
         collected: list[CollectedSignal] = []
         for binding in self._bindings:
-            if not binding.context.config.enabled:
-                continue
-            if binding.status is StrategyStatus.DISABLED:
+            if not binding.context.config.runs:
                 continue
             signals = await binding.strategy.on_event(event, binding.context)
             collected.extend(

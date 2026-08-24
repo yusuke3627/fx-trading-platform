@@ -318,6 +318,37 @@ def test_stale_quote_rejected():
     assert "QUOTE_FRESH" in decision.reject_codes
 
 
+def test_quote_on_a_broker_clock_ahead_of_ours_is_still_fresh():
+    # ADR-005: event time belongs to the broker's clock, which at OANDA Japan
+    # runs three hours ahead of ours. Aging it against our now would make every
+    # quote look future-dated and reject the lot.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(
+            quote=make_tick(
+                "158.840", "158.844", time=at(hours=3), received_at=at(seconds=-1)
+            )
+        ),
+    )
+    assert decision.approved, decision.reject_codes
+
+
+def test_quote_stale_on_our_clock_rejected_despite_a_recent_broker_time():
+    # The mirror image: a reconnect can deliver a quote the broker stamped
+    # moments ago but that only reached us much later. What matters is when it
+    # became usable here.
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(
+            quote=make_tick(
+                "158.840", "158.844", time=at(hours=3), received_at=at(seconds=-30)
+            )
+        ),
+    )
+    assert not decision.approved
+    assert "QUOTE_FRESH" in decision.reject_codes
+
+
 def test_future_dated_quote_rejected():
     # A quote from the future is look-ahead (replay leak or broken broker
     # clock), not freshness.

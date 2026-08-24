@@ -157,12 +157,19 @@ class FakeAccountSnapshotRepository:
     def insert(self, account_id: str, snapshot: AccountSnapshot) -> None:
         self.snapshots.append((account_id, snapshot))
 
-    def since(self, account_id: str, t: datetime) -> list[AccountSnapshot]:
-        return [s for s in self._of(account_id) if s.observed_at >= t]
+    def known_before(
+        self, account_id: str, t: datetime, since: datetime
+    ) -> list[AccountSnapshot]:
+        return [s for s in self._visible(account_id, t) if s.observed_at >= since]
 
-    def latest(self, account_id: str) -> AccountSnapshot | None:
-        owned = self._of(account_id)
-        return owned[-1] if owned else None
+    def latest_known_before(
+        self, account_id: str, t: datetime
+    ) -> AccountSnapshot | None:
+        visible = self._visible(account_id, t)
+        return visible[-1] if visible else None
+
+    def _visible(self, account_id: str, t: datetime) -> list[AccountSnapshot]:
+        return [s for s in self._of(account_id) if s.observed_at <= t]
 
     def _of(self, account_id: str) -> list[AccountSnapshot]:
         return sorted(

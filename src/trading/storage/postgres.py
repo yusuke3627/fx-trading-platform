@@ -310,25 +310,29 @@ class PostgresAccountSnapshotRepository:
         )
         self._conn.commit()
 
-    def since(self, account_id: str, t: datetime) -> Sequence[AccountSnapshot]:
+    def known_before(
+        self, account_id: str, t: datetime, since: datetime
+    ) -> Sequence[AccountSnapshot]:
         rows = self._conn.execute(
             """
             SELECT * FROM account_snapshots
-            WHERE account_id = %s AND observed_at >= %s
+            WHERE account_id = %s AND observed_at <= %s AND observed_at >= %s
             ORDER BY observed_at
             """,
-            (account_id, t),
+            (account_id, t, since),
         ).fetchall()
         return [_row_to_snapshot(r) for r in rows]
 
-    def latest(self, account_id: str) -> AccountSnapshot | None:
+    def latest_known_before(
+        self, account_id: str, t: datetime
+    ) -> AccountSnapshot | None:
         row = self._conn.execute(
             """
             SELECT * FROM account_snapshots
-            WHERE account_id = %s
+            WHERE account_id = %s AND observed_at <= %s
             ORDER BY observed_at DESC LIMIT 1
             """,
-            (account_id,),
+            (account_id, t),
         ).fetchone()
         return _row_to_snapshot(row) if row else None
 

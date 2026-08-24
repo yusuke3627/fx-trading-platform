@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -120,26 +121,34 @@ class MissingOrderIdProbeAdapter:
         self._mt5 = SimpleNamespace(
             symbol_info_tick=lambda symbol: SimpleNamespace(bid=158.840, ask=158.844)
         )
+        self._broker_now = T0
+        # "555" is the account's own position, opened well before this run
+        # with the same magic. It must survive the probe's cleanup.
         self._positions = {
-            "777": BrokerPosition(
-                broker_position_ticket="777",
-                broker_position_identifier="777",
+            ticket: BrokerPosition(
+                broker_position_ticket=ticket,
+                broker_position_identifier=ticket,
                 symbol="USDJPY",
                 direction=PositionDirection.LONG,
                 quantity=Decimal(1000),
                 entry_price=Decimal("158.840"),
                 observed_at=T0,
             )
+            for ticket in ("777", "555")
         }
         self._deals = [
             BrokerDeal(
-                broker_deal_id="d1",
-                broker_position_identifier="777",
+                broker_deal_id=deal_id,
+                broker_position_identifier=ticket,
                 magic=magic,
                 side=ExecutionSide.BUY,
                 quantity=Decimal(1000),
                 price=Decimal("158.840"),
-                broker_time=T0,
+                broker_time=broker_time,
+            )
+            for deal_id, ticket, broker_time in (
+                ("d1", "777", T0),
+                ("d0", "555", T0 - timedelta(days=1)),
             )
         ]
 
@@ -151,6 +160,9 @@ class MissingOrderIdProbeAdapter:
 
     def position(self, ticket):
         return self._positions.get(ticket)
+
+    def broker_time(self, symbol):
+        return self._broker_now
 
     def history_deals(self, from_time, to_time):
         return self._deals
@@ -181,3 +193,16 @@ def test_protection_probe_cleans_up_when_order_id_missing():
     assert cleanup[2] == {"leftover_units": "0"}
     # The position opened by the probe really is gone from the account.
     assert adapter.position("777") is None
+
+
+def test_magic_reidentification_leaves_positions_older_than_this_run_alone():
+    """The account trades under the same magic, and history comes back widened
+    past the broker's server-time offset. Closing on magic alone would send a
+    close order to a position the preflight never opened."""
+    adapter = MissingOrderIdProbeAdapter(magic=42)
+
+    _protection_fill_probe(
+        adapter, usdjpy_spec(), "USDJPY", 42, FixedClock(), lambda *a, **k: None
+    )
+
+    assert adapter.position("555") is not None

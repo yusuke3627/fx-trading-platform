@@ -29,6 +29,11 @@ from trading.domain.order import ExecutionSide
 from trading.execution.mt5 import mapper
 from trading.execution.mt5.adapter import MT5ExecutionAdapter
 
+# How far back a deal may sit and still be treated as one this run opened.
+# Wide enough to cover a slow broker round trip, short enough that positions
+# the account already held are never mistaken for the preflight's own.
+OWN_DEAL_LOOKBACK = timedelta(minutes=10)
+
 
 @dataclass(frozen=True)
 class StepResult:
@@ -437,19 +442,24 @@ def _own_position_tickets_from_history(
     — the safe lookup when the broker result lacks an order id (a foreign
     position can never match our magic).
 
-    Magic, not recency, is what selects here: the adapter widens the window
-    past the broker's server-time offset, so deals older than the requested
-    period come back too. Tickets that are already closed drop out at the
-    fresh select in _close_until_flat.
+    Magic alone is not enough to identify them: the account's own trading uses
+    the same magic, and the adapter widens the window past the broker's
+    server-time offset, so older deals come back too. Recency is therefore
+    judged against the broker's clock, the only reading in the same time zone
+    as the deals. Cutting the candidates down here matters because whatever
+    survives gets a close order sent to it.
     """
     deals = adapter.history_deals(
-        clock.now() - timedelta(minutes=10), clock.now() + timedelta(minutes=1)
+        clock.now() - OWN_DEAL_LOOKBACK, clock.now() + timedelta(minutes=1)
     )
+    cutoff = adapter.broker_time(symbol) - OWN_DEAL_LOOKBACK
     return sorted(
         {
             d.broker_position_identifier
             for d in deals
-            if d.magic == magic and d.broker_position_identifier
+            if d.magic == magic
+            and d.broker_position_identifier
+            and d.broker_time >= cutoff
         }
     )
 

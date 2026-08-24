@@ -147,6 +147,17 @@ class MT5ExecutionAdapter:
             )
         return self._trade_deals(raw)
 
+    def broker_time(self, symbol: str) -> datetime:
+        """The broker's own clock, read from the latest quote.
+
+        Deal timestamps arrive in the server's zone, so recency has to be
+        judged against this reading; a real clock would be off by the offset.
+        """
+        tick = self._mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise MT5ConnectionError(f"symbol_info_tick({symbol}) failed")
+        return mapper.broker_time_from_epoch(tick.time)
+
     def history_deals_for_position(self, position_identifier: str) -> list[BrokerDeal]:
         """Every deal of one position, addressed by its identifier.
 

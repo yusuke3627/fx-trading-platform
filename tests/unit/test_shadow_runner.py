@@ -8,6 +8,7 @@ from tests.support import (
     T0,
     FakeAccountSnapshotRepository,
     FakeBarRepository,
+    FakeDecisionRepository,
     FakeTickRepository,
     FixedClock,
     at,
@@ -77,6 +78,7 @@ def build(
     enabled=True,
     trading_enabled=False,
     source_clock=None,
+    decisions=None,
 ):
     clock = CycleClock(source_clock or FixedClock(at(minutes=1)))
     market = StoredMarketData(
@@ -99,6 +101,7 @@ def build(
         risk_config=risk_config,
         market=market,
         snapshots=snapshot_store,
+        decisions=decisions or FakeDecisionRepository(),
         clock=clock,
         account_id=ACCOUNT,
         account_mode=AccountMode.HEDGING,
@@ -309,6 +312,39 @@ def test_the_whole_evaluation_reads_one_instant():
     (result,) = runner.evaluate_once().decisions
 
     assert result.signal.generated_at == result.decision.decided_at == at(minutes=1)
+
+
+def test_every_graded_decision_is_recorded():
+    # Recording the trail is what a shadow run is for; the printed line is a
+    # convenience on top of it.
+    store = FakeDecisionRepository()
+    runner = build(**quote_and_account(), decisions=store)
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert store.trails == [(result.signal, result.intent, result.decision)]
+
+
+def test_a_cycle_that_decides_nothing_records_nothing():
+    store = FakeDecisionRepository()
+    runner = build(**quote_and_account(), strategy=SilentStrategy, decisions=store)
+
+    runner.evaluate_once()
+
+    assert store.trails == []
+
+
+def test_a_blocked_cycle_records_nothing():
+    store = FakeDecisionRepository()
+    runner = build(
+        ticks=[make_tick("158.840", "158.844", time=T0, received_at=T0)],
+        snapshots=[make_snapshot("1000000", observed_at=at(minutes=1))],
+        source_clock=FixedClock(at(minutes=1)),
+        decisions=store,
+    )
+
+    assert runner.evaluate_once().blocked is not None
+    assert store.trails == []
 
 
 def test_describe_names_the_strategy_and_the_verdict():

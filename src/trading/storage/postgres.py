@@ -18,8 +18,11 @@ from trading.domain.account import AccountSnapshot
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope, ensure_json_native
 from trading.domain.fill import Fill
+from trading.domain.intent import PositionIntent, ProtectionSpec
 from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand
+from trading.domain.risk import RiskCheck, RiskDecision
+from trading.domain.signal import StrategySignal
 from trading.storage.repository import StaleCommandStateError
 
 
@@ -649,3 +652,196 @@ class PostgresEventRepository:
                 (t, event_type),
             ).fetchall()
         return [_row_to_event(r) for r in rows]
+
+
+def _row_to_signal(row: dict[str, Any]) -> StrategySignal:
+    return StrategySignal(
+        signal_id=row["signal_id"],
+        strategy_id=row["signal_strategy_id"],
+        strategy_version=row["signal_strategy_version"],
+        symbol=row["signal_symbol"],
+        desired_direction=row["desired_direction"],
+        conviction=row["conviction"],
+        expected_horizon_seconds=row["expected_horizon_seconds"],
+        stop_distance_pips=row["stop_distance_pips"],
+        reason_codes=row["signal_reason_codes"],
+        generated_at=row["signal_generated_at"],
+    )
+
+
+def _row_to_intent(row: dict[str, Any]) -> PositionIntent:
+    # No stop loss means no protection at all: the spec is built around that
+    # column and requires it, so the two cannot disagree.
+    protection = (
+        ProtectionSpec(
+            stop_loss_price=row["stop_loss_price"],
+            take_profit_price=row["take_profit_price"],
+            maximum_unprotected_seconds=row["maximum_unprotected_seconds"],
+            source=row["protection_source"],
+        )
+        if row["stop_loss_price"] is not None
+        else None
+    )
+    return PositionIntent(
+        intent_id=row["intent_id"],
+        strategy_id=row["intent_strategy_id"],
+        strategy_version=row["intent_strategy_version"],
+        symbol=row["intent_symbol"],
+        action=row["action"],
+        direction=row["direction"],
+        target_quantity=row["target_quantity"],
+        delta_quantity=row["delta_quantity"],
+        protection=protection,
+        reason_codes=row["intent_reason_codes"],
+        generated_at=row["intent_generated_at"],
+    )
+
+
+def _row_to_decision(row: dict[str, Any]) -> RiskDecision:
+    return RiskDecision(
+        decision_id=row["decision_id"],
+        intent_id=row["intent_id"],
+        approved=row["approved"],
+        approved_quantity=row["approved_quantity"],
+        checks=[RiskCheck(**c) for c in row["checks"]],
+        reject_codes=row["reject_codes"],
+        decided_at=row["decided_at"],
+    )
+
+
+class PostgresDecisionRepository:
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    def record(
+        self,
+        signal: StrategySignal,
+        intent: PositionIntent,
+        decision: RiskDecision,
+    ) -> None:
+        # One transaction for the three: the foreign keys chain them, and a
+        # trail that stopped halfway would read as a signal nobody graded.
+        self._conn.execute(
+            """
+            INSERT INTO strategy_signals (
+                id, strategy_id, strategy_version, symbol, desired_direction,
+                conviction, expected_horizon_seconds, stop_distance_pips,
+                reason_codes, generated_at
+            ) VALUES (
+                %(id)s, %(strategy_id)s, %(strategy_version)s, %(symbol)s,
+                %(direction)s, %(conviction)s, %(horizon)s, %(stop_pips)s,
+                %(reason_codes)s, %(generated_at)s
+            )
+            ON CONFLICT (id) DO NOTHING
+            """,
+            {
+                "id": signal.signal_id,
+                "strategy_id": signal.strategy_id,
+                "strategy_version": signal.strategy_version,
+                "symbol": signal.symbol,
+                "direction": signal.desired_direction.value,
+                "conviction": signal.conviction,
+                "horizon": signal.expected_horizon_seconds,
+                "stop_pips": signal.stop_distance_pips,
+                "reason_codes": Jsonb(signal.reason_codes),
+                "generated_at": signal.generated_at,
+            },
+        )
+        protection = intent.protection
+        self._conn.execute(
+            """
+            INSERT INTO position_intents (
+                id, signal_id, strategy_id, strategy_version, symbol, action,
+                direction, target_quantity, delta_quantity, stop_loss_price,
+                take_profit_price, protection_source,
+                maximum_unprotected_seconds, reason_codes, generated_at
+            ) VALUES (
+                %(id)s, %(signal_id)s, %(strategy_id)s, %(strategy_version)s,
+                %(symbol)s, %(action)s, %(direction)s, %(target)s, %(delta)s,
+                %(stop_loss)s, %(take_profit)s, %(protection_source)s,
+                %(unprotected)s, %(reason_codes)s, %(generated_at)s
+            )
+            """,
+            {
+                "id": intent.intent_id,
+                "signal_id": signal.signal_id,
+                "strategy_id": intent.strategy_id,
+                "strategy_version": intent.strategy_version,
+                "symbol": intent.symbol,
+                "action": intent.action.value,
+                "direction": intent.direction.value,
+                "target": intent.target_quantity,
+                "delta": intent.delta_quantity,
+                "stop_loss": protection.stop_loss_price if protection else None,
+                "take_profit": protection.take_profit_price if protection else None,
+                "protection_source": protection.source if protection else None,
+                "unprotected": (
+                    protection.maximum_unprotected_seconds if protection else None
+                ),
+                "reason_codes": Jsonb(intent.reason_codes),
+                "generated_at": intent.generated_at,
+            },
+        )
+        self._conn.execute(
+            """
+            INSERT INTO risk_decisions (
+                id, intent_id, approved, approved_quantity, checks,
+                reject_codes, decided_at
+            ) VALUES (
+                %(id)s, %(intent_id)s, %(approved)s, %(approved_quantity)s,
+                %(checks)s, %(reject_codes)s, %(decided_at)s
+            )
+            """,
+            {
+                "id": decision.decision_id,
+                "intent_id": decision.intent_id,
+                "approved": decision.approved,
+                "approved_quantity": decision.approved_quantity,
+                "checks": Jsonb([c.model_dump() for c in decision.checks]),
+                "reject_codes": Jsonb(decision.reject_codes),
+                "decided_at": decision.decided_at,
+            },
+        )
+        self._conn.commit()
+
+    def recent(
+        self, limit: int
+    ) -> Sequence[tuple[StrategySignal, PositionIntent, RiskDecision]]:
+        # Every column the three tables have in common is aliased by table (id,
+        # strategy_id, strategy_version, symbol, reason_codes, generated_at).
+        # Unaliased, the row mappers would silently read whichever copy the
+        # join kept — which for these tables holds the same value today and
+        # would stop doing so the moment one of them diverges.
+        rows = self._conn.execute(
+            """
+            SELECT
+                s.id AS signal_id,
+                s.strategy_id AS signal_strategy_id,
+                s.strategy_version AS signal_strategy_version,
+                s.symbol AS signal_symbol,
+                s.desired_direction, s.conviction, s.expected_horizon_seconds,
+                s.stop_distance_pips,
+                s.reason_codes AS signal_reason_codes,
+                s.generated_at AS signal_generated_at,
+                i.id AS intent_id,
+                i.strategy_id AS intent_strategy_id,
+                i.strategy_version AS intent_strategy_version,
+                i.symbol AS intent_symbol,
+                i.action, i.direction, i.target_quantity,
+                i.delta_quantity, i.stop_loss_price, i.take_profit_price,
+                i.protection_source, i.maximum_unprotected_seconds,
+                i.reason_codes AS intent_reason_codes,
+                i.generated_at AS intent_generated_at,
+                d.id AS decision_id, d.approved, d.approved_quantity, d.checks,
+                d.reject_codes, d.decided_at
+            FROM risk_decisions d
+            JOIN position_intents i ON i.id = d.intent_id
+            JOIN strategy_signals s ON s.id = i.signal_id
+            ORDER BY d.decided_at DESC, d.created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            (_row_to_signal(r), _row_to_intent(r), _row_to_decision(r)) for r in rows
+        ]

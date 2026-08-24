@@ -248,6 +248,7 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         magic=magic,
         comment="preflight-cycle",
     )
+    pre_existing = _held_position_identifiers(adapter, symbol)
     result = adapter.order_send(open_request)
     retcode = getattr(result, "retcode", None)
     # DONE_PARTIAL still leaves a live position; it must flow through the
@@ -256,7 +257,15 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     step("trade_cycle_open", opened, {"retcode": retcode})
     if not opened:
         _cleanup_leftover_position(
-            adapter, spec, symbol, magic, result, clock, step, "trade_cycle_cleanup"
+            adapter,
+            spec,
+            symbol,
+            magic,
+            result,
+            clock,
+            step,
+            "trade_cycle_cleanup",
+            pre_existing=pre_existing,
         )
         return
 
@@ -276,7 +285,15 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         # The order DID succeed: whatever it created must not stay open just
         # because identification failed.
         _cleanup_leftover_ticket(
-            adapter, spec, symbol, magic, order_ticket, clock, step, "trade_cycle_cleanup"
+            adapter,
+            spec,
+            symbol,
+            magic,
+            order_ticket,
+            clock,
+            step,
+            "trade_cycle_cleanup",
+            pre_existing=pre_existing,
         )
         step(
             "trade_cycle_protection_verify",
@@ -428,26 +445,55 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
     _protection_fill_probe(adapter, spec, symbol, magic, clock, step)
 
 
+def _held_position_identifiers(adapter, symbol: str) -> frozenset[str]:
+    """Identifiers the account already holds. Captured before an order goes
+    out, this is what separates the position that order creates from the ones
+    the account was already carrying under the same magic."""
+    return frozenset(p.broker_position_identifier for p in adapter.positions(symbol))
+
+
 def _cleanup_leftover_position(
-    adapter, spec, symbol: str, magic: int, result, clock: Clock, step, step_name: str
+    adapter,
+    spec,
+    symbol: str,
+    magic: int,
+    result,
+    clock: Clock,
+    step,
+    step_name: str,
+    *,
+    pre_existing: frozenset[str],
 ) -> None:
     ticket = str(getattr(result, "order", 0) or 0) if result is not None else "0"
-    _cleanup_leftover_ticket(adapter, spec, symbol, magic, ticket, clock, step, step_name)
+    _cleanup_leftover_ticket(
+        adapter,
+        spec,
+        symbol,
+        magic,
+        ticket,
+        clock,
+        step,
+        step_name,
+        pre_existing=pre_existing,
+    )
 
 
 def _own_position_tickets_from_history(
-    adapter, symbol: str, magic: int, clock: Clock
+    adapter, symbol: str, magic: int, clock: Clock, pre_existing: frozenset[str]
 ) -> list[str]:
     """Re-identify positions this preflight created via its own magic number
     — the safe lookup when the broker result lacks an order id (a foreign
     position can never match our magic).
 
     Magic alone is not enough to identify them: the account's own trading uses
-    the same magic, and the adapter widens the window past the broker's
-    server-time offset, so older deals come back too. Recency is therefore
-    judged against the broker's clock, the only reading in the same time zone
-    as the deals. Cutting the candidates down here matters because whatever
-    survives gets a close order sent to it.
+    the same magic. Two filters narrow it to this run's own position, and both
+    are needed because whatever survives gets a close order sent to it.
+
+    Positions the account already held when the order went out are excluded
+    outright — no matter how recently they were opened, they are not ours.
+    Recency then drops the rest of the widened window the adapter returns, and
+    is judged against the broker's clock: the deals carry the server's time
+    zone, so a real clock would compare against the wrong instant.
     """
     deals = adapter.history_deals(
         clock.now() - OWN_DEAL_LOOKBACK, clock.now() + timedelta(minutes=1)
@@ -459,6 +505,7 @@ def _own_position_tickets_from_history(
             for d in deals
             if d.magic == magic
             and d.broker_position_identifier
+            and d.broker_position_identifier not in pre_existing
             and d.broker_time >= cutoff
         }
     )
@@ -496,13 +543,23 @@ def _close_until_flat(adapter, spec, symbol: str, magic: int, ticket: str):
 
 
 def _cleanup_leftover_ticket(
-    adapter, spec, symbol: str, magic: int, ticket: str, clock: Clock, step, step_name: str
+    adapter,
+    spec,
+    symbol: str,
+    magic: int,
+    ticket: str,
+    clock: Clock,
+    step,
+    step_name: str,
+    *,
+    pre_existing: frozenset[str],
 ) -> None:
     """A failed or partial order may still have left a position on the demo
     account; keep closing until a fresh select confirms it is gone. A cleanup
     that leaves exposure is itself a failure, never a silent success. With no
-    order id in the result, own positions are re-identified from recent deals
-    (magic) instead of being abandoned."""
+    order id in the result, own positions are re-identified from history
+    instead of being abandoned; pre_existing is what the account held before
+    the order, so that re-identification cannot reach a foreign position."""
     if ticket != "0":
         tickets = [ticket]
     else:
@@ -518,7 +575,9 @@ def _cleanup_leftover_ticket(
                 ),
             )
             return
-        tickets = _own_position_tickets_from_history(adapter, symbol, magic, clock)
+        tickets = _own_position_tickets_from_history(
+            adapter, symbol, magic, clock, pre_existing
+        )
         if not tickets:
             step(
                 step_name,
@@ -568,6 +627,7 @@ def _protection_fill_probe(
     distance = max(spec.stop_level_points, 20) * point
     stop_loss = Decimal(str(tick.bid)) - distance
 
+    pre_existing = _held_position_identifiers(adapter, symbol)
     result = adapter.order_send(
         mapper.market_order_request(
             symbol=symbol,
@@ -586,7 +646,15 @@ def _protection_fill_probe(
     ):
         step("trade_cycle_protection_fill", False, {"retcode": probe_retcode})
         _cleanup_leftover_position(
-            adapter, spec, symbol, magic, result, clock, step, "trade_cycle_protection_cleanup"
+            adapter,
+            spec,
+            symbol,
+            magic,
+            result,
+            clock,
+            step,
+            "trade_cycle_protection_cleanup",
+            pre_existing=pre_existing,
         )
         return
     ticket = str(getattr(result, "order", 0) or 0)
@@ -595,7 +663,15 @@ def _protection_fill_probe(
         # The order DID fill: without an order id the position must still be
         # re-identified via magic and flattened, exactly like the trade cycle.
         _cleanup_leftover_ticket(
-            adapter, spec, symbol, magic, ticket, clock, step, "trade_cycle_protection_cleanup"
+            adapter,
+            spec,
+            symbol,
+            magic,
+            ticket,
+            clock,
+            step,
+            "trade_cycle_protection_cleanup",
+            pre_existing=pre_existing,
         )
         return
 
@@ -621,7 +697,15 @@ def _protection_fill_probe(
 
     if not fired:
         _cleanup_leftover_ticket(
-            adapter, spec, symbol, magic, ticket, clock, step, "trade_cycle_protection_cleanup"
+            adapter,
+            spec,
+            symbol,
+            magic,
+            ticket,
+            clock,
+            step,
+            "trade_cycle_protection_cleanup",
+            pre_existing=pre_existing,
         )
         step(
             "trade_cycle_protection_fill",

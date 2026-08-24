@@ -146,6 +146,29 @@ class FakeBarRepository:
         return sorted(visible, key=lambda b: b.start)[-count:]
 
 
+class FakeAccountSnapshotRepository:
+    """AccountSnapshotRepository in memory, read by observed_at the way the
+    stored series is.
+    """
+
+    def __init__(self, snapshots: Sequence[AccountSnapshot] = ()) -> None:
+        self.snapshots = list(snapshots)
+
+    def insert(self, snapshot: AccountSnapshot) -> None:
+        self.snapshots.append(snapshot)
+
+    def since(self, t: datetime) -> list[AccountSnapshot]:
+        return sorted(
+            (s for s in self.snapshots if s.observed_at >= t),
+            key=lambda s: s.observed_at,
+        )
+
+    def latest(self) -> AccountSnapshot | None:
+        if not self.snapshots:
+            return None
+        return max(self.snapshots, key=lambda s: s.observed_at)
+
+
 def make_snapshot(
     equity: str,
     observed_at: datetime = T0,
@@ -153,12 +176,13 @@ def make_snapshot(
     broker_connected: bool = True,
     margin: str = "0",
     margin_level: str | None = None,
+    balance: str | None = None,
 ) -> AccountSnapshot:
     eq = Decimal(equity)
     hwm = Decimal(high_water_mark) if high_water_mark is not None else eq
     return AccountSnapshot(
         observed_at=observed_at,
-        balance=eq,
+        balance=Decimal(balance) if balance is not None else eq,
         equity=eq,
         margin=Decimal(margin),
         free_margin=eq,

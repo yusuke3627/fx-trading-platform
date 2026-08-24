@@ -1,10 +1,12 @@
 """MT5 fetch failure (None) vs confirmed absence (empty tuple) must never be
 conflated: an exit that mistakes an outage for "position closed" silently
 skips a live position."""
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 
+from tests.support import T0
 from trading.execution.mt5 import mapper
 from trading.execution.mt5.adapter import MT5ConnectionError, MT5ExecutionAdapter
 
@@ -98,8 +100,14 @@ class FakeMT5History(FakeMT5Positions):
     def __init__(self, deals) -> None:
         super().__init__(positions_result=())
         self._deals = deals
+        self.dated_call = None
+        self.position_call = None
 
-    def history_deals_get(self, start, end):
+    def history_deals_get(self, start=None, end=None, position=None):
+        if position is not None:
+            self.position_call = position
+        else:
+            self.dated_call = (start, end)
         return self._deals
 
 
@@ -107,5 +115,27 @@ def test_history_deals_keeps_only_trade_executions():
     adapter = MT5ExecutionAdapter(
         mt5_module=FakeMT5History((raw_trade_deal(), raw_balance_deal()))
     )
-    deals = adapter.history_deals(None, None)
+    deals = adapter.history_deals(T0, T0)
+    assert [d.broker_deal_id for d in deals] == ["555"]
+
+
+def test_history_deals_widens_the_window_past_any_broker_time_offset():
+    """MT5 reads the bounds in the broker's server time (OANDA Japan runs
+    UTC+3), so a window given in UTC misses the deals it was meant to cover."""
+    fake = FakeMT5History((raw_trade_deal(),))
+
+    MT5ExecutionAdapter(mt5_module=fake).history_deals(T0, T0)
+
+    start, end = fake.dated_call
+    assert T0 - start >= timedelta(hours=14)
+    assert end - T0 >= timedelta(hours=14)
+
+
+def test_history_deals_for_position_asks_by_identifier_not_by_date():
+    fake = FakeMT5History((raw_trade_deal(), raw_balance_deal()))
+
+    deals = MT5ExecutionAdapter(mt5_module=fake).history_deals_for_position("40768549")
+
+    assert fake.position_call == 40768549
+    assert fake.dated_call is None
     assert [d.broker_deal_id for d in deals] == ["555"]

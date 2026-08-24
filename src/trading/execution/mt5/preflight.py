@@ -407,15 +407,10 @@ def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> 
         None if flat else "position not fully closed; leftover remains on the demo account",
     )
 
-    deals = adapter.history_deals(
-        clock.now() - timedelta(hours=1), clock.now() + timedelta(minutes=1)
-    )
     # Deals carry the lifecycle identifier, not the current ticket.
-    cycle_deals = [
-        d
-        for d in deals
-        if d.broker_position_identifier == position.broker_position_identifier
-    ]
+    cycle_deals = adapter.history_deals_for_position(
+        position.broker_position_identifier
+    )
     step(
         "trade_cycle_history_check",
         len(cycle_deals) >= 2,
@@ -439,8 +434,14 @@ def _own_position_tickets_from_history(
     adapter, symbol: str, magic: int, clock: Clock
 ) -> list[str]:
     """Re-identify positions this preflight created via its own magic number
-    in recent deals — the safe lookup when the broker result lacks an order
-    id (a foreign position can never match our magic)."""
+    — the safe lookup when the broker result lacks an order id (a foreign
+    position can never match our magic).
+
+    Magic, not recency, is what selects here: the adapter widens the window
+    past the broker's server-time offset, so deals older than the requested
+    period come back too. Tickets that are already closed drop out at the
+    fresh select in _close_until_flat.
+    """
     deals = adapter.history_deals(
         clock.now() - timedelta(minutes=10), clock.now() + timedelta(minutes=1)
     )
@@ -622,14 +623,10 @@ def _protection_fill_probe(
         )
         return
 
-    deals = adapter.history_deals(
-        clock.now() - timedelta(hours=1), clock.now() + timedelta(minutes=1)
-    )
     protection_deals = [
         d
-        for d in deals
-        if d.broker_position_identifier == identifier
-        and d.protection_reason is not None
+        for d in adapter.history_deals_for_position(identifier)
+        if d.protection_reason is not None
     ]
     step(
         "trade_cycle_protection_fill",

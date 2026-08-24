@@ -155,6 +155,13 @@ class MissingOrderIdProbeAdapter:
     def history_deals(self, from_time, to_time):
         return self._deals
 
+    def history_deals_for_position(self, position_identifier):
+        return [
+            d
+            for d in self._deals
+            if d.broker_position_identifier == position_identifier
+        ]
+
 
 def test_protection_probe_cleans_up_when_order_id_missing():
     adapter = MissingOrderIdProbeAdapter(magic=42)

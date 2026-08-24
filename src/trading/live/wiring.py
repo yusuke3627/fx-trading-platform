@@ -21,11 +21,17 @@ class UnknownStrategyError(ValueError):
     """Configuration names a strategy this build does not contain."""
 
 
-def configured_symbols(config: AppConfig) -> set[str]:
-    """Every instrument the configured strategies declare."""
+def traded_symbols(config: AppConfig) -> set[str]:
+    """Every instrument a strategy that actually runs declares.
+
+    Disabled strategies are excluded: a symbol only they name is one no
+    evaluation will ever reach, which for a runner keyed to a single symbol is
+    the same as naming a symbol nobody configured.
+    """
     return {
         instrument
         for strategy in config.strategies.values()
+        if strategy.runs
         for instrument in strategy.instruments
     }
 

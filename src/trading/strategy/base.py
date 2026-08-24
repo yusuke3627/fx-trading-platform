@@ -88,6 +88,17 @@ class StrategyConfig(BaseModel):
     def param(self, name: str, default: float | str | bool):
         return self.parameters.get(name, default)
 
+    @property
+    def runs(self) -> bool:
+        """Whether a strategy with this configuration is evaluated at all.
+
+        Two independent switches: `enabled` is the operator's, `status` is the
+        strategy's own lifecycle stage. Anything asking "will this strategy
+        actually see events" has to ask both, so the pair lives here rather
+        than being spelled out at each caller.
+        """
+        return self.enabled and self.status is not StrategyStatus.DISABLED
+
 
 class PortfolioView(Protocol):
     """Read-only view of the strategy's own virtual position."""

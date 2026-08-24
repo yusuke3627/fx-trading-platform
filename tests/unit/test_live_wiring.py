@@ -7,7 +7,7 @@ from tests.support import FakeBarRepository, FakeTickRepository, FixedClock, usd
 from trading.config import load_config
 from trading.data.market.stored import StoredMarketData
 from trading.live.clock import CycleClock
-from trading.live.wiring import UnknownStrategyError, build_runner, configured_symbols
+from trading.live.wiring import UnknownStrategyError, build_runner, traded_symbols
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.strategy.base import StrategyConfig, StrategyStatus
 from trading.strategy.registry import STRATEGIES
@@ -72,17 +72,41 @@ def test_an_unregistered_strategy_id_stops_the_build():
         build_runner(config, **services())
 
 
-def test_configured_symbols_collects_every_declared_instrument():
+def test_traded_symbols_collects_what_a_running_strategy_declares():
     # Only the runner's symbol gets an instrument spec loaded, so this is what
-    # decides whether a --symbol is one any strategy would actually trade.
+    # decides whether a --symbol is one any evaluation would actually reach.
     config = SimpleNamespace(
         strategies={
-            "a": StrategyConfig(strategy_id="a", instruments=["USDJPY"]),
-            "b": StrategyConfig(strategy_id="b", instruments=["EURUSD", "USDJPY"]),
+            "a": _config("a", ["USDJPY"]),
+            "b": _config("b", ["EURUSD", "USDJPY"]),
         }
     )
 
-    assert configured_symbols(config) == {"USDJPY", "EURUSD"}
+    assert traded_symbols(config) == {"USDJPY", "EURUSD"}
+
+
+def test_traded_symbols_excludes_strategies_that_never_run():
+    # A symbol only a switched-off strategy names is one no evaluation reaches,
+    # which for a runner keyed to a single symbol is the same as naming a
+    # symbol nobody configured at all.
+    config = SimpleNamespace(
+        strategies={
+            "a": _config("a", ["USDJPY"]),
+            "b": _config("b", ["EURUSD"], enabled=False),
+            "c": _config("c", ["GBPJPY"], status=StrategyStatus.DISABLED),
+        }
+    )
+
+    assert traded_symbols(config) == {"USDJPY"}
+
+
+def _config(strategy_id, instruments, *, enabled=True, status=StrategyStatus.SHADOW):
+    return StrategyConfig(
+        strategy_id=strategy_id,
+        enabled=enabled,
+        status=status,
+        instruments=instruments,
+    )
 
 
 @pytest.mark.parametrize("environment", ["shadow", "micro_live", "production"])

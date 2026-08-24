@@ -272,7 +272,7 @@ def main() -> None:
 
     from trading.config import load_config
     from trading.data.market.stored import StoredMarketData
-    from trading.live.wiring import build_runner, configured_symbols
+    from trading.live.wiring import build_runner, traded_symbols
 
     parser = argparse.ArgumentParser(description="Shadow strategy runner")
     parser.add_argument("--env", default="shadow")
@@ -289,12 +289,12 @@ def main() -> None:
 
     config = load_config(args.env)
     symbol = args.symbol or config.market.primary_instruments[0]
-    # Only this symbol's spec is loaded, so a symbol no strategy trades leaves
-    # every strategy asking for an instrument that is not there — and doing
-    # nothing about it, quietly, for as long as the process runs.
-    declared = configured_symbols(config)
-    if symbol not in declared:
-        raise SystemExit(f"{symbol} is not configured for any strategy: {sorted(declared)}")
+    # Only this symbol's spec is loaded, so a symbol no running strategy trades
+    # leaves every evaluation asking for an instrument that is not there — and
+    # doing nothing about it, quietly, for as long as the process lives.
+    traded = traded_symbols(config)
+    if symbol not in traded:
+        raise SystemExit(f"no enabled strategy trades {symbol}: {sorted(traded)}")
     dsn = os.environ.get(config.storage.dsn_env)
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")

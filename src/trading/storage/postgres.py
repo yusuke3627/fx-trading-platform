@@ -428,7 +428,8 @@ class PostgresMarketBarRepository:
     ) -> Sequence[Bar]:
         rows = self._conn.execute(
             """
-            SELECT symbol, timeframe, start_at, open, high, low, close, tick_volume
+            SELECT symbol, timeframe, start_at, known_at,
+                   open, high, low, close, tick_volume
             FROM market_bars
             WHERE symbol = %s AND timeframe = %s AND known_at <= %s
             ORDER BY start_at DESC

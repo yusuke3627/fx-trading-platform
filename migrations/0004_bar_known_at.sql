@@ -10,4 +10,12 @@ BEGIN;
 
 ALTER TABLE market_bars DROP CONSTRAINT market_bars_known_at_check;
 
+-- Rows written before this migration hold known_at = end_at, a broker-clock
+-- value that would now be read as real UTC and hide every one of them for the
+-- length of the offset. Nothing in the row recovers the reception time the
+-- column now means, so they are deleted rather than reinterpreted: bars are
+-- derived data, and market_ticks — the series kept permanently — rebuilds
+-- them.
+DELETE FROM market_bars;
+
 COMMIT;

@@ -112,11 +112,11 @@ class AccountSnapshotCollector:
             raise MT5ConnectionError(f"account_info failed: {self._mt5.last_error()}")
         account_id = account_key_from_info(info)
         now = self._clock.now()
-        today = self._repository.since(account_id, jst_day_start(now))
+        today = self._repository.known_before(account_id, now, jst_day_start(now))
         snapshot = build_snapshot(
             info,
             observed_at=now,
-            previous=self._repository.latest(account_id),
+            previous=self._repository.latest_known_before(account_id, now),
             day_baseline=today[0] if today else None,
         )
         self._repository.insert(account_id, snapshot)

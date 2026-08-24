@@ -134,7 +134,7 @@ def quote_and_account():
 def test_a_signal_becomes_an_intent_and_a_graded_decision():
     runner = build(**quote_and_account())
 
-    (result,) = runner.evaluate_once()
+    (result,) = runner.evaluate_once().decisions
 
     assert result.signal.strategy_id == "test_signaller"
     assert result.intent.direction is PositionDirection.SHORT
@@ -145,7 +145,10 @@ def test_nothing_is_evaluated_before_a_quote_is_collected():
     # Grading an intent with no price is a guess, not a decision.
     runner = build(ticks=[], snapshots=[make_snapshot("1000000", observed_at=T0)])
 
-    assert runner.evaluate_once() == []
+    cycle = runner.evaluate_once()
+
+    assert cycle.decisions == ()
+    assert cycle.blocked == "no quote collected"
 
 
 def test_nothing_is_evaluated_before_the_account_is_known():
@@ -153,7 +156,44 @@ def test_nothing_is_evaluated_before_the_account_is_known():
     # snapshot there is nothing to measure.
     runner = build(ticks=[make_tick("158.840", "158.844", time=T0, received_at=T0)])
 
-    assert runner.evaluate_once() == []
+    cycle = runner.evaluate_once()
+
+    assert cycle.decisions == ()
+    assert cycle.blocked == "no account snapshot collected"
+
+
+def test_a_stale_account_stops_the_evaluation():
+    # `latest_known_before` keeps answering with the last row the collector
+    # wrote, so a collector that died hours ago looks exactly like a healthy
+    # one from here. Equity that old grades the loss limits against a book
+    # that has since moved.
+    runner = build(
+        ticks=[make_tick("158.840", "158.844", time=T0, received_at=T0)],
+        snapshots=[make_snapshot("1000000", observed_at=at(hours=-3))],
+        source_clock=FixedClock(T0),
+    )
+
+    cycle = runner.evaluate_once()
+
+    assert cycle.decisions == ()
+    assert cycle.blocked is not None and "stale" not in cycle.blocked.lower()
+    assert "old" in cycle.blocked
+
+
+def test_a_snapshot_written_after_the_cycle_started_is_not_visible():
+    # The clock is frozen for the cycle; the account collector runs in its own
+    # process and can write partway through one. Reading that row would put a
+    # value into the decision that was not knowable when it began.
+    future = make_snapshot("2000000", observed_at=at(minutes=30))
+    runner = build(
+        ticks=[make_tick("158.840", "158.844", time=T0, received_at=T0)],
+        snapshots=[make_snapshot("1000000", observed_at=T0), future],
+        source_clock=FixedClock(at(minutes=1)),
+    )
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert result.decision.decided_at == at(minutes=1)
 
 
 def test_the_unverified_execution_path_is_reported_not_assumed():
@@ -161,7 +201,7 @@ def test_the_unverified_execution_path_is_reported_not_assumed():
     # both appear as failed checks rather than being quietly passed.
     runner = build(**quote_and_account())
 
-    (result,) = runner.evaluate_once()
+    (result,) = runner.evaluate_once().decisions
 
     assert "EXECUTION_ENABLED" in result.decision.reject_codes
     assert "ACCOUNT_RECONCILED" in result.decision.reject_codes
@@ -172,8 +212,8 @@ def test_the_configured_trading_switch_reaches_the_decision():
     off = build(**quote_and_account(), trading_enabled=False)
     on = build(**quote_and_account(), trading_enabled=True)
 
-    (rejected,) = off.evaluate_once()
-    (graded,) = on.evaluate_once()
+    (rejected,) = off.evaluate_once().decisions
+    (graded,) = on.evaluate_once().decisions
 
     assert "TRADING_ENABLED" in rejected.decision.reject_codes
     assert "TRADING_ENABLED" not in graded.decision.reject_codes
@@ -182,13 +222,20 @@ def test_the_configured_trading_switch_reaches_the_decision():
 def test_a_disabled_strategy_is_never_evaluated():
     runner = build(**quote_and_account(), enabled=False)
 
-    assert runner.evaluate_once() == []
+    cycle = runner.evaluate_once()
+
+    assert cycle.decisions == ()
+    # Nothing is wrong: the runner simply had nothing to decide.
+    assert cycle.blocked is None
 
 
 def test_a_strategy_with_nothing_to_say_produces_no_decision():
     runner = build(**quote_and_account(), strategy=SilentStrategy)
 
-    assert runner.evaluate_once() == []
+    cycle = runner.evaluate_once()
+
+    assert cycle.decisions == ()
+    assert cycle.blocked is None
 
 
 def test_the_whole_evaluation_reads_one_instant():
@@ -198,7 +245,7 @@ def test_the_whole_evaluation_reads_one_instant():
     source = FixedClock(at(minutes=1))
     runner = build(**quote_and_account(), source_clock=source)
 
-    (result,) = runner.evaluate_once()
+    (result,) = runner.evaluate_once().decisions
 
     assert result.signal.generated_at == result.decision.decided_at == at(minutes=1)
 
@@ -208,16 +255,16 @@ def test_a_later_cycle_moves_to_the_new_instant():
     runner = build(**quote_and_account(), source_clock=source)
     runner.evaluate_once()
 
-    source.advance(minutes=5)
-    (result,) = runner.evaluate_once()
+    source.advance(minutes=2)
+    (result,) = runner.evaluate_once().decisions
 
-    assert result.decision.decided_at == at(minutes=6)
+    assert result.decision.decided_at == at(minutes=3)
 
 
 def test_describe_names_the_strategy_and_the_verdict():
     runner = build(**quote_and_account())
 
-    (result,) = runner.evaluate_once()
+    (result,) = runner.evaluate_once().decisions
     line = describe(result)
 
     assert "test_signaller" in line

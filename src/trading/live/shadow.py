@@ -27,7 +27,7 @@ import argparse
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -58,12 +58,33 @@ DEFAULT_INTERVAL_SECONDS = 5.0
 # fallback (the oldest row known) the moment a snapshot was missed.
 LOSS_WINDOW = timedelta(hours=48)
 
+# How old the account may be before an evaluation is worthless. The collector
+# writes every 60s, so minutes of silence means it is down — and `latest`
+# keeps answering with the last row it wrote, so nothing else here would
+# notice. Equity that old grades the loss limits against a book that has since
+# moved, which is worse than not grading them.
+ACCOUNT_MAX_AGE = timedelta(minutes=5)
+
 
 @dataclass(frozen=True)
 class ShadowDecision:
     signal: StrategySignal
     intent: PositionIntent
     decision: RiskDecision
+
+
+@dataclass(frozen=True)
+class ShadowCycle:
+    """What one evaluation produced, or why it produced nothing.
+
+    An empty cycle is not self-explanatory: no strategy had anything to say,
+    the market has not been collected, and the account series has gone stale
+    all look identical from the outside, and they call for different actions.
+    """
+
+    at: datetime
+    decisions: tuple[ShadowDecision, ...] = ()
+    blocked: str | None = None
 
 
 class ShadowRunner:
@@ -94,15 +115,18 @@ class ShadowRunner:
         self._account_mode = account_mode
         self._instrument = instrument
 
-    def evaluate_once(self) -> list[ShadowDecision]:
+    def evaluate_once(self) -> ShadowCycle:
         """One evaluation of every enabled strategy at a single instant."""
         now = self._clock.begin_cycle()
         quote = self._market.latest_tick(self._instrument.symbol)
-        account = self._snapshots.latest(self._account_id)
-        if quote is None or account is None:
-            # Nothing collected yet, or the account collector has never run.
-            # Grading an intent against an absent book would be a guess.
-            return []
+        account = self._snapshots.latest_known_before(self._account_id, now)
+        if quote is None:
+            return ShadowCycle(at=now, blocked="no quote collected")
+        if account is None:
+            return ShadowCycle(at=now, blocked="no account snapshot collected")
+        age = now - account.observed_at
+        if age > ACCOUNT_MAX_AGE:
+            return ShadowCycle(at=now, blocked=f"account snapshot is {age} old")
 
         event = EventEnvelope(
             event_id=uuid4(),
@@ -113,10 +137,12 @@ class ShadowRunner:
         )
         collected = asyncio.run(self._runner.dispatch(event))
         if not collected:
-            return []
+            return ShadowCycle(at=now)
         # Read once for the cycle: the window is the same for every intent in
         # it, and it is the largest query the loop makes.
-        history = self._snapshots.since(self._account_id, now - LOSS_WINDOW)
+        history = self._snapshots.known_before(
+            self._account_id, now, now - LOSS_WINDOW
+        )
 
         results: list[ShadowDecision] = []
         for item in collected:
@@ -144,11 +170,19 @@ class ShadowRunner:
                         decision=self._risk.evaluate(intent, context),
                     )
                 )
-        return results
+        return ShadowCycle(at=now, decisions=tuple(results))
 
     def run(self, interval_seconds: float) -> None:
+        blocked: str | None = None
         while True:
-            for result in self.evaluate_once():
+            cycle = self.evaluate_once()
+            # A block is a standing condition, not an event: repeating it every
+            # few seconds would bury the decisions between them.
+            if cycle.blocked != blocked:
+                blocked = cycle.blocked
+                if blocked is not None:
+                    print(f"{cycle.at.isoformat()} not evaluating: {blocked}")
+            for result in cycle.decisions:
                 print(describe(result))
             time.sleep(interval_seconds)
 
@@ -287,10 +321,12 @@ def main() -> None:
 
     print(f"shadow on {symbol} for {account_id}")
     if args.once:
-        results = runner.evaluate_once()
-        for result in results:
+        cycle = runner.evaluate_once()
+        if cycle.blocked is not None:
+            raise SystemExit(f"not evaluating: {cycle.blocked}")
+        for result in cycle.decisions:
             print(describe(result))
-        print(f"{len(results)} decisions")
+        print(f"{len(cycle.decisions)} decisions")
     else:
         runner.run(args.interval_seconds)
 

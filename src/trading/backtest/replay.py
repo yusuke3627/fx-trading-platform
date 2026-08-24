@@ -42,13 +42,13 @@ class ReplayItem:
 def replay_time(item: EventEnvelope | Tick | Bar) -> datetime:
     """When an item becomes known: events at known_at, ticks at their
     RECEIVED time (a late-arriving quote was not usable at its broker
-    timestamp), bars at close time — delivering a bar at its start would hand
-    the strategy the close price before it exists (systematic look-ahead)."""
+    timestamp), bars at their own known_at — the bar's close sits on the
+    broker's clock, which is not the one this replay runs on (ADR-005)."""
     if isinstance(item, EventEnvelope):
         return item.known_at
     if isinstance(item, Tick):
         return item.known_time
-    return item.close_time
+    return item.known_at
 
 
 class ReplayEngine:

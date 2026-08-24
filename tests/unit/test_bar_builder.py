@@ -1,4 +1,5 @@
 """Tick -> Bar folding: only closed bars exist, and they close on the grid."""
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -34,12 +35,13 @@ def test_completed_bar_folds_the_bid_series_of_its_bucket():
         low=Decimal("158.820"),
         close=Decimal("158.850"),
         tick_volume=4,
+        known_at=at(seconds=60),
     )
 
 
-def test_bar_is_known_exactly_at_its_close():
-    # market_bars stores known_at = end_at, and Bar.close_time is the single
-    # source of that value, so it has to land on the bucket end.
+def test_bar_closes_on_the_grid():
+    # end_at is stored from Bar.close_time, so it has to land exactly on the
+    # bucket end rather than on the last quote inside it.
     builder = BarBuilder("USDJPY", "5m")
     builder.on_tick(make_tick("158.840", "158.844", time=T0))
     bar = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=5)))
@@ -92,75 +94,96 @@ def test_late_tick_for_a_closed_bucket_is_dropped():
     assert second is not None and second.high == Decimal("158.900")
 
 
-def test_tick_received_after_its_own_bucket_closed_never_enters_the_bar():
+def test_a_late_quote_joins_its_own_bucket_and_delays_the_bars_known_at():
     # The broker time falls inside the first minute, but the quote only
-    # reached us during the third. The bar for [00:00, 00:01) is stored with
-    # known_at = 00:01, so folding this in would let a later replay read a
-    # candle whose contents did not exist yet — look-ahead through the store.
+    # reached us during the third. Bucketing is on the broker clock, so it
+    # belongs to that bar; what moves is known_at, and that is what stops a
+    # replay from reading the candle before its contents had arrived.
     builder = BarBuilder("USDJPY", "1m")
     builder.on_tick(make_tick("158.840", "158.844", time=T0))
-
-    # It cannot join the bar, but its reception time proves the bar ended, so
-    # the finished candle is published rather than held back.
-    bar = builder.on_tick(
+    builder.on_tick(
         make_tick("159.500", "159.504", time=at(seconds=30), received_at=at(minutes=2))
     )
+
+    bar = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=1)))
     assert bar is not None
     assert bar.start == T0
-    assert bar.high == Decimal("158.840")
-    assert bar.tick_volume == 1
-
-    # It seeded no bucket either: the next quote opens one.
-    assert builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=3))) is None
+    assert bar.high == Decimal("159.500")
+    assert bar.tick_volume == 2
+    assert bar.known_at == at(minutes=2)
 
 
-def test_a_straggler_from_an_older_bucket_still_closes_the_open_bar():
-    # The quote belongs to a bar published long ago, so it joins nothing —
-    # but its reception time is past the end of the bar currently open, which
-    # is all the evidence needed to publish that one.
+def test_a_straggler_from_an_older_bucket_neither_joins_nor_closes():
+    # The quote belongs to a bar published long ago. On the broker's clock it
+    # says nothing about the bar currently open, so it releases nothing; it
+    # stays in the tick series.
     builder = BarBuilder("USDJPY", "1m")
     builder.on_tick(make_tick("158.840", "158.844", time=at(minutes=1)))
 
-    bar = builder.on_tick(
-        make_tick(
-            "159.500", "159.504", time=at(seconds=30), received_at=at(minutes=2, seconds=10)
+    assert (
+        builder.on_tick(
+            make_tick(
+                "159.500", "159.504", time=at(seconds=30), received_at=at(minutes=2, seconds=10)
+            )
         )
+        is None
     )
+
+    bar = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=2)))
     assert bar is not None
     assert bar.start == at(minutes=1)
     assert bar.high == Decimal("158.840")
     assert bar.tick_volume == 1
 
 
-def test_a_future_dated_quote_does_not_close_a_bucket_early():
-    # A broker clock running ahead of ours delivers a quote stamped in the
-    # next minute while this one is still running. Treating that as proof the
-    # bar ended would publish it early and drop the quotes still arriving for
-    # it — so the bar waits for evidence that its end has actually passed.
+def test_a_quote_stamped_past_the_end_closes_the_bar_whenever_it_arrives():
+    # Only the broker's clock decides that a minute is over. A quote stamped
+    # in the next minute closes this one even though it reached us before the
+    # minute had elapsed on our own clock — under a server offset that is the
+    # normal case, not an anomaly.
     builder = BarBuilder("USDJPY", "1m")
     builder.on_tick(make_tick("158.840", "158.844", time=at(seconds=10)))
 
-    assert (
-        builder.on_tick(
-            make_tick(
-                "159.900", "159.904", time=at(minutes=1, seconds=5), received_at=at(seconds=40)
-            )
+    bar = builder.on_tick(
+        make_tick(
+            "159.900", "159.904", time=at(minutes=1, seconds=5), received_at=at(seconds=40)
         )
-        is None
     )
-    assert (
-        builder.on_tick(
-            make_tick("158.700", "158.704", time=at(seconds=30), received_at=at(seconds=50))
-        )
-        is None
-    )
-
-    bar = builder.on_tick(make_tick("158.800", "158.804", time=at(minutes=1, seconds=30)))
     assert bar is not None
     assert bar.start == T0
-    assert bar.low == Decimal("158.700")  # the 00:00:30 quote still made it in
-    assert bar.high == Decimal("158.840")  # the future-dated one stayed out
-    assert bar.tick_volume == 2
+    assert bar.high == Decimal("158.840")  # the next minute's quote stayed out
+    assert bar.tick_volume == 1
+    # known_at is a reception, never the broker's stamp.
+    assert bar.known_at == at(seconds=40)
+
+
+def test_a_constant_broker_offset_still_produces_bars():
+    # OANDA's server runs UTC+3 and labels its timestamps UTC, so every
+    # quote's broker stamp is hours ahead of its reception. Deciding the
+    # bucket's end on the reception clock made that condition unreachable and
+    # the builder emitted nothing at all.
+    builder = BarBuilder("USDJPY", "1m")
+    offset = timedelta(hours=3)
+    published = [
+        bar
+        for bar in (
+            builder.on_tick(
+                make_tick(
+                    "158.840",
+                    "158.844",
+                    time=at(seconds=30 * i) + offset,
+                    received_at=at(seconds=30 * i),
+                )
+            )
+            for i in range(6)
+        )
+        if bar is not None
+    ]
+
+    assert [b.start for b in published] == [T0 + offset, at(minutes=1) + offset]
+    # The candle sits on their clock; its visibility sits on ours.
+    assert published[0].close_time == at(minutes=1) + offset
+    assert published[0].known_at == at(minutes=1)
 
 
 def test_out_of_order_quotes_in_a_bucket_take_open_and_close_from_broker_time():
@@ -183,11 +206,10 @@ def test_out_of_order_quotes_in_a_bucket_take_open_and_close_from_broker_time():
     assert bar.tick_volume == 2
 
 
-def test_a_stale_quote_still_closes_a_bucket_that_already_finished():
-    # The quote misses its own bar (broker time 00:02:30, received 00:04), so
-    # it joins nothing. The 00:00 bar is finished on its own merits though,
-    # and withholding it here would delay — or with no tick after, lose — a
-    # candle because of an unrelated late arrival.
+def test_a_quote_from_a_later_bucket_closes_the_open_bar_and_seeds_its_own():
+    # Broker time 00:02:30 is proof the 00:00 bar is over. The quote does not
+    # belong to that bar, so it opens the bucket it does belong to; the
+    # minutes in between held no ticks and print no candle.
     builder = BarBuilder("USDJPY", "1m")
     builder.on_tick(make_tick("158.840", "158.844", time=T0))
 
@@ -199,9 +221,12 @@ def test_a_stale_quote_still_closes_a_bucket_that_already_finished():
     assert bar.high == Decimal("158.840")
     assert bar.tick_volume == 1
 
-    # It seeded no bucket either, so the next tick opens one instead of
-    # closing a bar built around the stale quote.
-    assert builder.on_tick(make_tick("158.900", "158.904", time=at(minutes=5))) is None
+    second = builder.on_tick(make_tick("158.900", "158.904", time=at(minutes=3)))
+    assert second is not None
+    assert second.start == at(minutes=2)
+    assert second.high == Decimal("159.500")
+    # Its own reception, not the closing quote's, is the later of the two.
+    assert second.known_at == at(minutes=4)
 
 
 def test_timeframes_hanging_off_the_broker_session_anchor_are_refused():
@@ -218,21 +243,21 @@ def test_timeframes_hanging_off_the_broker_session_anchor_are_refused():
         assert BarBuilder("USDJPY", timeframe).on_tick(make_tick("158.840", "158.844")) is None
 
 
-def test_tick_known_exactly_at_its_bucket_close_joins_it_and_closes_it():
-    # Visibility is `<=`, so a quote known at the closing instant belongs to
-    # the bar; that same instant is also when the bar's end is reached, so it
-    # is published straight away instead of waiting for another tick.
+def test_a_quote_stamped_exactly_on_the_boundary_belongs_to_the_next_bar():
+    # The grid is half-open: 00:01:00 closes the 00:00 bar rather than joining
+    # it, and becomes the first quote of the one that follows.
     builder = BarBuilder("USDJPY", "1m")
     builder.on_tick(make_tick("158.840", "158.844", time=T0))
 
-    bar = builder.on_tick(
-        make_tick("158.900", "158.904", time=at(seconds=30), received_at=at(minutes=1))
-    )
+    bar = builder.on_tick(make_tick("158.900", "158.904", time=at(minutes=1)))
     assert bar is not None
-    assert bar.high == Decimal("158.900")
-    assert bar.tick_volume == 2
+    assert bar.high == Decimal("158.840")
+    assert bar.tick_volume == 1
 
-    assert builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=1, seconds=1))) is None
+    second = builder.on_tick(make_tick("158.850", "158.854", time=at(minutes=2)))
+    assert second is not None
+    assert second.start == at(minutes=1)
+    assert second.open == Decimal("158.900")
 
 
 def test_trailing_incomplete_bucket_is_never_published():

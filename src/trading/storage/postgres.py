@@ -77,8 +77,9 @@ def _row_to_tick(row: dict[str, Any]) -> Tick:
 
 
 def _row_to_bar(row: dict[str, Any]) -> Bar:
-    # end_at and known_at are not read back: Bar.close_time re-derives both
-    # from start and timeframe, and one source for that value is enough.
+    # end_at is not read back: Bar.close_time re-derives it from start and
+    # timeframe. known_at is, because it sits on a different clock and no
+    # other column can stand in for it (ADR-005).
     return Bar(
         symbol=row["symbol"],
         timeframe=row["timeframe"],
@@ -88,6 +89,7 @@ def _row_to_bar(row: dict[str, Any]) -> Bar:
         low=row["low"],
         close=row["close"],
         tick_volume=row["tick_volume"],
+        known_at=row["known_at"],
     )
 
 
@@ -403,9 +405,10 @@ class PostgresMarketBarRepository:
                     "symbol": b.symbol,
                     "timeframe": b.timeframe,
                     "start_at": b.start,
-                    # A bar is complete, and therefore known, at its close.
+                    # end_at closes the candle on the broker's clock; known_at
+                    # records when we saw it complete on ours (ADR-005).
                     "end_at": b.close_time,
-                    "known_at": b.close_time,
+                    "known_at": b.known_at,
                     "open": b.open,
                     "high": b.high,
                     "low": b.low,
@@ -425,7 +428,8 @@ class PostgresMarketBarRepository:
     ) -> Sequence[Bar]:
         rows = self._conn.execute(
             """
-            SELECT symbol, timeframe, start_at, open, high, low, close, tick_volume
+            SELECT symbol, timeframe, start_at, known_at,
+                   open, high, low, close, tick_volume
             FROM market_bars
             WHERE symbol = %s AND timeframe = %s AND known_at <= %s
             ORDER BY start_at DESC

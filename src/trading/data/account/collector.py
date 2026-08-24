@@ -58,9 +58,11 @@ def build_snapshot(
     # every drawdown; taking the max of the window being read would let it
     # decay as old rows age out and quietly forgive the drawdown.
     high_water_mark = max(previous.high_water_mark, equity) if previous else equity
-    # Balance moves only when a position closes, so the day's realized result
-    # is its move since the day's first snapshot — the open book's swing stays
-    # in unrealized_pnl where it belongs.
+    # The day's balance move since its first snapshot. Trading is not the only
+    # thing that moves balance — a deposit or a withdrawal moves it too, and
+    # this figure cannot tell them apart, so on a day with a funding
+    # transaction it is not the trading result (issue #36). Risk does not read
+    # it: every limit is measured on equity.
     day_open_balance = day_baseline.balance if day_baseline else balance
     return AccountSnapshot(
         observed_at=observed_at,
@@ -78,6 +80,17 @@ def build_snapshot(
         drawdown_from_hwm=max(high_water_mark - equity, Decimal(0)),
         broker_connected=True,
     )
+
+
+def account_key(info: Any) -> str:
+    """Identity of the account the terminal is connected to.
+
+    Login numbers are issued per server, so the same number exists on more
+    than one of them and is not the same account on each. Keying the series
+    by the number alone would let a demo login collide with an unrelated live
+    one and hand it the wrong high-water mark.
+    """
+    return f"{info.server}:{info.login}"
 
 
 def _money(value: Any) -> Decimal:
@@ -107,9 +120,7 @@ class AccountSnapshotCollector:
         info = self._mt5.account_info()
         if info is None:
             raise MT5ConnectionError(f"account_info failed: {self._mt5.last_error()}")
-        # The login the terminal is currently connected to, so a series is
-        # never continued across a change of account.
-        account_id = str(info.login)
+        account_id = account_key(info)
         now = self._clock.now()
         today = self._repository.since(account_id, jst_day_start(now))
         snapshot = build_snapshot(

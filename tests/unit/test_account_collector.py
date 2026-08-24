@@ -14,6 +14,8 @@ JST_DAY_START = at(hours=-9)
 
 DEMO_LOGIN = 10000001
 LIVE_LOGIN = 20000002
+DEMO_SERVER = "Test-Broker Demo"
+LIVE_SERVER = "Test-Broker Live"
 
 
 def account_info(
@@ -23,10 +25,12 @@ def account_info(
     margin_level: str = "0",
     profit: str = "0",
     login: int = DEMO_LOGIN,
+    server: str = DEMO_SERVER,
 ) -> SimpleNamespace:
     # MT5 hands back floats; the collector is what turns them into Decimal.
     return SimpleNamespace(
         login=login,
+        server=server,
         balance=float(balance),
         equity=float(equity),
         margin=float(margin),
@@ -138,7 +142,7 @@ def test_collect_once_appends_the_observation_to_the_series():
 
     snapshot = collector.collect_once()
 
-    assert repository.snapshots == [(str(DEMO_LOGIN), snapshot)]
+    assert repository.snapshots == [(f"{DEMO_SERVER}:{DEMO_LOGIN}", snapshot)]
     assert snapshot.observed_at == T0
     assert snapshot.broker_connected is True
 
@@ -159,6 +163,22 @@ def test_switching_the_terminal_to_another_account_starts_a_new_series():
 
     assert switched.high_water_mark == Decimal(50000)
     assert switched.drawdown_from_hwm == Decimal(0)
+
+
+def test_the_same_login_on_another_server_is_another_account():
+    # Login numbers are issued per server, so the same number exists on more
+    # than one and is a different account on each.
+    repository = FakeAccountSnapshotRepository()
+    terminal = FakeMt5(account_info(equity="1000000", server=DEMO_SERVER))
+    clock = FixedClock(T0)
+    collector = AccountSnapshotCollector(repository, clock=clock, mt5_module=terminal)
+    collector.collect_once()
+
+    clock.advance(minutes=1)
+    terminal.info = account_info(equity="50000", server=LIVE_SERVER)
+    switched = collector.collect_once()
+
+    assert switched.high_water_mark == Decimal(50000)
 
 
 def test_successive_collections_carry_the_mark_and_the_day_forward():

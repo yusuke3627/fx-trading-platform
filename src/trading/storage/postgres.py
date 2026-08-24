@@ -280,20 +280,21 @@ class PostgresAccountSnapshotRepository:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
 
-    def insert(self, s: AccountSnapshot) -> None:
+    def insert(self, account_id: str, s: AccountSnapshot) -> None:
         self._conn.execute(
             """
             INSERT INTO account_snapshots (
-                observed_at, balance, equity, margin, free_margin, margin_level,
-                unrealized_pnl, realized_pnl_day, high_water_mark,
+                account_id, observed_at, balance, equity, margin, free_margin,
+                margin_level, unrealized_pnl, realized_pnl_day, high_water_mark,
                 drawdown_from_hwm, broker_connected
             ) VALUES (
-                %(observed_at)s, %(balance)s, %(equity)s, %(margin)s,
-                %(free_margin)s, %(margin_level)s, %(unrealized_pnl)s,
+                %(account_id)s, %(observed_at)s, %(balance)s, %(equity)s,
+                %(margin)s, %(free_margin)s, %(margin_level)s, %(unrealized_pnl)s,
                 %(realized_pnl_day)s, %(hwm)s, %(dd)s, %(connected)s
             )
             """,
             {
+                "account_id": account_id,
                 "observed_at": s.observed_at,
                 "balance": s.balance,
                 "equity": s.equity,
@@ -309,16 +310,25 @@ class PostgresAccountSnapshotRepository:
         )
         self._conn.commit()
 
-    def since(self, t: datetime) -> Sequence[AccountSnapshot]:
+    def since(self, account_id: str, t: datetime) -> Sequence[AccountSnapshot]:
         rows = self._conn.execute(
-            "SELECT * FROM account_snapshots WHERE observed_at >= %s ORDER BY observed_at",
-            (t,),
+            """
+            SELECT * FROM account_snapshots
+            WHERE account_id = %s AND observed_at >= %s
+            ORDER BY observed_at
+            """,
+            (account_id, t),
         ).fetchall()
         return [_row_to_snapshot(r) for r in rows]
 
-    def latest(self) -> AccountSnapshot | None:
+    def latest(self, account_id: str) -> AccountSnapshot | None:
         row = self._conn.execute(
-            "SELECT * FROM account_snapshots ORDER BY observed_at DESC LIMIT 1"
+            """
+            SELECT * FROM account_snapshots
+            WHERE account_id = %s
+            ORDER BY observed_at DESC LIMIT 1
+            """,
+            (account_id,),
         ).fetchone()
         return _row_to_snapshot(row) if row else None
 

@@ -146,6 +146,31 @@ class FakeBarRepository:
         return sorted(visible, key=lambda b: b.start)[-count:]
 
 
+class FakeAccountSnapshotRepository:
+    """AccountSnapshotRepository in memory, scoped per account and read by
+    observed_at the way the stored series is.
+    """
+
+    def __init__(self) -> None:
+        self.snapshots: list[tuple[str, AccountSnapshot]] = []
+
+    def insert(self, account_id: str, snapshot: AccountSnapshot) -> None:
+        self.snapshots.append((account_id, snapshot))
+
+    def since(self, account_id: str, t: datetime) -> list[AccountSnapshot]:
+        return [s for s in self._of(account_id) if s.observed_at >= t]
+
+    def latest(self, account_id: str) -> AccountSnapshot | None:
+        owned = self._of(account_id)
+        return owned[-1] if owned else None
+
+    def _of(self, account_id: str) -> list[AccountSnapshot]:
+        return sorted(
+            (s for owner, s in self.snapshots if owner == account_id),
+            key=lambda s: s.observed_at,
+        )
+
+
 def make_snapshot(
     equity: str,
     observed_at: datetime = T0,
@@ -153,12 +178,13 @@ def make_snapshot(
     broker_connected: bool = True,
     margin: str = "0",
     margin_level: str | None = None,
+    balance: str | None = None,
 ) -> AccountSnapshot:
     eq = Decimal(equity)
     hwm = Decimal(high_water_mark) if high_water_mark is not None else eq
     return AccountSnapshot(
         observed_at=observed_at,
-        balance=eq,
+        balance=Decimal(balance) if balance is not None else eq,
         equity=eq,
         margin=Decimal(margin),
         free_margin=eq,

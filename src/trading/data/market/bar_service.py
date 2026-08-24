@@ -39,6 +39,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from trading.backtest.clock import Clock, SystemClock
+from trading.data.cli import poll_interval
 from trading.data.market.bars import BarBuilder, is_foldable
 from trading.domain.market import TIMEFRAME_SECONDS, Bar
 from trading.storage.repository import MarketBarRepository, MarketTickRepository
@@ -135,7 +136,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Bar generation from stored ticks")
     parser.add_argument("--env", default="demo")
     parser.add_argument("--symbol", default=None)
-    parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
+    parser.add_argument(
+        "--interval-seconds", type=poll_interval, default=DEFAULT_INTERVAL_SECONDS
+    )
     parser.add_argument(
         "--once",
         action="store_true",

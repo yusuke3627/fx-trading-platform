@@ -13,6 +13,7 @@ from tests.support import (
     make_tick,
     usdjpy_spec,
 )
+from trading.data.market import InMemoryMarketData
 from trading.data.market.stored import StoredMarketData
 
 BROKER_OFFSET = timedelta(hours=3)
@@ -124,6 +125,26 @@ def test_no_ticks_at_all_is_an_empty_window_not_an_error():
 
     assert market.ticks("USDJPY", 60) == []
     assert market.latest_tick("USDJPY") is None
+
+
+def test_quotes_sharing_a_timestamp_resolve_the_same_way_as_replay():
+    # The unique key includes bid/ask, so several quotes can share an
+    # event_time. Which one counts as "the price" has to be the same in both
+    # implementations, or a strategy would grade differently live than in the
+    # replay it was validated on.
+    ticks = [
+        make_tick("158.840", "158.844", time=at(minutes=3)),
+        make_tick("158.842", "158.846", time=at(minutes=3)),
+    ]
+    clock = FixedClock(at(minutes=10))
+    replayed = InMemoryMarketData(clock)
+    for tick in ticks:
+        replayed.add_tick(tick)
+
+    live = make_market(clock, ticks=ticks)
+
+    assert live.latest_tick("USDJPY") == replayed.latest_tick("USDJPY")
+    assert live.latest_tick("USDJPY") == ticks[-1]
 
 
 def test_instruments_come_from_the_startup_snapshot():

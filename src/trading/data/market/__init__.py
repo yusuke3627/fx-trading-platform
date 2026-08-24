@@ -71,9 +71,13 @@ class InMemoryMarketData:
 
     def latest_tick(self, symbol: str) -> Tick | None:
         # A late-arriving old tick must never rewind the latest price: latest
-        # is by broker time among visible ticks, not by arrival.
+        # is by broker time among visible ticks, not by arrival. Quotes sharing
+        # an event_time are settled by arrival, the way the stored series
+        # breaks that tie as (event_time, id) — live and replay must not
+        # disagree about what the price is. max() keeps the first of equal
+        # keys, so the scan runs backwards to land on the last arrival.
         ticks = self._visible_ticks(symbol)
-        return max(ticks, key=lambda t: t.time) if ticks else None
+        return max(reversed(ticks), key=lambda t: t.time) if ticks else None
 
     def instrument(self, symbol: str) -> InstrumentSpec | None:
         return self._instruments.get(symbol)

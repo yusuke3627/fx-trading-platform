@@ -69,6 +69,16 @@ def _fold(bucket: _Bucket, tick: Tick) -> None:
     bucket.known_at = max(bucket.known_at, tick.known_time)
 
 
+def is_foldable(timeframe: str) -> bool:
+    """Whether ticks alone can fold this timeframe.
+
+    Timeframes dividing one hour sit on a UTC grid that a whole-hour server
+    offset cannot move, so they agree with the broker's own candles without
+    knowing its anchor. 4h and 1d hang off the server's midnight and do not.
+    """
+    return SECONDS_PER_HOUR % TIMEFRAME_SECONDS[timeframe] == 0
+
+
 class BarBuilder:
     """Folds the ticks of one (symbol, timeframe) into completed bars.
 
@@ -87,7 +97,7 @@ class BarBuilder:
 
     def __init__(self, symbol: str, timeframe: str) -> None:
         seconds = TIMEFRAME_SECONDS[timeframe]
-        if SECONDS_PER_HOUR % seconds != 0:
+        if not is_foldable(timeframe):
             raise ValueError(
                 f"{timeframe} bars cannot be folded from ticks yet: their boundaries "
                 "follow the broker's session anchor, which the platform does not know. "

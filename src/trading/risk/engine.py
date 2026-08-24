@@ -141,8 +141,13 @@ class RiskEngine:
 
             # Age must be within [0, max]: a future-dated quote is not
             # "fresh", it is look-ahead (replay leak or broken broker clock).
+            # Measured on OUR clock — known_time is when the quote reached us,
+            # while `time` belongs to the broker's clock and the two are offset
+            # (ADR-005). Aging a broker timestamp against now would shift every
+            # quote by that offset; at OANDA Japan by three hours, in the
+            # direction that reads as future-dated.
             quote_age = (
-                (ctx.now - ctx.quote.time).total_seconds()
+                (ctx.now - ctx.quote.known_time).total_seconds()
                 if ctx.quote is not None
                 else None
             )

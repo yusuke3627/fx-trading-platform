@@ -208,6 +208,23 @@ def test_the_unverified_execution_path_is_reported_not_assumed():
     assert result.decision.approved is False
 
 
+def test_a_broker_clock_offset_does_not_age_the_quote():
+    # The shape the live database actually holds: event_time on the broker's
+    # clock (+3h at OANDA Japan), received_at on ours. Grading freshness
+    # against the broker stamp would reject every quote as future-dated.
+    runner = build(
+        ticks=[
+            make_tick("158.840", "158.844", time=at(hours=3), received_at=at(minutes=1))
+        ],
+        snapshots=[make_snapshot("1000000", observed_at=at(minutes=1))],
+        source_clock=FixedClock(at(minutes=1)),
+    )
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert "QUOTE_FRESH" not in result.decision.reject_codes
+
+
 def test_the_configured_trading_switch_reaches_the_decision():
     off = build(**quote_and_account(), trading_enabled=False)
     on = build(**quote_and_account(), trading_enabled=True)

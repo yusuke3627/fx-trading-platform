@@ -721,32 +721,7 @@ class PostgresDecisionRepository:
     ) -> None:
         # One transaction for the three: the foreign keys chain them, and a
         # trail that stopped halfway would read as a signal nobody graded.
-        self._conn.execute(
-            """
-            INSERT INTO strategy_signals (
-                id, strategy_id, strategy_version, symbol, desired_direction,
-                conviction, expected_horizon_seconds, stop_distance_pips,
-                reason_codes, generated_at
-            ) VALUES (
-                %(id)s, %(strategy_id)s, %(strategy_version)s, %(symbol)s,
-                %(direction)s, %(conviction)s, %(horizon)s, %(stop_pips)s,
-                %(reason_codes)s, %(generated_at)s
-            )
-            ON CONFLICT (id) DO NOTHING
-            """,
-            {
-                "id": signal.signal_id,
-                "strategy_id": signal.strategy_id,
-                "strategy_version": signal.strategy_version,
-                "symbol": signal.symbol,
-                "direction": signal.desired_direction.value,
-                "conviction": signal.conviction,
-                "horizon": signal.expected_horizon_seconds,
-                "stop_pips": signal.stop_distance_pips,
-                "reason_codes": Jsonb(signal.reason_codes),
-                "generated_at": signal.generated_at,
-            },
-        )
+        self._insert_signal(signal)
         protection = intent.protection
         self._conn.execute(
             """
@@ -803,6 +778,40 @@ class PostgresDecisionRepository:
             },
         )
         self._conn.commit()
+
+    def record_signal(self, signal: StrategySignal) -> None:
+        self._insert_signal(signal)
+        self._conn.commit()
+
+    def _insert_signal(self, signal: StrategySignal) -> None:
+        # A signal that produced several intents is written once per intent and
+        # has to stay one row, so a repeat is a no-op rather than an error.
+        self._conn.execute(
+            """
+            INSERT INTO strategy_signals (
+                id, strategy_id, strategy_version, symbol, desired_direction,
+                conviction, expected_horizon_seconds, stop_distance_pips,
+                reason_codes, generated_at
+            ) VALUES (
+                %(id)s, %(strategy_id)s, %(strategy_version)s, %(symbol)s,
+                %(direction)s, %(conviction)s, %(horizon)s, %(stop_pips)s,
+                %(reason_codes)s, %(generated_at)s
+            )
+            ON CONFLICT (id) DO NOTHING
+            """,
+            {
+                "id": signal.signal_id,
+                "strategy_id": signal.strategy_id,
+                "strategy_version": signal.strategy_version,
+                "symbol": signal.symbol,
+                "direction": signal.desired_direction.value,
+                "conviction": signal.conviction,
+                "horizon": signal.expected_horizon_seconds,
+                "stop_pips": signal.stop_distance_pips,
+                "reason_codes": Jsonb(signal.reason_codes),
+                "generated_at": signal.generated_at,
+            },
+        )
 
     def recent(
         self, limit: int

@@ -325,6 +325,27 @@ def test_every_graded_decision_is_recorded():
     assert store.trails == [(result.signal, result.intent, result.decision)]
 
 
+def test_a_signal_that_sizes_to_nothing_is_still_recorded():
+    # The risk budget can come out below one volume step. No intent is built,
+    # but the strategy did form a view — and a strategy whose signals never
+    # become intents is exactly what a shadow run is watching for.
+    store = FakeDecisionRepository()
+    runner = build(
+        ticks=[
+            make_tick("158.840", "158.844", time=at(minutes=1), received_at=at(minutes=1))
+        ],
+        snapshots=[make_snapshot("1", observed_at=at(minutes=1))],
+        source_clock=FixedClock(at(minutes=1)),
+        decisions=store,
+    )
+
+    cycle = runner.evaluate_once()
+
+    assert cycle.decisions == ()
+    assert [s.strategy_id for s in store.signals] == ["test_signaller"]
+    assert store.trails == []
+
+
 def test_a_cycle_that_decides_nothing_records_nothing():
     store = FakeDecisionRepository()
     runner = build(**quote_and_account(), strategy=SilentStrategy, decisions=store)

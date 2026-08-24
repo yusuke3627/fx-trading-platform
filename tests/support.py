@@ -187,6 +187,7 @@ class FakeDecisionRepository:
 
     def __init__(self) -> None:
         self.trails: list[tuple[StrategySignal, PositionIntent, RiskDecision]] = []
+        self.signals: list[StrategySignal] = []
 
     def record(
         self,
@@ -194,7 +195,12 @@ class FakeDecisionRepository:
         intent: PositionIntent,
         decision: RiskDecision,
     ) -> None:
+        self.record_signal(signal)
         self.trails.append((signal, intent, decision))
+
+    def record_signal(self, signal: StrategySignal) -> None:
+        if all(s.signal_id != signal.signal_id for s in self.signals):
+            self.signals.append(signal)
 
     def recent(
         self, limit: int

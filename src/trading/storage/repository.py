@@ -148,6 +148,12 @@ class DecisionRepository(Protocol):
         decision: RiskDecision,
     ) -> None: ...
 
+    # A signal that produced no intent at all — sizing landed below one volume
+    # step, or the stop distance was not usable. It still happened, and a
+    # strategy whose signals never become intents is exactly what a shadow run
+    # is there to reveal.
+    def record_signal(self, signal: StrategySignal) -> None: ...
+
     # The most recent trails, newest first: what a run decided, read back whole.
     def recent(
         self, limit: int

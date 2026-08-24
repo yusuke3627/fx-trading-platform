@@ -178,7 +178,15 @@ class ShadowRunner:
                 volume_step=self._instrument.volume_step,
                 entry_price=entry_price,
             )
-            for intent in self._portfolio.intents_from_signal(signal, sizing):
+            intents = self._portfolio.intents_from_signal(signal, sizing)
+            if not intents:
+                # Sizing landed below one volume step, or the stop distance was
+                # not usable. The signal still happened, and a strategy whose
+                # signals never become intents is the kind of thing a shadow
+                # run exists to surface — losing it here would hide it.
+                self._decisions.record_signal(signal)
+                continue
+            for intent in intents:
                 context = self._pretrade_context(
                     signal, intent, quote, account, history, now
                 )

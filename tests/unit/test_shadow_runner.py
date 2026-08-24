@@ -219,6 +219,27 @@ def test_a_snapshot_written_after_the_cycle_started_is_not_visible():
     assert result.decision.decided_at == at(minutes=1)
 
 
+def test_a_loss_is_still_measured_after_an_outage_longer_than_the_window():
+    # The collector was down for days and has just come back. Only the fresh
+    # rows fall inside LOSS_WINDOW, so without the row from before it the
+    # baseline would fall back to the oldest one visible — the post-restart
+    # equity — and a 10% drawdown would grade as no loss at all.
+    runner = build(
+        ticks=[
+            make_tick("158.840", "158.844", time=at(minutes=1), received_at=at(minutes=1))
+        ],
+        snapshots=[
+            make_snapshot("1000000", observed_at=at(days=-5)),
+            make_snapshot("900000", observed_at=at(minutes=1)),
+        ],
+        source_clock=FixedClock(at(minutes=1)),
+    )
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert "DAILY_LOSS_WITHIN_LIMIT" in result.decision.reject_codes
+
+
 def test_the_unverified_execution_path_is_reported_not_assumed():
     # Shadow never exercises the order path and no reconciliation has run, so
     # both appear as failed checks rather than being quietly passed.

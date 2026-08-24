@@ -147,9 +147,19 @@ class ShadowRunner:
             return ShadowCycle(at=now)
         # Read once for the cycle: the window is the same for every intent in
         # it, and it is the largest query the loop makes.
-        history = self._snapshots.known_before(
-            self._account_id, now, now - LOSS_WINDOW
+        history = list(
+            self._snapshots.known_before(self._account_id, now, now - LOSS_WINDOW)
         )
+        # Each loss window needs a row at or before its own start. After an
+        # outage longer than LOSS_WINDOW that row falls outside the range, and
+        # _baseline_equity then falls back to the oldest row it can see — which
+        # just after a restart is the current equity, reporting no loss at all.
+        # One row from before the range is what keeps the baseline real.
+        baseline = self._snapshots.latest_known_before(
+            self._account_id, now - LOSS_WINDOW
+        )
+        if baseline is not None:
+            history.insert(0, baseline)
 
         results: list[ShadowDecision] = []
         for item in collected:

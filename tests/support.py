@@ -9,7 +9,7 @@ from trading.domain.account import AccountSnapshot
 from trading.domain.event import EventEnvelope
 from trading.domain.instrument import FillingMode, InstrumentSpec
 from trading.domain.intent import PositionIntent, ProtectionSpec
-from trading.domain.market import Bar, Tick
+from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand, ExecutionSide
 from trading.domain.position import PositionAction, PositionDirection
 
@@ -73,7 +73,11 @@ def make_bar(
     symbol: str = "USDJPY",
     timeframe: str = "1m",
     tick_volume: int = 0,
+    known_at: datetime | None = None,
 ) -> Bar:
+    # Default to a broker whose clock matches ours, so a test only states
+    # known_at when the offset is what it is exercising.
+    end = start + timedelta(seconds=TIMEFRAME_SECONDS[timeframe])
     return Bar(
         symbol=symbol,
         timeframe=timeframe,
@@ -83,6 +87,7 @@ def make_bar(
         low=Decimal(low),
         close=Decimal(close),
         tick_volume=tick_volume,
+        known_at=known_at if known_at is not None else end,
     )
 
 

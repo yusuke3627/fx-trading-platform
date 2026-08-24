@@ -18,10 +18,10 @@ def loaded_store(clock) -> InMemoryMarketData:
     return store
 
 
-def test_bars_hidden_until_close_time():
+def test_bars_hidden_until_they_are_known():
     clock = FixedClock(T0)
     store = loaded_store(clock)
-    # At T0 no bar has closed yet.
+    # At T0 no bar is known yet.
     assert store.bars("USDJPY", "1h", 10) == []
 
     clock.advance(hours=1)

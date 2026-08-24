@@ -109,12 +109,14 @@ def test_a_bar_becomes_visible_exactly_at_its_close():
     )
 
 
-def test_no_observed_bar_closes_after_the_replay_clock():
+def test_no_observed_bar_is_known_after_the_replay_clock():
     observer = run_observer(count=600, observed="1m")
     assert any(bars for _, bars in observer.observations)
     for now, bars in observer.observations:
         for bar in bars:
-            assert bar.close_time <= now
+            # known_at, not close_time: the candle's end sits on the broker's
+            # clock and the replay runs on ours (ADR-005).
+            assert bar.known_at <= now
 
 
 def test_several_configured_timeframes_are_all_available():

@@ -51,16 +51,21 @@ class Bar(BaseModel):
 
     symbol: str
     timeframe: str
+    # Broker clock: which quotes belong to this candle.
     start: datetime
     open: Decimal
     high: Decimal
     low: Decimal
     close: Decimal
     tick_volume: int = 0
+    # Our clock (real UTC): when this system observed the bar complete, and so
+    # the earliest time it may be shown to a strategy. Kept apart from `start`
+    # because the broker's zone is not ours — see ADR-005.
+    known_at: datetime
 
     @property
     def close_time(self) -> datetime:
-        """The instant every field of the bar is known: high/low/close exist
-        only once the bar has closed, so this — not `start` — is the earliest
-        time the bar may be shown to a strategy."""
+        """The bar's end on the broker clock. Every field exists only once the
+        bar has closed, so no quote after this instant belongs to it. This is
+        not the visibility instant — that is `known_at`."""
         return self.start + timedelta(seconds=TIMEFRAME_SECONDS[self.timeframe])

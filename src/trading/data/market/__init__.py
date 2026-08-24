@@ -29,7 +29,7 @@ class InMemoryMarketData:
 
     Replay MUST construct this with the ReplayClock: pre-loaded history is
     then filtered so only data already known at clock.now() is visible (bars
-    by close_time, ticks by known_time = received_at or broker time) —
+    by known_at, ticks by known_time = received_at or broker time) —
     without the clock a strategy could read future highs/lows/closes straight
     past the replay engine. Omitting the clock is for live/incremental
     feeding only.
@@ -54,7 +54,7 @@ class InMemoryMarketData:
         bars = self._bars.get((symbol, timeframe), [])
         if self._clock is not None:
             now = self._clock.now()
-            bars = [b for b in bars if b.close_time <= now]
+            bars = [b for b in bars if b.known_at <= now]
         return bars[-count:]
 
     def ticks(self, symbol: str, window_seconds: float) -> Sequence[Tick]:

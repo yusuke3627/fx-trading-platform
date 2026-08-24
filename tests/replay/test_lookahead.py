@@ -59,9 +59,11 @@ def test_late_received_tick_is_delivered_at_reception_time():
     assert delivered_at == [at(minutes=5).isoformat()]
 
 
-def test_bar_is_delivered_at_close_time_not_start():
+def test_bar_is_delivered_when_it_becomes_known_not_at_its_start():
     # A 1h bar's close does not exist at the bar's start; delivering it there
-    # would leak one hour of the future into every bar-driven backtest.
+    # would leak one hour of the future into every bar-driven backtest. The
+    # replay orders on known_at, which for a broker sharing our clock lands on
+    # the bar's own close.
     clock = ReplayClock(T0)
     engine = ReplayEngine(clock)
     bar = make_bar("158.80", "158.90", "158.70", "158.85", start=T0, timeframe="1h")

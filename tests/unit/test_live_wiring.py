@@ -7,7 +7,7 @@ from tests.support import FakeBarRepository, FakeTickRepository, FixedClock, usd
 from trading.config import load_config
 from trading.data.market.stored import StoredMarketData
 from trading.live.clock import CycleClock
-from trading.live.wiring import UnknownStrategyError, build_runner
+from trading.live.wiring import UnknownStrategyError, build_runner, configured_symbols
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.strategy.base import StrategyConfig, StrategyStatus
 from trading.strategy.registry import STRATEGIES
@@ -70,6 +70,19 @@ def test_an_unregistered_strategy_id_stops_the_build():
 
     with pytest.raises(UnknownStrategyError):
         build_runner(config, **services())
+
+
+def test_configured_symbols_collects_every_declared_instrument():
+    # Only the runner's symbol gets an instrument spec loaded, so this is what
+    # decides whether a --symbol is one any strategy would actually trade.
+    config = SimpleNamespace(
+        strategies={
+            "a": StrategyConfig(strategy_id="a", instruments=["USDJPY"]),
+            "b": StrategyConfig(strategy_id="b", instruments=["EURUSD", "USDJPY"]),
+        }
+    )
+
+    assert configured_symbols(config) == {"USDJPY", "EURUSD"}
 
 
 @pytest.mark.parametrize("environment", ["shadow", "micro_live", "production"])

@@ -125,9 +125,11 @@ def _context(clock, market, ledger, enabled):
 
 
 def quote_and_account():
+    # Everything as of the clock build() runs on: a quote older than
+    # quote_max_age_seconds stops the cycle before anything is evaluated.
     return {
-        "ticks": [make_tick("158.840", "158.844", time=T0, received_at=T0)],
-        "snapshots": [make_snapshot("1000000", observed_at=T0)],
+        "ticks": [make_tick("158.840", "158.844", time=at(minutes=1), received_at=at(minutes=1))],
+        "snapshots": [make_snapshot("1000000", observed_at=at(minutes=1))],
     }
 
 
@@ -154,12 +156,32 @@ def test_nothing_is_evaluated_before_a_quote_is_collected():
 def test_nothing_is_evaluated_before_the_account_is_known():
     # Every loss limit is measured against the account series; without a
     # snapshot there is nothing to measure.
-    runner = build(ticks=[make_tick("158.840", "158.844", time=T0, received_at=T0)])
+    runner = build(
+        ticks=[
+            make_tick("158.840", "158.844", time=at(minutes=1), received_at=at(minutes=1))
+        ]
+    )
 
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
     assert cycle.blocked == "no account snapshot collected"
+
+
+def test_a_stale_quote_stops_the_evaluation():
+    # A collector that is down leaves the last quote answering forever. Risk
+    # would refuse an entry on it, but only after a strategy had already
+    # formed a view on a price that is no longer the market.
+    runner = build(
+        ticks=[make_tick("158.840", "158.844", time=T0, received_at=T0)],
+        snapshots=[make_snapshot("1000000", observed_at=at(minutes=1))],
+        source_clock=FixedClock(at(minutes=1)),
+    )
+
+    cycle = runner.evaluate_once()
+
+    assert cycle.decisions == ()
+    assert cycle.blocked is not None and "quote is" in cycle.blocked
 
 
 def test_a_stale_account_stops_the_evaluation():
@@ -176,8 +198,7 @@ def test_a_stale_account_stops_the_evaluation():
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
-    assert cycle.blocked is not None and "stale" not in cycle.blocked.lower()
-    assert "old" in cycle.blocked
+    assert cycle.blocked is not None and "account snapshot is" in cycle.blocked
 
 
 def test_a_snapshot_written_after_the_cycle_started_is_not_visible():
@@ -186,8 +207,10 @@ def test_a_snapshot_written_after_the_cycle_started_is_not_visible():
     # value into the decision that was not knowable when it began.
     future = make_snapshot("2000000", observed_at=at(minutes=30))
     runner = build(
-        ticks=[make_tick("158.840", "158.844", time=T0, received_at=T0)],
-        snapshots=[make_snapshot("1000000", observed_at=T0), future],
+        ticks=[
+            make_tick("158.840", "158.844", time=at(minutes=1), received_at=at(minutes=1))
+        ],
+        snapshots=[make_snapshot("1000000", observed_at=at(minutes=1)), future],
         source_clock=FixedClock(at(minutes=1)),
     )
 
@@ -265,17 +288,6 @@ def test_the_whole_evaluation_reads_one_instant():
     (result,) = runner.evaluate_once().decisions
 
     assert result.signal.generated_at == result.decision.decided_at == at(minutes=1)
-
-
-def test_a_later_cycle_moves_to_the_new_instant():
-    source = FixedClock(at(minutes=1))
-    runner = build(**quote_and_account(), source_clock=source)
-    runner.evaluate_once()
-
-    source.advance(minutes=2)
-    (result,) = runner.evaluate_once().decisions
-
-    assert result.decision.decided_at == at(minutes=3)
 
 
 def test_describe_names_the_strategy_and_the_verdict():

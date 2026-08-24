@@ -122,6 +122,13 @@ class ShadowRunner:
         account = self._snapshots.latest_known_before(self._account_id, now)
         if quote is None:
             return ShadowCycle(at=now, blocked="no quote collected")
+        # Risk would refuse an entry on a quote this old anyway; refusing here
+        # keeps a strategy from forming a view on a price that is no longer
+        # the market. The bound is the one Risk grades against, so the two
+        # cannot drift apart.
+        quote_age = (now - quote.known_time).total_seconds()
+        if quote_age > self._risk_config.quote_max_age_seconds:
+            return ShadowCycle(at=now, blocked=f"quote is {quote_age:.0f}s old")
         if account is None:
             return ShadowCycle(at=now, blocked="no account snapshot collected")
         age = now - account.observed_at
@@ -265,7 +272,7 @@ def main() -> None:
 
     from trading.config import load_config
     from trading.data.market.stored import StoredMarketData
-    from trading.live.wiring import build_runner
+    from trading.live.wiring import build_runner, configured_symbols
 
     parser = argparse.ArgumentParser(description="Shadow strategy runner")
     parser.add_argument("--env", default="shadow")
@@ -282,6 +289,12 @@ def main() -> None:
 
     config = load_config(args.env)
     symbol = args.symbol or config.market.primary_instruments[0]
+    # Only this symbol's spec is loaded, so a symbol no strategy trades leaves
+    # every strategy asking for an instrument that is not there — and doing
+    # nothing about it, quietly, for as long as the process runs.
+    declared = configured_symbols(config)
+    if symbol not in declared:
+        raise SystemExit(f"{symbol} is not configured for any strategy: {sorted(declared)}")
     dsn = os.environ.get(config.storage.dsn_env)
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")

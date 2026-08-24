@@ -21,6 +21,15 @@ class UnknownStrategyError(ValueError):
     """Configuration names a strategy this build does not contain."""
 
 
+def configured_symbols(config: AppConfig) -> set[str]:
+    """Every instrument the configured strategies declare."""
+    return {
+        instrument
+        for strategy in config.strategies.values()
+        for instrument in strategy.instruments
+    }
+
+
 def build_runner(
     config: AppConfig,
     *,

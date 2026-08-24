@@ -4,59 +4,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support import T0, FixedClock, at, make_tick
+from tests.support import (
+    T0,
+    FakeBarRepository,
+    FakeTickRepository,
+    FixedClock,
+    at,
+    make_tick,
+)
 from trading.data.market.bar_service import (
     BarService,
     configured_timeframes,
     foldable_timeframes,
 )
 from trading.domain.market import TIMEFRAME_SECONDS
-
-
-class FakeTickStore:
-    """Stores ticks and answers the visibility window the way Postgres does:
-    event_time >= since AND received_at <= t, ordered by (event_time, arrival).
-    """
-
-    def __init__(self, ticks=()) -> None:
-        self.ticks = list(ticks)
-
-    def insert_many(self, ticks, *, source, ingestion_run) -> int:
-        self.ticks.extend(ticks)
-        return len(ticks)
-
-    def known_before(self, symbol, t, since):
-        visible = [
-            tick
-            for tick in self.ticks
-            if tick.symbol == symbol and tick.time >= since and tick.known_time <= t
-        ]
-        return sorted(visible, key=lambda tick: tick.time)
-
-
-class FakeBarStore:
-    """Mirrors the unique key: a bar already stored for a bucket is kept."""
-
-    def __init__(self) -> None:
-        self.bars = []
-
-    def insert_many(self, bars) -> int:
-        stored = 0
-        for bar in bars:
-            key = (bar.symbol, bar.timeframe, bar.start)
-            if any((b.symbol, b.timeframe, b.start) == key for b in self.bars):
-                continue
-            self.bars.append(bar)
-            stored += 1
-        return stored
-
-    def known_before(self, symbol, timeframe, t, count):
-        visible = [
-            b
-            for b in self.bars
-            if b.symbol == symbol and b.timeframe == timeframe and b.known_at <= t
-        ]
-        return sorted(visible, key=lambda b: b.start)[-count:]
 
 
 def minute_ticks(count: int, *, offset=timedelta(0)):
@@ -73,8 +34,8 @@ def minute_ticks(count: int, *, offset=timedelta(0)):
 
 
 def make_service(ticks, clock=None):
-    tick_store = FakeTickStore(ticks)
-    bar_store = FakeBarStore()
+    tick_store = FakeTickRepository(ticks)
+    bar_store = FakeBarRepository()
     return BarService(tick_store, bar_store, clock=clock or FixedClock(at(hours=1))), bar_store
 
 
@@ -107,8 +68,8 @@ def test_a_second_pass_resumes_from_the_last_stored_bar_and_writes_nothing_new()
 
 
 def test_a_later_pass_picks_up_the_ticks_that_arrived_since():
-    tick_store = FakeTickStore(minute_ticks(10))
-    bars = FakeBarStore()
+    tick_store = FakeTickRepository(minute_ticks(10))
+    bars = FakeBarRepository()
     clock = FixedClock(at(hours=1))
     service = BarService(tick_store, bars, clock=clock)
     service.build_once("USDJPY", "1m")

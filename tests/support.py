@@ -1,6 +1,7 @@
 """Shared test factories. All names/values are fictional test data."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -89,6 +90,60 @@ def make_bar(
         tick_volume=tick_volume,
         known_at=known_at if known_at is not None else end,
     )
+
+
+class FakeTickRepository:
+    """MarketTickRepository in memory, answering the visibility window the way
+    Postgres does: event_time >= since AND received_at <= t, ordered by
+    (event_time, arrival). Sorting is stable, so ticks sharing an event_time
+    keep insertion order — the fake's stand-in for the id tie-break, which is
+    what decides a bar's close and the latest price.
+    """
+
+    def __init__(self, ticks: Sequence[Tick] = ()) -> None:
+        self.ticks = list(ticks)
+
+    def known_before(self, symbol: str, t: datetime, since: datetime) -> list[Tick]:
+        return [tick for tick in self._visible(symbol, t) if tick.time >= since]
+
+    def latest_known_before(self, symbol: str, t: datetime) -> Tick | None:
+        visible = self._visible(symbol, t)
+        return visible[-1] if visible else None
+
+    def _visible(self, symbol: str, t: datetime) -> list[Tick]:
+        return sorted(
+            (tick for tick in self.ticks if tick.symbol == symbol and tick.known_time <= t),
+            key=lambda tick: tick.time,
+        )
+
+
+class FakeBarRepository:
+    """MarketBarRepository in memory, mirroring the unique key: a bar already
+    stored for a bucket is kept rather than overwritten.
+    """
+
+    def __init__(self, bars: Sequence[Bar] = ()) -> None:
+        self.bars = list(bars)
+
+    def insert_many(self, bars: Sequence[Bar]) -> int:
+        stored = 0
+        for bar in bars:
+            key = (bar.symbol, bar.timeframe, bar.start)
+            if any((b.symbol, b.timeframe, b.start) == key for b in self.bars):
+                continue
+            self.bars.append(bar)
+            stored += 1
+        return stored
+
+    def known_before(
+        self, symbol: str, timeframe: str, t: datetime, count: int
+    ) -> list[Bar]:
+        visible = [
+            b
+            for b in self.bars
+            if b.symbol == symbol and b.timeframe == timeframe and b.known_at <= t
+        ]
+        return sorted(visible, key=lambda b: b.start)[-count:]
 
 
 def make_snapshot(

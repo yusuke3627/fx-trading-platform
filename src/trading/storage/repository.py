@@ -86,6 +86,12 @@ class MarketTickRepository(Protocol):
         self, symbol: str, t: datetime, since: datetime
     ) -> Sequence[Tick]: ...
 
+    # The newest quote visible at `t`, by broker time. Unlike known_before this
+    # takes no window, because the newest quote may be arbitrarily old — a
+    # weekend, a market holiday, a collector that has been down — and a window
+    # would answer "no price" for a market that simply is not quoting.
+    def latest_known_before(self, symbol: str, t: datetime) -> Tick | None: ...
+
 
 class MarketBarRepository(Protocol):
     def insert_many(self, bars: Sequence[Bar]) -> int: ...

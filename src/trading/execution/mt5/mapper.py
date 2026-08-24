@@ -221,7 +221,13 @@ def sltp_modify_request(
     return request
 
 
-def _utc(ts: float) -> datetime:
+def broker_time_from_epoch(ts: float) -> datetime:
+    """Broker epoch -> aware datetime, carrying the server's zone unlabelled.
+
+    MT5 reports every timestamp in the broker's own zone; labelling them all
+    UTC keeps broker timestamps in one space that can be compared with each
+    other. They must not be compared with a real clock.
+    """
     return datetime.fromtimestamp(ts, tz=UTC)
 
 
@@ -240,7 +246,11 @@ def position_from_raw(raw: Any, contract_size: Decimal) -> BrokerPosition:
         entry_price=Decimal(str(raw.price_open)),
         stop_loss=Decimal(str(raw.sl)) if raw.sl else None,
         take_profit=Decimal(str(raw.tp)) if raw.tp else None,
-        observed_at=_utc(raw.time_update) if getattr(raw, "time_update", 0) else _utc(raw.time),
+        observed_at=(
+            broker_time_from_epoch(raw.time_update)
+            if getattr(raw, "time_update", 0)
+            else broker_time_from_epoch(raw.time)
+        ),
     )
 
 
@@ -267,5 +277,5 @@ def deal_from_raw(raw: Any, contract_size: Decimal) -> BrokerDeal:
         side=side,
         quantity=lots_to_units(raw.volume, contract_size),
         price=Decimal(str(raw.price)),
-        broker_time=_utc(raw.time),
+        broker_time=broker_time_from_epoch(raw.time),
     )

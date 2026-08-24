@@ -6,7 +6,7 @@ Windows; on the trading host the real package is imported lazily.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -15,6 +15,13 @@ from trading.domain.fill import BrokerDeal
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.position import BrokerPosition
 from trading.execution.mt5 import mapper
+
+# MT5 reads history date bounds in the broker's server time and reports deal
+# timestamps in it too, while this system stores broker time uncorrected (see
+# mapper._utc). The offset is real — OANDA Japan runs UTC+3 — and the Python
+# API does not expose it, so a UTC window is widened past any offset a broker
+# can have rather than shifted by a value that would have to be guessed.
+BROKER_TIME_MARGIN = timedelta(days=1)
 
 
 class MT5NotAvailable(RuntimeError):
@@ -115,7 +122,9 @@ class MT5ExecutionAdapter:
         return list(raw)
 
     def history_orders(self, start: datetime, end: datetime) -> list[Any]:
-        raw = self._mt5.history_orders_get(start, end)
+        raw = self._mt5.history_orders_get(
+            start - BROKER_TIME_MARGIN, end + BROKER_TIME_MARGIN
+        )
         if raw is None:
             raise MT5ConnectionError(
                 f"history_orders_get failed: {self._mt5.last_error()}"
@@ -123,11 +132,48 @@ class MT5ExecutionAdapter:
         return list(raw)
 
     def history_deals(self, start: datetime, end: datetime) -> list[BrokerDeal]:
-        raw = self._mt5.history_deals_get(start, end)
+        """Deals over a UTC window, widened by the broker-time margin.
+
+        Callers select by identity (magic, position) rather than by the
+        returned timestamps: the widening guarantees the requested period is
+        covered, not that nothing outside it comes back.
+        """
+        raw = self._mt5.history_deals_get(
+            start - BROKER_TIME_MARGIN, end + BROKER_TIME_MARGIN
+        )
         if raw is None:
             raise MT5ConnectionError(
                 f"history_deals_get failed: {self._mt5.last_error()}"
             )
+        return self._trade_deals(raw)
+
+    def broker_time(self, symbol: str) -> datetime:
+        """The broker's own clock, read from the latest quote.
+
+        Deal timestamps arrive in the server's zone, so recency has to be
+        judged against this reading; a real clock would be off by the offset.
+        """
+        tick = self._mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise MT5ConnectionError(f"symbol_info_tick({symbol}) failed")
+        return mapper.broker_time_from_epoch(tick.time)
+
+    def history_deals_for_position(self, position_identifier: str) -> list[BrokerDeal]:
+        """Every deal of one position, addressed by its identifier.
+
+        Preferred over the dated form wherever the position is known: MT5
+        resolves the identifier directly, so the server-time offset never
+        enters the query at all.
+        """
+        raw = self._mt5.history_deals_get(position=int(position_identifier))
+        if raw is None:
+            raise MT5ConnectionError(
+                f"history_deals_get(position={position_identifier}) failed: "
+                f"{self._mt5.last_error()}"
+            )
+        return self._trade_deals(raw)
+
+    def _trade_deals(self, raw: Any) -> list[BrokerDeal]:
         # Account history also contains balance/credit/commission deals with
         # no meaningful symbol or side; only BUY/SELL executions are trade
         # deals for reconciliation.

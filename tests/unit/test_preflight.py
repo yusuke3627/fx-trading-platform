@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -120,40 +121,65 @@ class MissingOrderIdProbeAdapter:
         self._mt5 = SimpleNamespace(
             symbol_info_tick=lambda symbol: SimpleNamespace(bid=158.840, ask=158.844)
         )
-        self._positions = {
-            "777": BrokerPosition(
-                broker_position_ticket="777",
-                broker_position_identifier="777",
-                symbol="USDJPY",
-                direction=PositionDirection.LONG,
-                quantity=Decimal(1000),
-                entry_price=Decimal("158.840"),
-                observed_at=T0,
-            )
-        }
+        self._magic = magic
+        self._broker_now = T0
+        # The account already trades under this magic: "555" was opened long
+        # before this run, "666" moments before it. Neither is the probe's.
+        self._positions = {t: self._position(t) for t in ("555", "666")}
         self._deals = [
-            BrokerDeal(
-                broker_deal_id="d1",
-                broker_position_identifier="777",
-                magic=magic,
-                side=ExecutionSide.BUY,
-                quantity=Decimal(1000),
-                price=Decimal("158.840"),
-                broker_time=T0,
-            )
+            self._deal("d0", "555", T0 - timedelta(days=1)),
+            self._deal("d1", "666", T0 - timedelta(minutes=1)),
         ]
+
+    def _position(self, ticket: str) -> BrokerPosition:
+        return BrokerPosition(
+            broker_position_ticket=ticket,
+            broker_position_identifier=ticket,
+            symbol="USDJPY",
+            direction=PositionDirection.LONG,
+            quantity=Decimal(1000),
+            entry_price=Decimal("158.840"),
+            observed_at=T0,
+        )
+
+    def _deal(self, deal_id: str, ticket: str, broker_time) -> BrokerDeal:
+        return BrokerDeal(
+            broker_deal_id=deal_id,
+            broker_position_identifier=ticket,
+            magic=self._magic,
+            side=ExecutionSide.BUY,
+            quantity=Decimal(1000),
+            price=Decimal("158.840"),
+            broker_time=broker_time,
+        )
+
+    def positions(self, symbol):
+        return [p for p in self._positions.values() if p.symbol == symbol]
 
     def order_send(self, request):
         if "position" in request:
             self._positions.pop(str(request["position"]), None)
             return SimpleNamespace(retcode=mapper.TRADE_RETCODE_DONE, order=888)
+        # The order fills — the result just does not carry the order id.
+        self._positions["777"] = self._position("777")
+        self._deals.append(self._deal("d2", "777", self._broker_now))
         return SimpleNamespace(retcode=mapper.TRADE_RETCODE_DONE, order=0)
 
     def position(self, ticket):
         return self._positions.get(ticket)
 
+    def broker_time(self, symbol):
+        return self._broker_now
+
     def history_deals(self, from_time, to_time):
         return self._deals
+
+    def history_deals_for_position(self, position_identifier):
+        return [
+            d
+            for d in self._deals
+            if d.broker_position_identifier == position_identifier
+        ]
 
 
 def test_protection_probe_cleans_up_when_order_id_missing():
@@ -174,3 +200,18 @@ def test_protection_probe_cleans_up_when_order_id_missing():
     assert cleanup[2] == {"leftover_units": "0"}
     # The position opened by the probe really is gone from the account.
     assert adapter.position("777") is None
+
+
+def test_magic_reidentification_leaves_the_accounts_own_positions_alone():
+    """The account trades under the same magic, and history comes back widened
+    past the broker's server-time offset. Closing on magic alone would send a
+    close order to a position the preflight never opened — including one
+    opened moments before the run, which no recency window can exclude."""
+    adapter = MissingOrderIdProbeAdapter(magic=42)
+
+    _protection_fill_probe(
+        adapter, usdjpy_spec(), "USDJPY", 42, FixedClock(), lambda *a, **k: None
+    )
+
+    assert adapter.position("555") is not None
+    assert adapter.position("666") is not None

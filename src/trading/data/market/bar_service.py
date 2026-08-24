@@ -13,6 +13,19 @@ NOTHING` makes the write idempotent; that also means a bar written wrong can
 never be corrected, which is why a cold start drops its first candle rather
 than risk persisting one whose bucket it entered halfway.
 
+**What market_bars is.** These rows are the LIVE series: each candle as it
+could be known in real time, from the ticks that had actually arrived when it
+closed. A backfill that later fills a gap does NOT reach back and correct
+them, and that is deliberate — a bar a strategy has already traded on must not
+be rewritten underneath it, which is the same rule BarBuilder enforces when it
+refuses to reopen a published bucket.
+
+Research and replay do not read these rows at all: BacktestEngine folds bars
+from the stored ticks on the fly, so a repaired gap flows into every later
+replay automatically. market_ticks is the durable series; market_bars is the
+record of what was knowable at the time. Anything wanting corrected candles
+should rebuild from ticks rather than read here.
+
 Usage (trading host):
 
     python -m trading.data.market.bar_service --env demo --symbol USDJPY

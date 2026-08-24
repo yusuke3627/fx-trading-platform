@@ -51,11 +51,16 @@ class FillRepository(Protocol):
 
 
 class AccountSnapshotRepository(Protocol):
-    def insert(self, snapshot: AccountSnapshot) -> None: ...
+    # Every call names the account. The high-water mark and the day baseline
+    # are read back out of this series, so a terminal switched from the demo
+    # login to a live one against the same database would otherwise inherit
+    # the other account's peak equity — an unrelated number that reads as a
+    # drawdown.
+    def insert(self, account_id: str, snapshot: AccountSnapshot) -> None: ...
 
-    def since(self, t: datetime) -> Sequence[AccountSnapshot]: ...
+    def since(self, account_id: str, t: datetime) -> Sequence[AccountSnapshot]: ...
 
-    def latest(self) -> AccountSnapshot | None: ...
+    def latest(self, account_id: str) -> AccountSnapshot | None: ...
 
 
 class EventRepository(Protocol):

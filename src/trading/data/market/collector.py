@@ -27,7 +27,6 @@ Usage (Windows host with MT5 terminal):
 from __future__ import annotations
 
 import argparse
-import math
 import time
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -36,6 +35,7 @@ from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 from trading.backtest.clock import Clock, SystemClock
+from trading.data.cli import poll_interval
 from trading.domain.market import Tick
 from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
 from trading.storage.repository import MarketTickRepository
@@ -214,16 +214,6 @@ def _aware_utc(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _poll_interval(value: str) -> float:
-    seconds = float(value)
-    if not math.isfinite(seconds) or seconds <= 0:
-        raise argparse.ArgumentTypeError(
-            f"{value!r} is not a positive interval; a zero or negative value "
-            "would poll without pause or fail only once the loop sleeps"
-        )
-    return seconds
-
-
 def main() -> None:
     import os
 
@@ -232,7 +222,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MT5 tick collector")
     parser.add_argument("--env", default="demo")
     parser.add_argument("--symbol", default=None)
-    parser.add_argument("--interval-seconds", type=_poll_interval, default=None)
+    parser.add_argument("--interval-seconds", type=poll_interval, default=None)
     parser.add_argument("--backfill-from", type=_aware_utc, default=None)
     parser.add_argument("--backfill-to", type=_aware_utc, default=None)
     args = parser.parse_args()

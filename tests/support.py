@@ -147,26 +147,28 @@ class FakeBarRepository:
 
 
 class FakeAccountSnapshotRepository:
-    """AccountSnapshotRepository in memory, read by observed_at the way the
-    stored series is.
+    """AccountSnapshotRepository in memory, scoped per account and read by
+    observed_at the way the stored series is.
     """
 
-    def __init__(self, snapshots: Sequence[AccountSnapshot] = ()) -> None:
-        self.snapshots = list(snapshots)
+    def __init__(self) -> None:
+        self.snapshots: list[tuple[str, AccountSnapshot]] = []
 
-    def insert(self, snapshot: AccountSnapshot) -> None:
-        self.snapshots.append(snapshot)
+    def insert(self, account_id: str, snapshot: AccountSnapshot) -> None:
+        self.snapshots.append((account_id, snapshot))
 
-    def since(self, t: datetime) -> list[AccountSnapshot]:
+    def since(self, account_id: str, t: datetime) -> list[AccountSnapshot]:
+        return [s for s in self._of(account_id) if s.observed_at >= t]
+
+    def latest(self, account_id: str) -> AccountSnapshot | None:
+        owned = self._of(account_id)
+        return owned[-1] if owned else None
+
+    def _of(self, account_id: str) -> list[AccountSnapshot]:
         return sorted(
-            (s for s in self.snapshots if s.observed_at >= t),
+            (s for owner, s in self.snapshots if owner == account_id),
             key=lambda s: s.observed_at,
         )
-
-    def latest(self) -> AccountSnapshot | None:
-        if not self.snapshots:
-            return None
-        return max(self.snapshots, key=lambda s: s.observed_at)
 
 
 def make_snapshot(

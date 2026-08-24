@@ -29,6 +29,7 @@ from decimal import Decimal
 from typing import Any
 
 from trading.backtest.clock import Clock, SystemClock
+from trading.data.cli import poll_interval
 from trading.domain.account import AccountSnapshot
 from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
 from trading.risk.limits import jst_day_start
@@ -106,15 +107,18 @@ class AccountSnapshotCollector:
         info = self._mt5.account_info()
         if info is None:
             raise MT5ConnectionError(f"account_info failed: {self._mt5.last_error()}")
+        # The login the terminal is currently connected to, so a series is
+        # never continued across a change of account.
+        account_id = str(info.login)
         now = self._clock.now()
-        today = self._repository.since(jst_day_start(now))
+        today = self._repository.since(account_id, jst_day_start(now))
         snapshot = build_snapshot(
             info,
             observed_at=now,
-            previous=self._repository.latest(),
+            previous=self._repository.latest(account_id),
             day_baseline=today[0] if today else None,
         )
-        self._repository.insert(snapshot)
+        self._repository.insert(account_id, snapshot)
         return snapshot
 
     def run(self, interval_seconds: float) -> None:
@@ -130,7 +134,9 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="MT5 account snapshot collector")
     parser.add_argument("--env", default="demo")
-    parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
+    parser.add_argument(
+        "--interval-seconds", type=poll_interval, default=DEFAULT_INTERVAL_SECONDS
+    )
     parser.add_argument(
         "--once",
         action="store_true",

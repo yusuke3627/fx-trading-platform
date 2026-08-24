@@ -150,6 +150,17 @@ def order_filling_for(accepted: frozenset[FillingMode]) -> int:
     raise ValueError(f"broker accepts no supported filling mode: {sorted(accepted)}")
 
 
+def account_key_from_info(info: Any) -> str:
+    """Identity of the account a terminal is connected to.
+
+    Login numbers are issued per server, so the same number exists on more
+    than one of them and is not the same account on each. Anything keying a
+    stored series by account has to agree on this, or a demo run and a live
+    one end up sharing a history.
+    """
+    return f"{info.server}:{info.login}"
+
+
 def instrument_spec_from_symbol_info(info: Any) -> InstrumentSpec:
     """Build an InstrumentSpec from mt5.symbol_info() output.
 

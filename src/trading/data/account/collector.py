@@ -32,6 +32,7 @@ from trading.backtest.clock import Clock, SystemClock
 from trading.data.cli import poll_interval
 from trading.domain.account import AccountSnapshot
 from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
+from trading.execution.mt5.mapper import account_key_from_info
 from trading.risk.limits import jst_day_start
 from trading.storage.repository import AccountSnapshotRepository
 
@@ -82,17 +83,6 @@ def build_snapshot(
     )
 
 
-def account_key(info: Any) -> str:
-    """Identity of the account the terminal is connected to.
-
-    Login numbers are issued per server, so the same number exists on more
-    than one of them and is not the same account on each. Keying the series
-    by the number alone would let a demo login collide with an unrelated live
-    one and hand it the wrong high-water mark.
-    """
-    return f"{info.server}:{info.login}"
-
-
 def _money(value: Any) -> Decimal:
     return Decimal(str(value))
 
@@ -120,7 +110,7 @@ class AccountSnapshotCollector:
         info = self._mt5.account_info()
         if info is None:
             raise MT5ConnectionError(f"account_info failed: {self._mt5.last_error()}")
-        account_id = account_key(info)
+        account_id = account_key_from_info(info)
         now = self._clock.now()
         today = self._repository.since(account_id, jst_day_start(now))
         snapshot = build_snapshot(

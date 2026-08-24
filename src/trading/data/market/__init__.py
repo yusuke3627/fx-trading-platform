@@ -1,7 +1,9 @@
 """Market data service.
 
-Live implementation reads from MT5 / persisted ticks; the in-memory
-implementation backs tests and replay.
+StoredMarketData answers from the persisted series and backs live trading;
+the in-memory implementation backs tests and replay. Neither reaches a broker:
+quotes arrive through the collector, so a strategy reading market data cannot
+end up holding a connection that can trade.
 """
 from __future__ import annotations
 

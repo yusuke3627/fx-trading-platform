@@ -380,6 +380,22 @@ class PostgresMarketTickRepository:
         ).fetchall()
         return [_row_to_tick(r) for r in rows]
 
+    def latest_known_before(self, symbol: str, t: datetime) -> Tick | None:
+        # Ordered the same way known_before is, reversed: the tie-break decides
+        # which of several quotes sharing an event_time counts as the latest
+        # price, and the two must not disagree.
+        row = self._conn.execute(
+            """
+            SELECT symbol, bid, ask, event_time, received_at
+            FROM market_ticks
+            WHERE symbol = %s AND received_at <= %s
+            ORDER BY event_time DESC, id DESC
+            LIMIT 1
+            """,
+            (symbol, t),
+        ).fetchone()
+        return _row_to_tick(row) if row else None
+
 
 class PostgresMarketBarRepository:
     def __init__(self, conn: psycopg.Connection) -> None:

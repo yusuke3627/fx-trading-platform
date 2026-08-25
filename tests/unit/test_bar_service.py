@@ -13,7 +13,11 @@ from tests.support import (
     make_bar,
     make_tick,
 )
-from trading.data.market.bar_service import BarService, configured_timeframes
+from trading.data.market.bar_service import (
+    COLD_START_LOOKBACK,
+    BarService,
+    configured_timeframes,
+)
 from trading.domain.market import TIMEFRAME_SECONDS
 
 
@@ -54,21 +58,64 @@ class CountingTicks(FakeTickRepository):
 def test_bars_are_folded_from_the_stored_ticks():
     service, bars = make_service(minute_ticks(10))
 
-    assert service.build_once("USDJPY", "1m") == 2
+    assert service.build_once("USDJPY", "1m") == 3
 
-    assert [b.start for b in bars.bars] == [at(minutes=1), at(minutes=2)]
+    assert [b.start for b in bars.bars] == [T0, at(minutes=1), at(minutes=2)]
     assert all(b.timeframe == "1m" for b in bars.bars)
 
 
-def test_the_first_candle_of_a_cold_start_is_dropped():
-    # The lookback lands mid-bucket, so the first bar the fold closes may have
-    # been entered halfway. The write is idempotent and can never be
-    # corrected, so a possibly-partial candle is not persisted at all.
-    service, bars = make_service(minute_ticks(10))
+def test_a_series_that_begins_mid_bucket_does_not_publish_that_bucket():
+    # Collection started at noon with no backfill behind it, so the day's
+    # candle would be missing its morning. Nothing in the OHLC would show
+    # that, and the write can never be corrected.
+    ticks = FakeTickRepository(
+        [
+            make_tick("158.840", "158.844", time=at(hours=h), received_at=at(hours=h))
+            for h in (12, 18, 24, 36, 48)
+        ]
+    )
+    bars = FakeBarRepository()
+    service = BarService(ticks, bars, clock=FixedClock(at(hours=48)))
 
-    service.build_once("USDJPY", "1m")
+    assert service.build_once("USDJPY", "1d") == 1
+    assert [b.start for b in bars.bars] == [at(days=1)]
 
-    assert at(minutes=0) not in [b.start for b in bars.bars]
+
+def test_a_candle_whose_bucket_opened_before_the_window_is_dropped():
+    # The other cut: the lookback bound lands wherever it lands, and the
+    # quotes that opened the bucket it fell inside are outside the read.
+    ticks = FakeTickRepository(
+        [
+            make_tick("158.840", "158.844", time=at(seconds=s), received_at=at(seconds=s))
+            for s in (40, 50, 70, 130)
+        ]
+    )
+    bars = FakeBarRepository()
+    cut_mid_minute = T0 + COLD_START_LOOKBACK + timedelta(seconds=30)
+    service = BarService(ticks, bars, clock=FixedClock(cut_mid_minute))
+
+    assert service.build_once("USDJPY", "1m") == 1
+    assert [b.start for b in bars.bars] == [at(minutes=1)]
+
+
+def test_the_first_whole_candle_of_a_cold_start_is_kept():
+    # This bucket opened inside the window, so nothing was cut from it.
+    # Dropping it would leave the resume point where it was, and the next pass
+    # would re-read the same span to discard the same candle again — at 1d,
+    # for as long as it takes a second bucket to close.
+    ticks = FakeTickRepository(
+        [
+            make_tick("158.840", "158.844", time=at(hours=h), received_at=at(hours=h))
+            for h in (0, 12, 24)
+        ]
+    )
+    bars = FakeBarRepository()
+    service = BarService(ticks, bars, clock=FixedClock(at(hours=24)))
+
+    assert service.build_once("USDJPY", "1d") == 1
+    assert [b.start for b in bars.bars] == [T0]
+    # The resume point has moved, so the next pass is a pair of index seeks.
+    assert service.build_once("USDJPY", "1d") == 0
 
 
 def test_a_second_pass_resumes_from_the_last_stored_bar_and_writes_nothing_new():
@@ -93,6 +140,7 @@ def test_a_later_pass_picks_up_the_ticks_that_arrived_since():
 
     assert service.build_once("USDJPY", "1m") == 2
     assert [b.start for b in bars.bars] == [
+        T0,
         at(minutes=1),
         at(minutes=2),
         at(minutes=3),
@@ -111,9 +159,9 @@ def test_bars_carry_the_broker_clock_for_the_candle_and_ours_for_visibility():
     service.build_once("USDJPY", "1m")
 
     bar = bars.bars[0]
-    assert bar.start == at(minutes=1) + offset
-    assert bar.close_time == at(minutes=2) + offset
-    assert bar.known_at == at(minutes=2)
+    assert bar.start == T0 + offset
+    assert bar.close_time == at(minutes=1) + offset
+    assert bar.known_at == at(minutes=1)
 
 
 def test_a_pass_whose_bucket_is_still_open_does_not_read_the_series():

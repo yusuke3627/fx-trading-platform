@@ -12,8 +12,9 @@ re-run writes nothing new. A pass whose bucket has not ended yet stops at two
 index seeks, so holding no state does not mean re-reading the day at the poll
 rate. `ON CONFLICT (symbol, timeframe, start_at) DO
 NOTHING` makes the write idempotent; that also means a bar written wrong can
-never be corrected, which is why a cold start drops its first candle rather
-than risk persisting one whose bucket it entered halfway.
+never be corrected, which is why a first pass begins at the first bucket
+boundary its read fully covers rather than persisting a candle assembled from
+part of one.
 
 **What market_bars is.** These rows are the LIVE series: each candle as it
 could be known in real time, from the ticks that had actually arrived when it
@@ -80,10 +81,10 @@ class BarService:
             # close_time is the next bucket's start, so the fold begins on a
             # boundary and no candle is entered halfway.
             since = stored[-1].close_time
-            drop_first = False
         else:
-            since = now - COLD_START_LOOKBACK
-            drop_first = True
+            since = self._cold_start(symbol, timeframe, now)
+            if since is None:
+                return 0
 
         if not self._a_bucket_has_closed(symbol, timeframe, since, now):
             return 0
@@ -95,9 +96,32 @@ class BarService:
             if bar is not None:
                 completed.append(bar)
 
-        if drop_first and completed:
-            completed = completed[1:]
         return self._bars.insert_many(completed) if completed else 0
+
+    def _cold_start(self, symbol: str, timeframe: str, now: datetime) -> datetime | None:
+        """Where a first pass begins folding, or None with nothing to read.
+
+        The bucket the oldest readable quote falls in can be cut from either
+        side — by the lookback bound, or by the start of the series itself when
+        collection began partway through it. Neither cut shows in the candle
+        that comes out: an OHLC missing its morning looks like any other, and
+        ON CONFLICT DO NOTHING means it could never be corrected. Beginning at
+        the next boundary gives that bucket up instead.
+
+        Skipping it is also what lets the pass make progress. Folding it and
+        discarding the result afterwards would leave the resume point where it
+        was, so the next pass would re-read the same span to discard the same
+        candle again — at 1d, until a second bucket closes.
+        """
+        first = self._ticks.earliest_known_after(
+            symbol, now, now - COLD_START_LOOKBACK
+        )
+        if first is None:
+            return None
+        start = bucket_start(first.time, timeframe)
+        if first.time == start:
+            return start
+        return start + timedelta(seconds=TIMEFRAME_SECONDS[timeframe])
 
     def _a_bucket_has_closed(
         self, symbol: str, timeframe: str, since: datetime, now: datetime

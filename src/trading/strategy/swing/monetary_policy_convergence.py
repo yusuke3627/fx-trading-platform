@@ -46,15 +46,18 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
 
     @classmethod
     def warmup(cls, config: StrategyConfig) -> timedelta:
-        # The slowest window is the trend gate's EMA(50) on the trend
-        # timeframe (~50 trading days on 1d); the trigger-timeframe support
-        # lookback rides inside it unless configured far wider.
+        # The slowest window is usually the trend gate's EMA(50) on the trend
+        # timeframe (~50 trading days on 1d), but every window _evaluate
+        # reads joins the max: a re-configured trigger timeframe or ATR
+        # period must widen the lead-in, not starve it.
         trend_tf = config.timeframes.role("trend", "1d")
         trigger_tf = config.timeframes.role("trigger", "4h")
         support_lookback = int(config.param("support_lookback", 30))
+        atr_period = int(config.param("atr_period", 14))
         span = max(
             cls.EMA_SLOW * TIMEFRAME_SECONDS[trend_tf],
             (support_lookback + 10) * TIMEFRAME_SECONDS[trigger_tf],
+            (atr_period + 1) * TIMEFRAME_SECONDS[trigger_tf],
         )
         return market_span_to_calendar(span)
 

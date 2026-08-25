@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from dataclasses import replace
@@ -68,6 +69,18 @@ def reconstructed(ticks: list[Tick], offset: timedelta) -> list[Tick]:
     return [t.model_copy(update={"received_at": t.time - offset}) for t in ticks]
 
 
+def warmup_days(value: str) -> float:
+    """A finite, non-negative number of lead-in days.
+
+    A negative value would silently push read_from PAST --from, dropping the
+    period's head from the replay while the manifest still records the full
+    period as evaluated."""
+    days = float(value)
+    if not math.isfinite(days) or days < 0:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a non-negative day count")
+    return days
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="research backtest over recorded ticks")
     parser.add_argument("--env", default="backtest")
@@ -92,7 +105,7 @@ def main() -> None:
     parser.add_argument("--out", default="reports")
     parser.add_argument(
         "--warmup-days",
-        type=float,
+        type=warmup_days,
         default=None,
         help="lead-in read before --from to populate indicator state; "
         "defaults to the strategy's own declared warmup",

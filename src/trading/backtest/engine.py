@@ -32,10 +32,10 @@ from uuid import uuid4
 
 from trading.backtest.clock import Clock, ReplayClock
 from trading.backtest.costs import CostModel
+from trading.backtest.market import ReplayMarketData
 from trading.backtest.replay import ReplayEngine
 from trading.backtest.simulator import ExecutionSimulator
 from trading.data.features import ReplayFeatureTimeline
-from trading.data.market import InMemoryMarketData
 from trading.data.market.bars import BarBuilder
 from trading.domain.account import AccountMode, AccountSnapshot
 from trading.domain.event import EventEnvelope
@@ -235,7 +235,7 @@ class _Wiring:
     """Per-run components; built fresh for every run() call."""
 
     clock: ReplayClock
-    market: InMemoryMarketData
+    market: ReplayMarketData
     bar_builders: list[BarBuilder]
     simulator: ExecutionSimulator
     broker: SimulatedBroker
@@ -386,7 +386,7 @@ class BacktestEngine:
 
     def _wire(self, start: datetime) -> _Wiring:
         clock = ReplayClock(start)
-        market = InMemoryMarketData(clock)
+        market = ReplayMarketData()
         market.set_instrument(self._spec)
         simulator = ExecutionSimulator(self._costs, self._spec, self._seed, self._mode)
         broker = SimulatedBroker(simulator, clock)

@@ -31,17 +31,24 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.env)
+    clock = SystemClock()
 
     meetings = load_meetings(args.meetings)
-    # Validates the schedule: section too. Results transcribed onto a schedule
-    # entry instead of moved into meetings: must fail this daily run loudly —
-    # scoring only meetings would leave that meeting silently unscored forever.
-    load_schedule(args.meetings)
+    # Loading the schedule: section validates it too — results transcribed
+    # onto a schedule entry instead of moved into meetings: fail this daily
+    # run loudly instead of leaving the meeting silently unscored forever.
+    schedule = load_schedule(args.meetings)
+    # The other way to lose a meeting is to never transcribe it at all: once
+    # its publication bound has passed, the results exist and belong in
+    # meetings:, so a stale schedule entry is a failure, not a note.
+    stale = [s for s in schedule if s.latest_published_at < clock.now()]
+    if stale:
+        overdue = ", ".join(f"{s.bank} {s.decision_date}" for s in stale)
+        raise SystemExit(f"schedule entries past publication, results not transcribed: {overdue}")
 
     dsn = os.environ.get(config.storage.dsn_env)
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")
-    clock = SystemClock()
     events = [event_from_meeting(meeting, clock) for meeting in meetings]
 
     # Imported here so the module stays usable (and unit-testable) without the

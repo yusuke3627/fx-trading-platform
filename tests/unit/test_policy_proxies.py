@@ -215,6 +215,40 @@ schedule:
         load_schedule(path)
 
 
+def test_a_misspelled_section_name_is_rejected(tmp_path):
+    # scheudle: の誤記が空の schedule として通ると、covers の主張だけが残り、
+    # 登録したはずの会合期間が NORMAL と判定される。
+    path = tmp_path / "meetings.yaml"
+    path.write_text("meetings: []\nscheudle: []\n")
+
+    with pytest.raises(ValueError, match="scheudle"):
+        load_schedule(path)
+
+
+def test_the_collector_fails_when_a_past_meeting_was_never_transcribed(
+    tmp_path, monkeypatch
+):
+    # 公表期限を過ぎた会合が schedule: に残ったままだと、実結果は存在するのに
+    # 採点イベントが永続的に欠落する。日次実行はそこで止まって知らせる。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+schedule:
+  - bank: BOJ
+    decision_date: 2026-06-16
+    earliest_published_at: 2026-06-16T00:00:00+00:00
+    latest_published_at: 2026-06-16T06:00:00+00:00
+    source_uri: https://example.invalid
+"""
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["collector", "--env", "demo", "--meetings", str(path)]
+    )
+
+    with pytest.raises(SystemExit, match="results not transcribed"):
+        collector_main()
+
+
 def test_the_collector_validates_the_whole_file_before_scoring(tmp_path, monkeypatch):
     # 日次 collector が meetings: しか読まないと、schedule: への書き足しは
     # 本番で一度も検証されず、その会合は正常終了の裏で採点され続けない。

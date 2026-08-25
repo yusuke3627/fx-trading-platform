@@ -81,29 +81,6 @@ class MeetingCoverage(BaseModel):
         return self
 
 
-def load_coverage(path: Path | str = DEFAULT_MEETINGS_PATH) -> MeetingCoverage | None:
-    """What the file says it covers, or None when it makes no claim.
-
-    None means the schedule is unknown everywhere, so risk falls back to its
-    configured default rather than reading an unstated span as quiet.
-    """
-    raw = yaml.safe_load(Path(path).read_text()) or {}
-    covers = raw.get("covers")
-    return MeetingCoverage.model_validate(covers) if covers else None
-
-
-def load_meetings(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[PolicyMeeting]:
-    raw = yaml.safe_load(Path(path).read_text()) or {}
-    meetings = [PolicyMeeting.model_validate(entry) for entry in raw.get("meetings", [])]
-    seen: set[tuple[str, date]] = set()
-    for meeting in meetings:
-        key = (meeting.bank, meeting.decision_date)
-        if key in seen:
-            raise ValueError(f"duplicate meeting entry: {key}")
-        seen.add(key)
-    return meetings
-
-
 class ScheduledMeeting(BaseModel):
     """A meeting announced on the official calendar whose results are not out.
 
@@ -144,11 +121,48 @@ class ScheduledMeeting(BaseModel):
         return self
 
 
+class _MeetingsFile(BaseModel):
+    """The file as a whole. extra is forbidden here too: a misspelled section
+    name would otherwise read as an empty section while the coverage claim
+    keeps standing, and both the collector and the risk calendar would start
+    cleanly with the meetings gone."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    covers: MeetingCoverage | None = None
+    meetings: tuple[PolicyMeeting, ...] = ()
+    schedule: tuple[ScheduledMeeting, ...] = ()
+
+
+def _load_file(path: Path | str) -> _MeetingsFile:
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    return _MeetingsFile.model_validate(raw)
+
+
+def load_coverage(path: Path | str = DEFAULT_MEETINGS_PATH) -> MeetingCoverage | None:
+    """What the file says it covers, or None when it makes no claim.
+
+    None means the schedule is unknown everywhere, so risk falls back to its
+    configured default rather than reading an unstated span as quiet.
+    """
+    return _load_file(path).covers
+
+
+def load_meetings(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[PolicyMeeting]:
+    meetings = list(_load_file(path).meetings)
+    seen: set[tuple[str, date]] = set()
+    for meeting in meetings:
+        key = (meeting.bank, meeting.decision_date)
+        if key in seen:
+            raise ValueError(f"duplicate meeting entry: {key}")
+        seen.add(key)
+    return meetings
+
+
 def load_schedule(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[ScheduledMeeting]:
     """Announced-only meetings. A meeting present here and in meetings: is a
     move that forgot its second half, so it is rejected rather than shadowed."""
-    raw = yaml.safe_load(Path(path).read_text()) or {}
-    schedule = [ScheduledMeeting.model_validate(entry) for entry in raw.get("schedule", [])]
+    schedule = list(_load_file(path).schedule)
     seen = {(m.bank, m.decision_date) for m in load_meetings(path)}
     for entry in schedule:
         key = (entry.bank, entry.decision_date)

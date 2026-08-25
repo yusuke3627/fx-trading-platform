@@ -128,11 +128,15 @@ def ensure_period_covered(
 ) -> None:
     """SystemExit unless the stored series can honestly serve the run.
 
-    All three failure shapes would otherwise finish and write a
-    plausible-looking report: an empty read, a read holding only lead-in
-    ticks (nothing evaluated), and a history that begins well after the
-    requested warm-up start (the opening evaluations run on starved
-    indicator state while the manifest claims the full lead-in).
+    Each failure shape would otherwise finish and write a plausible-looking
+    report: an empty read; a read holding only lead-in ticks (nothing
+    evaluated); a history beginning well after the requested warm-up start
+    (opening evaluations on starved indicator state); and a history ending
+    well before --to (a partial period reported as the full one). The
+    closed-market allowance keeps weekends at either edge from tripping the
+    bounds. A gap in the MIDDLE of the period is not detected here — the
+    stored series is taken as the market record, and known server-side holes
+    are the operator's period-selection concern.
     """
     if not ticks:
         raise SystemExit(
@@ -150,6 +154,12 @@ def ensure_period_covered(
             f"warm-up start {read_from}; the opening evaluations would run "
             "on starved indicator state — backfill earlier history or move "
             "--from later"
+        )
+    if ticks[-1].time < end - CLOSED_MARKET_ALLOWANCE:
+        raise SystemExit(
+            f"stored history ends at {ticks[-1].time}, well before the "
+            f"requested period end {end}; the report would claim the full "
+            "period — backfill the tail or move --to earlier"
         )
 
 

@@ -108,7 +108,7 @@ def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
     read_from = START - timedelta(days=10)
     covered = [
         tick(read_from + timedelta(hours=1), START),
-        tick(START + timedelta(hours=1), START),
+        tick(END - timedelta(hours=1), START),
     ]
     ensure_period_covered(covered, read_from, START, END)
 
@@ -120,10 +120,17 @@ def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
     # History begins days into the requested warm-up: starved indicators.
     late_history = [
         tick(START - timedelta(days=2), START),
-        tick(START + timedelta(hours=1), START),
+        tick(END - timedelta(hours=1), START),
     ]
     with pytest.raises(SystemExit):
         ensure_period_covered(late_history, read_from, START, END)
+    # History ends days before --to: a partial period reported as full.
+    truncated_tail = [
+        tick(read_from + timedelta(hours=1), START),
+        tick(START + timedelta(hours=1), START),
+    ]
+    with pytest.raises(SystemExit):
+        ensure_period_covered(truncated_tail, read_from, START, END)
 
 
 def test_period_bounds_accept_only_utc_stamped_labels():

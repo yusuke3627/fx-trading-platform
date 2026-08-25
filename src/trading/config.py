@@ -59,8 +59,12 @@ class MacroDataConfig(BaseModel):
 class EventRiskWindowSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    pre_hours: int = 24
-    post_hours: int = 12
+    # A negative bound inverts the window — its start lands after its end, so
+    # it never activates and the configured halt quietly stops applying. Zero
+    # is meaningful (guard only from the announcement onward, or only up to
+    # it); negative is not.
+    pre_hours: int = Field(default=24, ge=0)
+    post_hours: int = Field(default=12, ge=0)
     # Typed rather than free strings: a mode nobody recognises would otherwise
     # reach EventRiskWindow.actions and grade as NORMAL — a halt configured and
     # then silently not applied.

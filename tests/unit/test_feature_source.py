@@ -7,6 +7,7 @@ import pytest
 
 from trading.data.features import StoredFeatureSource
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
+from trading.data.policy.scoring import SCORING_VERSION
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope
 from trading.intelligence import features as f
@@ -59,12 +60,17 @@ def observation(day: date, value: str) -> EconomicObservation:
     )
 
 
-def score_event(event_type: str, score: float, known_at: datetime) -> EventEnvelope:
+def score_event(
+    event_type: str,
+    score: float,
+    known_at: datetime,
+    version: str = SCORING_VERSION,
+) -> EventEnvelope:
     return EventEnvelope(
         event_id=uuid4(),
         event_type=event_type,
         source="TEST",
-        payload={"score": score},
+        payload={"score": score, "scoring_version": version},
         retrieved_at=known_at,
         known_at=known_at,
     )
@@ -127,6 +133,23 @@ def test_no_recent_intervention_is_absence_of_evidence():
     )
 
     assert f.INTERVENTION_RISK not in source.snapshot(NOW)
+
+
+def test_policy_scores_come_only_from_this_builds_scoring_version():
+    # A re-tuned algorithm re-ingests past meetings as new events under a new
+    # version, sharing the old ones' known_at. Without picking a version the
+    # winner would be whichever row the store happened to return first.
+    same_instant = NOW - timedelta(days=10)
+    source = make_source(
+        events=[
+            score_event("FED_POLICY_SHIFT_SCORE", -1.0, same_instant),
+            score_event(
+                "FED_POLICY_SHIFT_SCORE", 2.0, same_instant, version="policy_shift_v999"
+            ),
+        ]
+    )
+
+    assert source.snapshot(NOW)[f.FED_POLICY_SHIFT_SCORE] == -1.0
 
 
 def test_visibility_respects_the_reading_clock():

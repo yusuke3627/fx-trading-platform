@@ -21,7 +21,7 @@ from datetime import datetime
 from trading.data.intervention.features import KIND_TO_STATUS, intervention_risk_inputs
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
 from trading.data.policy.features import latest_policy_score, us2y_features
-from trading.data.policy.scoring import EVENT_TYPES
+from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
 from trading.intelligence import features as f
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig, intervention_risk_score
@@ -57,12 +57,8 @@ class StoredFeatureSource:
 
         values.update(us2y_features(self._observations.known_before(US_TREASURY_2Y_YIELD, now)))
 
-        values[f.BOJ_POLICY_SHIFT_SCORE] = latest_policy_score(
-            self._events.known_before(now, EVENT_TYPES["BOJ"])
-        )
-        values[f.FED_POLICY_SHIFT_SCORE] = latest_policy_score(
-            self._events.known_before(now, EVENT_TYPES["FED"])
-        )
+        values[f.BOJ_POLICY_SHIFT_SCORE] = self._policy_score(now, EVENT_TYPES["BOJ"])
+        values[f.FED_POLICY_SHIFT_SCORE] = self._policy_score(now, EVENT_TYPES["FED"])
 
         # Event-derived inputs only; the price-derived ones join once someone
         # computes them. No recent intervention yields no inputs at all, and
@@ -78,3 +74,17 @@ class StoredFeatureSource:
             values[f.INTERVENTION_RISK] = intervention_risk_score(inputs, self._intervention)
 
         return {name: value for name, value in values.items() if value is not None}
+
+    def _policy_score(self, now: datetime, event_type: str) -> float | None:
+        # A re-tuned scoring algorithm re-ingests past meetings as NEW events
+        # (scoring.py versions them instead of rewriting history), so the same
+        # meeting can sit in the store under several versions with one
+        # known_at. The reader has to pick, and it picks the version this
+        # build computes — features and scorer then agree by construction.
+        return latest_policy_score(
+            [
+                event
+                for event in self._events.known_before(now, event_type)
+                if event.payload.get("scoring_version") == SCORING_VERSION
+            ]
+        )

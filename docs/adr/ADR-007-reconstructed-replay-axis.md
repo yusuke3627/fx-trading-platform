@@ -37,9 +37,14 @@ verified only against summer data so far; the measured `received_at` of
 polled winter rows will confirm or correct it, and correcting it changes no
 stored data.
 
-The repeated fall-back hour maps to its first occurrence (`fold=0`). That
-one broker-labelled hour a year is genuinely ambiguous in the recorded
-series itself — no rule recovers which pass a label belongs to.
+The DST transition hours themselves cannot occur in a correct dataset: New
+York switches at 02:00 Sunday, which the anchor places inside the FX
+weekend close (Friday 17:00 - Sunday 17:00 New York), when the server
+quotes nothing. A label inside the repeated or skipped hour is therefore
+evidence that the anchor assumption is wrong for the data at hand; mapping
+it onto either occurrence could deliver a price an hour early against the
+known_at axis (look-ahead), so the reconstruction refuses such a label
+instead of guessing a fold.
 
 Applying the reconstruction to polled rows too, where a measured value
 exists, is deliberate: one rule for the whole series keeps a period that

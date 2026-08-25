@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
+
 from tests.support import FakeEventRepository, FakeObservationRepository
 from trading.backtest.research import broker_label_to_known, reconstructed
 from trading.data.features import US2Y_VINTAGE_LOOKBACK, StoredFeatureSource
@@ -87,6 +89,31 @@ def test_reconstruction_follows_the_servers_dst_calendar():
 
     assert broker_label_to_known(summer, anchor) == summer - timedelta(hours=3)
     assert broker_label_to_known(winter, anchor) == winter - timedelta(hours=2)
+
+    # Across the 2025-11-02 fall-back: Friday close maps at -3h, the Sunday
+    # session open at -2h, and the mapping stays monotonic through the gap.
+    friday_close = datetime(2025, 10, 31, 20, 0, tzinfo=UTC)
+    sunday_open = datetime(2025, 11, 3, 0, 30, tzinfo=UTC)
+    assert broker_label_to_known(friday_close, anchor) == friday_close - timedelta(
+        hours=3
+    )
+    assert broker_label_to_known(sunday_open, anchor) == sunday_open - timedelta(
+        hours=2
+    )
+
+
+def test_a_label_inside_the_dst_transition_hour_is_refused():
+    # New York switches at 02:00 Sunday — inside the FX weekend close, so no
+    # correct dataset carries such a label; folding one onto either
+    # occurrence could replay a price an hour early (look-ahead).
+    anchor = timedelta(hours=7)
+    repeated = datetime(2025, 11, 2, 8, 30, tzinfo=UTC)  # NY 01:30, twice
+    skipped = datetime(2026, 3, 8, 9, 30, tzinfo=UTC)  # NY 02:30, never
+
+    with pytest.raises(ValueError):
+        broker_label_to_known(repeated, anchor)
+    with pytest.raises(ValueError):
+        broker_label_to_known(skipped, anchor)
 
 
 def test_change_instants_mirror_the_snapshot_windows():

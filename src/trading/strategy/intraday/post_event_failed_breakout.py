@@ -1,12 +1,20 @@
 """POST_EVENT_FAILED_BREAKOUT + macro confirmation (intraday, RESEARCH_ONLY).
 
-Short: macro confirmation (US rate expectations weakening OR US data downside
-surprise OR BOJ hawkish shift) + a failed breakout above setup-timeframe
+Macro confirmation reads what the platform actually measures. "US rate
+expectations" is the US2Y policy proxy at two horizons — the week's drift
+(5d) standing for the repricing trend, the day's move (1d) for the immediate
+reaction — and "BOJ hawkish" is the latest statement's mechanical score. A
+downside data surprise stays in the short gate under its own name, but no
+consensus source produces it yet, so that arm of the OR is inert until one
+does.
+
+Short: macro confirmation (US2Y weekly drift down OR US data downside
+surprise OR hawkish BOJ statement) + a failed breakout above setup-timeframe
 resistance on the entry timeframe.
 
 Long is NOT symmetric: under the current policy-convergence / intervention-tail
-regime it requires multiple confirmations (US rate expectations up AND US2Y up
-AND no intervention-risk escalation) and carries lower conviction.
+regime it requires multiple confirmations (US2Y weekly drift up AND day move
+up AND no intervention-risk escalation) and carries lower conviction.
 
 Timeframes come from configuration (regime/setup/entry), not from code.
 """
@@ -117,25 +125,25 @@ class PostEventFailedBreakoutStrategy(Strategy):
 
     @staticmethod
     def _short_macro_gate(ctx: StrategyContext, eps: float) -> bool:
-        us_rate = ctx.features.get(f.US_RATE_EXPECTATION_CHANGE)
+        drift = ctx.features.get(f.US2Y_CHANGE_5D)
         surprise = ctx.features.get(f.US_DATA_SURPRISE)
-        boj = ctx.features.get(f.BOJ_HAWKISH_SHIFT)
+        boj = ctx.features.get(f.BOJ_POLICY_SHIFT_SCORE)
         return (
-            (us_rate is not None and us_rate < -eps)
+            (drift is not None and drift < -eps)
             or (surprise is not None and surprise < -eps)
             or (boj is not None and boj > eps)
         )
 
     @staticmethod
     def _long_macro_gate(ctx: StrategyContext, eps: float, intervention_max: float) -> bool:
-        us_rate = ctx.features.get(f.US_RATE_EXPECTATION_CHANGE)
-        us2y = ctx.features.get(f.US2Y_CHANGE)
+        drift = ctx.features.get(f.US2Y_CHANGE_5D)
+        day_move = ctx.features.get(f.US2Y_CHANGE_1D)
         intervention = ctx.features.get(f.INTERVENTION_RISK)
         return (
-            us_rate is not None
-            and us_rate > eps
-            and us2y is not None
-            and us2y > eps
+            drift is not None
+            and drift > eps
+            and day_move is not None
+            and day_move > eps
             and intervention is not None
             and intervention < intervention_max
         )

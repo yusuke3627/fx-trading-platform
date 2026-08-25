@@ -5,21 +5,23 @@ never as zero.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol
 
-# Canonical feature names (strategy inputs).
+# Canonical feature names (strategy inputs). A name states what is measured,
+# not what the reader wishes were measured: there is no "fed_expected_path" —
+# what exists is a meeting-statement score and a Treasury yield series, and
+# the constants say so. (docs/research/2026-08-15, principle 6.)
 DISTANCE_FROM_VWAP = "distance_from_vwap"
 ATR_NORMALIZED_BREAKOUT = "atr_normalized_breakout"
 SHORT_TERM_MOMENTUM = "short_term_momentum"
 RATE_DIFFERENTIAL_CHANGE = "rate_differential_change"
 INTERVENTION_RISK = "intervention_risk"
 
-US_RATE_EXPECTATION_CHANGE = "us_rate_expectation_change"
+# Named honestly but not yet produced: a US release-surprise series needs a
+# consensus source this platform does not have. Readers treat it as any other
+# missing feature.
 US_DATA_SURPRISE = "us_data_surprise"
-US2Y_CHANGE = "us2y_change"
-FED_EXPECTED_PATH_CHANGE = "fed_expected_path_change"
-BOJ_EXPECTED_PATH_CHANGE = "boj_expected_path_change"
-BOJ_HAWKISH_SHIFT = "boj_hawkish_shift"
 
 # Policy proxies (data/policy). US2Y is a policy PROXY, not a Fed-expectation
 # measure; rate_differential_change stays unused until a JP2Y series exists.
@@ -41,6 +43,16 @@ class InMemoryFeatureStore:
 
     def set(self, name: str, value: float, symbol: str | None = None) -> None:
         self._values[(name, symbol)] = value
+
+    def replace(self, values: Mapping[str, float]) -> None:
+        """Swap the whole store for `values` (global, symbol-less features).
+
+        Strategies hold this object by reference, so mutation is how a refresh
+        reaches them. Swapping rather than setting is what lets a feature go
+        missing again: inputs that disappeared must read as None, not as the
+        value they had when they were last computable.
+        """
+        self._values = {(name, None): value for name, value in values.items()}
 
     def get(self, name: str, symbol: str | None = None) -> float | None:
         if (name, symbol) in self._values:

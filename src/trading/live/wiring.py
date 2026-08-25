@@ -42,6 +42,7 @@ def build_runner(
     market: MarketDataService,
     clock: Clock,
     ledger: VirtualPositionLedger,
+    features: InMemoryFeatureStore | None = None,
 ) -> StrategyRunner:
     """One binding per configured strategy, sharing the read-only services.
 
@@ -52,8 +53,11 @@ def build_runner(
     An id with no class behind it raises rather than being skipped: a strategy
     the operator switched on and that then never trades is worse than a
     process that refuses to start.
+
+    The caller that wants strategies to see features passes the store it
+    refreshes; the default is an empty store that stays empty.
     """
-    features = InMemoryFeatureStore()
+    features = features if features is not None else InMemoryFeatureStore()
     regime = RuleBasedRegimeService(features)
     indicators = IndicatorService(market)
 

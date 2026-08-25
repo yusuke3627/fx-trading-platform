@@ -41,8 +41,8 @@ def default_rules(thresholds: dict[str, float] | None = None) -> dict[RegimeLabe
         return rule
 
     return {
-        RegimeLabel.USD_POLICY_HAWKISH: _gt(f.FED_EXPECTED_PATH_CHANGE, t["usd_hawkish_min"]),
-        RegimeLabel.JPY_POLICY_HAWKISH: _gt(f.BOJ_EXPECTED_PATH_CHANGE, t["jpy_hawkish_min"]),
+        RegimeLabel.USD_POLICY_HAWKISH: _gt(f.FED_POLICY_SHIFT_SCORE, t["usd_hawkish_min"]),
+        RegimeLabel.JPY_POLICY_HAWKISH: _gt(f.BOJ_POLICY_SHIFT_SCORE, t["jpy_hawkish_min"]),
         RegimeLabel.INTERVENTION_RISK_HIGH: _gt(f.INTERVENTION_RISK, t["intervention_risk_high"]),
     }
 

@@ -17,8 +17,9 @@
     haircut を掛けて返す。source 異常（未来 timestamp・非正値）は monitoring
     でも失敗させる
 - rate は損失評価が過小にならない側を使う: 直接 quote は ask、inverse は 1/bid
-- 換算 path は承認済みのみ（現時点: 同一通貨の恒等、USDJPY の直接・逆数）。
-  自動 path 探索はしない
+- 換算 path は承認済みのみ: 注入された conversion instrument（`InstrumentSpec`）
+  の base/quote ペアとその逆数だけを許す。symbol 文字列はハードコードしない
+  （broker alias で market data の key が変わるため）。自動 path 探索はしない
 - `ConversionStress`（adverse % の決定論的 floor）を interface として持ち、
   direction 条件付き stress の推定実装は portfolio exposure 対応で差し替える
 - 監査根拠（path / source known_at / leg age / purpose）は `ConversionTrace`

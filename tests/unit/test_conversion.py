@@ -3,8 +3,9 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
-from tests.support import T0, at, make_tick
+from tests.support import T0, at, make_tick, usdjpy_spec
 from trading.data.market import InMemoryMarketData
 from trading.domain.money import Currency, Money
 from trading.risk.conversion import (
@@ -24,7 +25,7 @@ def service_with_tick(tick=None, **kwargs) -> MarketQuoteConversionService:
     market = InMemoryMarketData()
     if tick is not None:
         market.add_tick(tick)
-    return MarketQuoteConversionService(market, **kwargs)
+    return MarketQuoteConversionService(market, [usdjpy_spec()], **kwargs)
 
 
 def test_identity_conversion_needs_no_quote():
@@ -153,3 +154,41 @@ def test_stress_widens_the_rate():
         stress=ConversionStress(adverse_pct=Decimal(2)),
     )
     assert result.money == Money(amount=Decimal("15300.408"), currency=Currency.JPY)
+
+
+def test_negative_stress_is_rejected_at_the_boundary():
+    # adverse は損失評価を広げる契約。負値は sizing を過大にするため型で拒否。
+    with pytest.raises(ValidationError):
+        ConversionStress(adverse_pct=Decimal(-2))
+
+
+def test_crossed_quote_rejected():
+    # bid > ask は feed 破損: 保守側のはずの ask / 1/bid が小さい側になる。
+    service = service_with_tick(make_tick("150.010", "150.000", time=T0))
+    with pytest.raises(ConversionRateUnavailableError):
+        service.convert(
+            USD_100, Currency.JPY, now=T0, purpose=ConversionPurpose.MONITORING
+        )
+
+
+def test_broker_symbol_alias_is_respected():
+    # broker が "USDJPY.oj" のような alias を使う環境では market data も
+    # その名前で引く。path は spec.symbol から構成され、固定文字列に依存しない。
+    market = InMemoryMarketData()
+    market.add_tick(make_tick("150.000", "150.004", time=T0, symbol="USDJPY.oj"))
+    service = MarketQuoteConversionService(
+        market, [usdjpy_spec(symbol="USDJPY.oj")]
+    )
+    result = service.convert(
+        USD_100, Currency.JPY, now=T0, purpose=ConversionPurpose.RISK_INCREASING
+    )
+    assert result.money == Money(amount=Decimal("15000.400"), currency=Currency.JPY)
+    assert result.trace.path == ("USDJPY.oj",)
+
+
+def test_no_conversion_instruments_means_no_cross_currency_path():
+    service = MarketQuoteConversionService(InMemoryMarketData())
+    with pytest.raises(ConversionRateUnavailableError):
+        service.convert(
+            USD_100, Currency.JPY, now=T0, purpose=ConversionPurpose.MONITORING
+        )

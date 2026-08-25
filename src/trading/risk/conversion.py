@@ -11,14 +11,16 @@ risk domain は生の conversion rate を扱わない: 換算はこのサービ�
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from trading.data.market import MarketDataService
+from trading.domain.instrument import InstrumentSpec
 from trading.domain.market import Tick
 from trading.domain.money import Currency, Money
 
@@ -61,7 +63,9 @@ class ConversionStress(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    adverse_pct: Decimal
+    # adverse は常に損失評価を「広げる」契約。負値はその契約を反転させ
+    # sizing を過大にするため境界で拒否する。
+    adverse_pct: Decimal = Field(ge=0, allow_inf_nan=False)
 
 
 class ConversionTrace(BaseModel):
@@ -93,14 +97,6 @@ class AccountCurrencyConversionService(Protocol):
     ) -> ConversionResult: ...
 
 
-# (from, to) -> (換算に使う symbol, inverse か)。直接 quote が立っている
-# ペアとその逆数だけを承認する。EUR→JPY のような multi-leg はここに現れず
-# ConversionRateUnavailableError になる（必要になった時点で承認 path を足す）。
-_APPROVED_PATHS: dict[tuple[Currency, Currency], tuple[str, bool]] = {
-    (Currency.USD, Currency.JPY): ("USDJPY", False),
-    (Currency.JPY, Currency.USD): ("USDJPY", True),
-}
-
 _HUNDRED = Decimal(100)
 
 
@@ -115,12 +111,23 @@ class MarketQuoteConversionService:
     def __init__(
         self,
         market: MarketDataService,
+        conversion_instruments: Iterable[InstrumentSpec] = (),
         max_quote_age_seconds: float = 5.0,
         stale_monitoring_haircut_pct: Decimal = Decimal(1),
     ) -> None:
         self._market = market
         self._max_quote_age_seconds = max_quote_age_seconds
         self._stale_monitoring_haircut_pct = stale_monitoring_haircut_pct
+        # 承認 path は注入された InstrumentSpec から構成する: 直接 quote が
+        # 立っているペアとその逆数のみ。symbol はハードコードしない — broker
+        # alias（"USDJPY.oj" 等）では market data がその名前で保存されるため、
+        # 固定文字列は常時 quote 欠損 = 全換算停止になる。EUR→JPY のような
+        # multi-leg はここに現れず ConversionRateUnavailableError になる
+        # （必要になった時点で承認 instrument を足す）。
+        self._paths: dict[tuple[Currency, Currency], tuple[str, bool]] = {}
+        for spec in conversion_instruments:
+            self._paths[(spec.base_currency, spec.quote_currency)] = (spec.symbol, False)
+            self._paths[(spec.quote_currency, spec.base_currency)] = (spec.symbol, True)
 
     def convert(
         self,
@@ -141,7 +148,7 @@ class MarketQuoteConversionService:
                 ),
             )
 
-        path = _APPROVED_PATHS.get((money.currency, to_currency))
+        path = self._paths.get((money.currency, to_currency))
         if path is None:
             raise ConversionRateUnavailableError(
                 f"no approved conversion path {money.currency} -> {to_currency}"
@@ -187,6 +194,12 @@ class MarketQuoteConversionService:
         if tick.bid <= 0 or tick.ask <= 0:
             raise ConversionRateUnavailableError(
                 f"{symbol} quote has non-positive price bid={tick.bid} ask={tick.ask}"
+            )
+        # crossed quote（bid > ask）は feed の破損。保守側として選ぶはずの
+        # ask / 1/bid がどちらも小さい側になり損失を過小評価するため拒否する。
+        if tick.bid > tick.ask:
+            raise ConversionRateUnavailableError(
+                f"{symbol} quote is crossed bid={tick.bid} ask={tick.ask}"
             )
 
     def _conservative_rate(self, tick: Tick, inverse: bool) -> Decimal:

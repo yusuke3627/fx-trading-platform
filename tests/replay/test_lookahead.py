@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from tests.support import T0, at, make_bar, make_event, make_tick
+from tests.support import T0, at, make_bar, make_event, make_tick, usdjpy_spec
 from trading.backtest.clock import ClockRegressionError, ReplayClock
 from trading.backtest.replay import LookaheadError, ReplayEngine, assert_visible, visible
 from trading.data.market import InMemoryMarketData
@@ -88,7 +88,7 @@ def test_conversion_quote_respects_replay_visibility():
     clock = ReplayClock(T0)
     market = InMemoryMarketData(clock=clock)
     market.add_tick(make_tick("150.000", "150.004", time=at(minutes=10)))
-    service = MarketQuoteConversionService(market)
+    service = MarketQuoteConversionService(market, [usdjpy_spec()])
     usd_loss = Money(amount=Decimal(100), currency=Currency.USD)
 
     with pytest.raises(ConversionRateUnavailableError):

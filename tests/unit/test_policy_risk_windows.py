@@ -46,13 +46,13 @@ def scheduled(
 
 
 def test_no_meetings_produce_no_windows():
-    assert central_bank_windows([], SETTINGS) == []
+    assert central_bank_windows([], [], SETTINGS) == []
 
 
 def test_an_announced_meeting_opens_a_window_before_its_results_exist():
     # The market braces for the date, not the outcome: schedule-only entries
     # must open windows exactly like transcribed ones.
-    (window,) = central_bank_windows([scheduled("FED", T0)], SETTINGS)
+    (window,) = central_bank_windows([], [scheduled("FED", T0)], SETTINGS)
 
     assert window.first_event_at == T0
 
@@ -64,7 +64,7 @@ def test_an_uncertain_publication_time_widens_the_window_not_shifts_it():
     early = T0
     late = T0 + timedelta(hours=6)
 
-    (window,) = central_bank_windows([scheduled("BOJ", early, late)], SETTINGS)
+    (window,) = central_bank_windows([], [scheduled("BOJ", early, late)], SETTINGS)
 
     assert window.first_event_at == early
     assert window.last_event_at == late
@@ -77,10 +77,24 @@ def test_a_publication_interval_wider_than_the_padding_stays_one_window():
     early = T0
     late = T0 + timedelta(hours=200)
 
-    (window,) = central_bank_windows([scheduled("BOJ", early, late)], SETTINGS)
+    (window,) = central_bank_windows([], [scheduled("BOJ", early, late)], SETTINGS)
 
     assert window.first_event_at == early
     assert window.last_event_at == late
+
+
+def test_a_transcribed_meeting_keeps_its_announced_window():
+    # Once the results are in, the actual publication minute is known — but
+    # pre-positioning was decided against the announced interval. Rebuilding
+    # the window from the actual minute would let a replay open the HALT hours
+    # later than live did, on knowledge nobody had at the time.
+    announced = scheduled("BOJ", T0, T0 + timedelta(hours=6))
+    actual = meeting("BOJ", T0 + timedelta(hours=2))
+
+    (window,) = central_bank_windows([actual], [announced], SETTINGS)
+
+    assert window.first_event_at == T0
+    assert window.last_event_at == T0 + timedelta(hours=6)
 
 
 def test_the_shipped_schedule_reaches_the_calendar():
@@ -122,7 +136,7 @@ def test_the_shipped_calendar_claims_nothing_beyond_its_coverage():
 
 
 def test_a_single_meeting_becomes_one_window():
-    (window,) = central_bank_windows([meeting("FED", T0)], SETTINGS)
+    (window,) = central_bank_windows([meeting("FED", T0)], [], SETTINGS)
 
     assert window.name == CENTRAL_BANK_CLUSTER
     assert window.first_event_at == window.last_event_at == T0
@@ -136,7 +150,7 @@ def test_decisions_close_together_become_one_window():
     # would let the gap between them read as calm.
     boj = T0 + timedelta(days=2)
 
-    (window,) = central_bank_windows([meeting("FED", T0), meeting("BOJ", boj)], SETTINGS)
+    (window,) = central_bank_windows([meeting("FED", T0), meeting("BOJ", boj)], [], SETTINGS)
 
     assert window.first_event_at == T0
     assert window.last_event_at == boj
@@ -146,7 +160,7 @@ def test_decisions_far_apart_stay_separate():
     later = T0 + timedelta(days=40)
 
     windows = central_bank_windows(
-        [meeting("FED", T0), meeting("BOJ", later)], SETTINGS
+        [meeting("FED", T0), meeting("BOJ", later)], [], SETTINGS
     )
 
     assert [w.first_event_at for w in windows] == [T0, later]
@@ -156,14 +170,14 @@ def test_meetings_out_of_order_still_cluster_by_time():
     # The file is edited by hand and need not be sorted.
     boj = T0 + timedelta(days=2)
 
-    (window,) = central_bank_windows([meeting("BOJ", boj), meeting("FED", T0)], SETTINGS)
+    (window,) = central_bank_windows([meeting("BOJ", boj), meeting("FED", T0)], [], SETTINGS)
 
     assert window.first_event_at == T0
     assert window.last_event_at == boj
 
 
 def test_each_horizon_carries_its_configured_action():
-    (window,) = central_bank_windows([meeting("FED", T0)], SETTINGS)
+    (window,) = central_bank_windows([meeting("FED", T0)], [], SETTINGS)
 
     assert window.actions == {
         StrategyHorizon.SCALP: EventRiskMode.HALT,
@@ -177,7 +191,7 @@ def test_the_window_hangs_off_publication_not_the_decision_date():
     # its 15:00 JST statement under a date that began nine hours earlier.
     published = datetime(2026, 7, 31, 6, 0, tzinfo=UTC)
 
-    (window,) = central_bank_windows([meeting("BOJ", published)], SETTINGS)
+    (window,) = central_bank_windows([meeting("BOJ", published)], [], SETTINGS)
 
     assert window.first_event_at == published
     assert window.active_at(published - timedelta(hours=47))

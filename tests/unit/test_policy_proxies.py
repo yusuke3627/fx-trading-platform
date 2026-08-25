@@ -20,9 +20,11 @@ from trading.data.policy.collector import main as collector_main
 from trading.data.policy.features import latest_policy_score, us2y_features
 from trading.data.policy.meetings import (
     PolicyMeeting,
+    ScheduledMeeting,
     load_coverage,
     load_meetings,
     load_schedule,
+    untranscribed_overdue,
 )
 from trading.data.policy.scoring import (
     SCORING_VERSION,
@@ -172,27 +174,42 @@ schedule:
     assert [s.bank for s in schedule] == ["FED"]
 
 
-def test_a_meeting_in_both_sections_is_rejected(tmp_path):
-    # meetings: へ移した後に schedule: から消し忘れた状態を黙って通さない。
-    path = tmp_path / "meetings.yaml"
-    path.write_text(
-        """
-meetings:
-  - bank: FED
-    decision_date: 2026-09-16
-    statement_published_at: 2026-09-16T18:00:00+00:00
-    verified: false
-    source_uri: https://example.invalid
-schedule:
-  - bank: FED
-    decision_date: 2026-09-16
-    earliest_published_at: 2026-09-16T18:00:00+00:00
-    latest_published_at: 2026-09-16T18:00:00+00:00
-    source_uri: https://example.invalid
-"""
+def scheduled_boj(**overrides) -> ScheduledMeeting:
+    values = {
+        "bank": "BOJ",
+        "decision_date": date(2026, 7, 31),
+        "earliest_published_at": datetime(2026, 7, 31, 0, 0, tzinfo=UTC),
+        "latest_published_at": datetime(2026, 7, 31, 6, 0, tzinfo=UTC),
+        "source_uri": "https://example.invalid/calendar",
+    }
+    values.update(overrides)
+    return ScheduledMeeting(**values)
+
+
+def test_an_overdue_meeting_without_results_is_flagged():
+    # 公表期限を過ぎたのに meetings: に転記が無い会合は、放置すると採点
+    # イベントが永続的に欠けるので、日次実行を止める対象として返す。
+    entry = scheduled_boj()
+
+    assert untranscribed_overdue([], [entry], T0) == [entry]
+
+
+def test_a_transcribed_meeting_is_not_overdue():
+    # 転記後も schedule: に残るのが正しい状態（窓は予定区間に掛かり続ける）。
+    # meetings: に対応エントリがあれば期限超過でも失敗にしない。
+    entry = scheduled_boj()
+
+    assert untranscribed_overdue([meeting()], [entry], T0) == []
+
+
+def test_a_future_meeting_is_not_overdue():
+    entry = scheduled_boj(
+        decision_date=date(2026, 9, 18),
+        earliest_published_at=datetime(2026, 9, 18, 0, 0, tzinfo=UTC),
+        latest_published_at=datetime(2026, 9, 18, 6, 0, tzinfo=UTC),
     )
-    with pytest.raises(ValueError, match="duplicate"):
-        load_schedule(path)
+
+    assert untranscribed_overdue([], [entry], T0) == []
 
 
 def test_results_transcribed_onto_a_schedule_entry_fail_loudly(tmp_path):

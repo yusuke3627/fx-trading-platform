@@ -13,6 +13,7 @@ conservative later-bound until the actual publication minute is verified.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
@@ -82,7 +83,8 @@ class MeetingCoverage(BaseModel):
 
 
 class ScheduledMeeting(BaseModel):
-    """A meeting announced on the official calendar whose results are not out.
+    """A meeting as the official calendar announced it — the permanent record
+    of what the market knew in advance.
 
     Schedule entries feed the risk windows only and never reach scoring. A
     placeholder scored as "hold, no dissents" would be persisted by the daily
@@ -95,8 +97,14 @@ class ScheduledMeeting(BaseModel):
     after the meeting" with no fixed clock time. The window opens off the
     early bound and closes off the late one, so the uncertainty widens the
     window instead of shifting it. A bank with a fixed time (FED) records the
-    same instant twice. extra is forbidden so results transcribed onto a
-    schedule entry by mistake fail loudly instead of silently never scoring.
+    same instant twice.
+
+    Transcribing the results adds a meetings: entry; the schedule entry stays.
+    Rebuilding the window from the actual publication minute would hand a
+    replay knowledge nobody had before the statement landed — pre-positioning
+    was decided against the announced interval, and the window must keep
+    hanging off it. extra is forbidden so results transcribed onto a schedule
+    entry by mistake fail loudly instead of silently never scoring.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -160,13 +168,32 @@ def load_meetings(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[PolicyMeetin
 
 
 def load_schedule(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[ScheduledMeeting]:
-    """Announced-only meetings. A meeting present here and in meetings: is a
-    move that forgot its second half, so it is rejected rather than shadowed."""
+    """The announced calendar. A meeting normally appears here AND — once its
+    results are transcribed — in meetings:; the schedule entry is what the
+    windows keep hanging off."""
     schedule = list(_load_file(path).schedule)
-    seen = {(m.bank, m.decision_date) for m in load_meetings(path)}
+    seen: set[tuple[str, date]] = set()
     for entry in schedule:
         key = (entry.bank, entry.decision_date)
         if key in seen:
-            raise ValueError(f"duplicate meeting entry: {key}")
+            raise ValueError(f"duplicate schedule entry: {key}")
         seen.add(key)
     return schedule
+
+
+def untranscribed_overdue(
+    meetings: Sequence[PolicyMeeting],
+    schedule: Sequence[ScheduledMeeting],
+    now: datetime,
+) -> list[ScheduledMeeting]:
+    """Scheduled meetings whose publication bound has passed with no results
+    transcribed. The statement exists by then, so a missing meetings: entry is
+    a lapse to fail on, not a note — left alone, the meeting would silently
+    never score."""
+    transcribed = {(m.bank, m.decision_date) for m in meetings}
+    return [
+        entry
+        for entry in schedule
+        if entry.latest_published_at < now
+        and (entry.bank, entry.decision_date) not in transcribed
+    ]

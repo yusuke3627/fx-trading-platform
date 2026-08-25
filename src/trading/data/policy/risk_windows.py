@@ -45,17 +45,15 @@ def central_bank_calendar(config: AppConfig) -> EventRiskCalendar | None:
     if settings is None:
         return None
     coverage = load_coverage()
-    # Announced-only meetings open windows just like transcribed ones — the
-    # market braces for the date, not for the outcome. They stay out of
-    # scoring, which is why they live in a separate section of the file.
     return EventRiskCalendar(
-        central_bank_windows([*load_meetings(), *load_schedule()], settings),
+        central_bank_windows(load_meetings(), load_schedule(), settings),
         (coverage.since, coverage.until) if coverage else None,
     )
 
 
 def central_bank_windows(
-    meetings: Sequence[PolicyMeeting | ScheduledMeeting],
+    meetings: Sequence[PolicyMeeting],
+    schedule: Sequence[ScheduledMeeting],
     settings: EventRiskWindowSettings,
 ) -> list[EventRiskWindow]:
     """One window per cluster of meetings whose risk periods run together.
@@ -78,17 +76,25 @@ def central_bank_windows(
     meetings today; an emergency one needs its pre-window suppressed rather
     than simply being added.
     """
-    # A transcribed meeting published at one known instant; a scheduled one
-    # only bounds it. Each meeting enters the clustering as one indivisible
-    # span, so the publication uncertainty widens its window rather than
-    # shifting it — and can never split it, no matter how the span compares
-    # to pre + post.
-    spans = sorted(
-        (meeting.statement_published_at, meeting.statement_published_at)
-        if isinstance(meeting, PolicyMeeting)
-        else (meeting.earliest_published_at, meeting.latest_published_at)
-        for meeting in meetings
-    )
+    # The schedule interval is what the market positioned against, so it is
+    # what the window hangs off — before AND after the results come in.
+    # Anchoring a transcribed meeting on its actual publication minute would
+    # let a replay open the pre-window off knowledge nobody had at the time.
+    # Each meeting enters the clustering as one indivisible span, so the
+    # publication uncertainty widens its window rather than shifting it — and
+    # can never split it, no matter how the span compares to pre + post.
+    remaining = {(m.bank, m.decision_date): m for m in meetings}
+    spans: list[tuple[datetime, datetime]] = []
+    for entry in schedule:
+        transcribed = remaining.pop((entry.bank, entry.decision_date), None)
+        end = entry.latest_published_at
+        if transcribed is not None:
+            end = max(end, transcribed.statement_published_at)
+        spans.append((entry.earliest_published_at, end))
+    # Backfilled meetings predate the schedule section; their one recorded
+    # instant is all the file knows.
+    spans += [(m.statement_published_at, m.statement_published_at) for m in remaining.values()]
+    spans.sort()
     if not spans:
         return []
 

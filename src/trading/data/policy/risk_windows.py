@@ -76,24 +76,27 @@ def central_bank_windows(
     meetings today; an emergency one needs its pre-window suppressed rather
     than simply being added.
     """
-    # The schedule interval is what the market positioned against, so it is
-    # what the window hangs off — before AND after the results come in.
-    # Anchoring a transcribed meeting on its actual publication minute would
-    # let a replay open the pre-window off knowledge nobody had at the time.
-    # Each meeting enters the clustering as one indivisible span, so the
-    # publication uncertainty widens its window rather than shifting it — and
-    # can never split it, no matter how the span compares to pre + post.
-    remaining = {(m.bank, m.decision_date): m for m in meetings}
+    # The announced interval is what the market positioned against, so it is
+    # the only thing the window hangs off — before AND after the results come
+    # in. The actual publication minute never reshapes the window in either
+    # direction: these windows are not gated by query time, so stretching one
+    # to a late actual publication would apply the stretch to a replay of the
+    # hours before the statement landed, on knowledge from later. A statement
+    # outside its recorded bounds means the bounds were curated wrong, which
+    # is a data correction, not something to infer here. Each meeting enters
+    # the clustering as one indivisible span, so the publication uncertainty
+    # widens its window rather than shifting it — and can never split it, no
+    # matter how the span compares to pre + post.
+    unscheduled = {(m.bank, m.decision_date): m for m in meetings}
     spans: list[tuple[datetime, datetime]] = []
     for entry in schedule:
-        transcribed = remaining.pop((entry.bank, entry.decision_date), None)
-        end = entry.latest_published_at
-        if transcribed is not None:
-            end = max(end, transcribed.statement_published_at)
-        spans.append((entry.earliest_published_at, end))
+        unscheduled.pop((entry.bank, entry.decision_date), None)
+        spans.append((entry.earliest_published_at, entry.latest_published_at))
     # Backfilled meetings predate the schedule section; their one recorded
     # instant is all the file knows.
-    spans += [(m.statement_published_at, m.statement_published_at) for m in remaining.values()]
+    spans += [
+        (m.statement_published_at, m.statement_published_at) for m in unscheduled.values()
+    ]
     spans.sort()
     if not spans:
         return []

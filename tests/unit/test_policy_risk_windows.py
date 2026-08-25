@@ -1,5 +1,5 @@
 """Event-risk windows from the meeting calendar: consecutive decisions merge."""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 from trading.config import EventRiskWindowSettings, load_config
@@ -23,10 +23,12 @@ SETTINGS = EventRiskWindowSettings(
 )
 
 
-def meeting(bank: str, published_at: datetime) -> PolicyMeeting:
+def meeting(
+    bank: str, published_at: datetime, decision_date: date | None = None
+) -> PolicyMeeting:
     return PolicyMeeting(
         bank=bank,
-        decision_date=published_at.date(),
+        decision_date=decision_date if decision_date is not None else published_at.date(),
         statement_published_at=published_at,
         verified=False,
         source_uri="https://example.invalid/statement",
@@ -94,6 +96,19 @@ def test_a_transcribed_meeting_keeps_its_announced_window():
     (window,) = central_bank_windows([actual], [announced], SETTINGS)
 
     assert window.first_event_at == T0
+    assert window.last_event_at == T0 + timedelta(hours=6)
+
+
+def test_a_late_actual_publication_does_not_stretch_the_window():
+    # These windows are not gated by query time, so stretching the end to a
+    # late actual publication would HALT a replay of the hours before the
+    # statement landed — hours live graded NORMAL — on knowledge from later.
+    # Bounds a statement escaped were curated wrong; that is a data fix.
+    announced = scheduled("BOJ", T0, T0 + timedelta(hours=6))
+    actual = meeting("BOJ", T0 + timedelta(hours=9), decision_date=T0.date())
+
+    (window,) = central_bank_windows([actual], [announced], SETTINGS)
+
     assert window.last_event_at == T0 + timedelta(hours=6)
 
 

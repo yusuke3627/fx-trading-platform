@@ -13,7 +13,7 @@ from uuid import uuid4
 from tests.support import FakeEventRepository, FakeObservationRepository, usdjpy_spec
 from trading.backtest.costs import CostModel
 from trading.backtest.engine import BacktestEngine
-from trading.backtest.research import reconstructed
+from trading.backtest.research import broker_label_to_known, reconstructed
 from trading.data.features import ReplayFeatureTimeline, StoredFeatureSource
 from trading.data.policy.scoring import SCORING_VERSION
 from trading.domain.event import EventEnvelope
@@ -25,10 +25,11 @@ from trading.intelligence.intervention import InterventionRiskConfig
 from trading.risk.engine import RiskConfig
 from trading.strategy.base import Strategy, StrategyConfig, StrategyHorizon
 
-# Broker-clock start of the archived period; the broker runs 3h ahead of real
-# UTC, so the same instant on the known-time axis is BROKER_START - OFFSET.
+# Broker-clock start of the archived period. The server's wall clock is New
+# York's plus ANCHOR; in January that is UTC+2, so the same instant on the
+# known-time axis is broker_label_to_known(BROKER_START, ANCHOR).
 BROKER_START = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
-OFFSET = timedelta(hours=3)
+ANCHOR = timedelta(hours=7)
 INGESTED_AT = BROKER_START + timedelta(days=100)
 
 
@@ -70,7 +71,7 @@ def archived_ticks(count: int) -> list[Tick]:
 
 
 def test_a_mid_period_score_stays_invisible_until_its_reconstructed_instant():
-    real_start = BROKER_START - OFFSET
+    real_start = broker_label_to_known(BROKER_START, ANCHOR)
     revision_at = real_start + timedelta(seconds=300)
     events = [
         score_event(-1.0, real_start - timedelta(days=2)),
@@ -104,7 +105,7 @@ def test_a_mid_period_score_stays_invisible_until_its_reconstructed_instant():
         features=timeline,
     )
 
-    engine.run(reconstructed(archived_ticks(600), OFFSET))
+    engine.run(reconstructed(archived_ticks(600), ANCHOR))
 
     assert len(readings) == 600
     assert set(readings[:300]) == {-1.0}
@@ -115,7 +116,7 @@ def test_warmup_ticks_build_state_but_are_never_evaluated():
     # A research run reads lead-in ticks ahead of its period; the strategy
     # must not be asked during them — the first evaluation is the period's
     # opening instant, with bar state already populated.
-    real_start = BROKER_START - OFFSET
+    real_start = broker_label_to_known(BROKER_START, ANCHOR)
     evaluate_from = real_start + timedelta(seconds=200)
 
     readings: list[float | None] = []
@@ -135,7 +136,7 @@ def test_warmup_ticks_build_state_but_are_never_evaluated():
         evaluate_from=evaluate_from,
     )
 
-    engine.run(reconstructed(archived_ticks(600), OFFSET))
+    engine.run(reconstructed(archived_ticks(600), ANCHOR))
 
     # Ticks 0..199 are warm-up (known times before evaluate_from); the tick
     # AT the boundary already evaluates.
@@ -183,6 +184,6 @@ def test_tick_retention_follows_the_strategy_configuration():
         ),
     )
 
-    engine.run(reconstructed(archived_ticks(600), OFFSET))
+    engine.run(reconstructed(archived_ticks(600), ANCHOR))
 
     assert counts[-1] == 600

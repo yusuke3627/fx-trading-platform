@@ -36,12 +36,12 @@ class MarketConfig(BaseModel):
     # negative value only fails once time.sleep() is reached — after the
     # collector has already started, so the host just restarts it in a loop.
     tick_poll_interval_seconds: float = Field(default=0.2, gt=0, allow_inf_nan=False)
-    # The trade server's offset from real UTC, used ONLY to reconstruct a
-    # recorded tick's known time for research replays (ADR-007). OANDA's MT5
-    # server follows the US DST calendar (UTC+2 in winter, +3 in summer); a
-    # fixed value is at most an hour off, which the daily-granular feature
-    # visibility this bridges absorbs.
-    broker_utc_offset_hours: float = Field(default=3.0, allow_inf_nan=False)
+    # How far the trade server's wall clock runs ahead of New York's,
+    # year-round — the MT5 New York-close convention that puts the server at
+    # UTC+3 during US DST and UTC+2 outside it. Used ONLY to reconstruct a
+    # recorded tick's known time for research replays (ADR-007); verify
+    # against measured received_at once winter rows exist.
+    broker_server_ahead_of_ny_hours: float = Field(default=7.0, allow_inf_nan=False)
 
 
 class StorageConfig(BaseModel):

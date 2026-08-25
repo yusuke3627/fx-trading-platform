@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from tests.support import FakeEventRepository, FakeObservationRepository
-from trading.backtest.research import reconstructed
+from trading.backtest.research import broker_label_to_known, reconstructed
 from trading.data.features import US2Y_VINTAGE_LOOKBACK, StoredFeatureSource
 from trading.data.intervention.features import RECENCY_WINDOW_DAYS
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
@@ -64,11 +64,11 @@ def make_source(observations=(), events=()) -> StoredFeatureSource:
 def test_reconstructed_rewrites_known_time_from_the_broker_stamp():
     # An archived tick carries the backfill run's wall clock as received_at —
     # far in the tick's own future. The replay axis must come from the broker
-    # stamp instead.
+    # stamp instead. August sits inside US DST, so the server runs at UTC+3.
     ingested = START + timedelta(days=400)
     ticks = [tick(START + timedelta(seconds=i), ingested) for i in range(3)]
 
-    rewritten = reconstructed(ticks, timedelta(hours=3))
+    rewritten = reconstructed(ticks, timedelta(hours=7))
 
     assert [t.known_time for t in rewritten] == [
         START - timedelta(hours=3) + timedelta(seconds=i) for i in range(3)
@@ -76,6 +76,17 @@ def test_reconstructed_rewrites_known_time_from_the_broker_stamp():
     # The broker axis itself is untouched: bars keep folding event_time.
     assert [t.time for t in rewritten] == [t.time for t in ticks]
     assert rewritten[0].bid == ticks[0].bid
+
+
+def test_reconstruction_follows_the_servers_dst_calendar():
+    # The server's wall clock is New York's plus the anchor year-round, so
+    # the same label maps 3h back in summer and only 2h back in winter.
+    anchor = timedelta(hours=7)
+    summer = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+    winter = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+
+    assert broker_label_to_known(summer, anchor) == summer - timedelta(hours=3)
+    assert broker_label_to_known(winter, anchor) == winter - timedelta(hours=2)
 
 
 def test_change_instants_mirror_the_snapshot_windows():

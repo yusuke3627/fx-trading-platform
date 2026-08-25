@@ -296,7 +296,13 @@ class BacktestEngine:
         w = self._wire(ordered[0].known_time - timedelta(seconds=1))
         state = _RunState(initial_equity=self._initial_equity)
         state.high_water_mark = self._initial_equity
-        state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
+        # The flat opening baseline carries the period's opening timestamp,
+        # not the warm-up's, so the output series never reaches before the
+        # measured run.
+        baseline_at = (
+            self._evaluate_from if self._evaluate_from is not None else w.clock.now()
+        )
+        state.snapshots.append(self._snapshot(state, w.simulator, baseline_at))
 
         def handle(item: EventEnvelope | Tick | Bar) -> None:
             assert isinstance(item, Tick)
@@ -313,24 +319,32 @@ class BacktestEngine:
                     w.market.add_bar(bar)
             if state.marking_tick is None or item.time >= state.marking_tick.time:
                 state.marking_tick = item
+            # Warm-up ticks build bars, indicators and features but leave no
+            # trace in the outputs: the strategy is not asked, and the equity
+            # curve, snapshots and metrics start at the period's opening
+            # instant — a lead-in must not stretch the measured run.
+            evaluating = (
+                self._evaluate_from is None or w.clock.now() >= self._evaluate_from
+            )
             # Risk loss windows (JST daily / rolling 24h) need baselines
             # between fills: a position held across a boundary must leave
             # periodic snapshots, not only fill-time ones.
             hour = w.clock.now().replace(minute=0, second=0, microsecond=0)
-            if state.last_snapshot_hour is None:
-                state.last_snapshot_hour = hour
-            elif hour > state.last_snapshot_hour:
-                state.last_snapshot_hour = hour
-                state.snapshots.append(
-                    self._snapshot(state, w.simulator, w.clock.now())
-                )
+            if evaluating:
+                if state.last_snapshot_hour is None:
+                    state.last_snapshot_hour = hour
+                elif hour > state.last_snapshot_hour:
+                    state.last_snapshot_hour = hour
+                    state.snapshots.append(
+                        self._snapshot(state, w.simulator, w.clock.now())
+                    )
 
             # Broker events precede strategy evaluation: pending command
             # fills first, then broker-side protection on the same price.
             self._apply_pending(state, w, item)
             self._apply_protection(state, w, item)
 
-            if self._evaluate_from is None or w.clock.now() >= self._evaluate_from:
+            if evaluating:
                 envelope = EventEnvelope(
                     event_id=uuid4(),
                     event_type="market.tick",
@@ -348,9 +362,10 @@ class BacktestEngine:
             self._apply_pending(state, w, item)
             self._apply_protection(state, w, item)
 
-            equity = self._equity(state, w.simulator)
-            state.high_water_mark = max(state.high_water_mark, equity)
-            state.equity_curve.append((w.clock.now(), equity))
+            if evaluating:
+                equity = self._equity(state, w.simulator)
+                state.high_water_mark = max(state.high_water_mark, equity)
+                state.equity_curve.append((w.clock.now(), equity))
 
         with asyncio.Runner() as runner_loop:
             ReplayEngine(w.clock).run(ordered, handle)

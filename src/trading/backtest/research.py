@@ -15,10 +15,10 @@ ticks inside the engine (ADR-006), so the run needs no market_bars rows.
 
 --from/--to are BROKER-clock bounds — the axis event_time is stored on
 (ADR-005), the same one the collector's backfill takes. Each tick's known
-time is reconstructed as event_time minus the configured broker offset
-(ADR-007): the stored received_at is the INGESTION instant, which for a
-backfilled archive lies far in the tick's future and would collapse the
-whole period onto one replay instant.
+time is reconstructed from its broker label through the server's New York
+anchor (ADR-007): the stored received_at is the INGESTION instant, which
+for a backfilled archive lies far in the tick's future and would collapse
+the whole period onto one replay instant.
 
 Each strategy declares the lead-in its slowest indicator window needs
 (`Strategy.warmup`); the runner reads that much history ahead of --from so
@@ -40,6 +40,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from trading.backtest.costs import STRESS_SCENARIOS
 from trading.backtest.data import dataset_hash
@@ -55,18 +56,40 @@ from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
 from trading.strategy.registry import STRATEGIES
 
+NEW_YORK = ZoneInfo("America/New_York")
 
-def reconstructed(ticks: list[Tick], offset: timedelta) -> list[Tick]:
-    """Rewrite each tick's known time to event_time minus the broker offset.
+
+def broker_label_to_known(label: datetime, server_ahead_of_ny: timedelta) -> datetime:
+    """A broker wall-clock label -> the real UTC instant it names.
+
+    The server keeps New York close at its own midnight: its wall time is New
+    York wall time plus a fixed anchor (7h) YEAR-ROUND, which lands at UTC+3
+    during US DST and UTC+2 outside it. Subtracting the anchor and localizing
+    in America/New_York therefore follows the DST switches without a season
+    table. The repeated fall-back hour maps to its first occurrence (fold=0):
+    that one broker-labelled hour a year is ambiguous in the recorded series
+    itself, and no constant recovers it.
+    """
+    naive_ny = label.astimezone(UTC).replace(tzinfo=None) - server_ahead_of_ny
+    return naive_ny.replace(tzinfo=NEW_YORK).astimezone(UTC)
+
+
+def reconstructed(ticks: list[Tick], server_ahead_of_ny: timedelta) -> list[Tick]:
+    """Rewrite each tick's known time from its broker label (ADR-007).
 
     received_at records when the row was INGESTED — for the polling collector
     that is the tick's real arrival, but for a backfilled archive it is the
     backfill run's wall clock, shared by the whole window. A replay ordered on
     it would deliver an entire archived day at one instant, after every stored
     macro row has become visible. The broker timestamp is the honest per-tick
-    instant both paths share, so the replay axis is derived from it (ADR-007).
+    instant both paths share, so the replay axis is derived from it.
     """
-    return [t.model_copy(update={"received_at": t.time - offset}) for t in ticks]
+    return [
+        t.model_copy(
+            update={"received_at": broker_label_to_known(t.time, server_ahead_of_ny)}
+        )
+        for t in ticks
+    ]
 
 
 def warmup_days(value: str) -> float:
@@ -171,13 +194,14 @@ def main() -> None:
             f"[{args.start}, {args.end}); only warm-up ticks were found"
         )
 
-    offset = timedelta(hours=config.market.broker_utc_offset_hours)
-    ticks = reconstructed(list(stored), offset)
+    anchor = timedelta(hours=config.market.broker_server_ahead_of_ny_hours)
+    ticks = reconstructed(list(stored), anchor)
 
     # One consistent load of the PIT rows: change schedule, every snapshot
     # during the replay and the manifest fingerprint answer from the same
     # rows even while a collector keeps inserting on this database.
-    known_start, known_end = read_from - offset, args.end - offset
+    known_start = broker_label_to_known(read_from, anchor)
+    known_end = broker_label_to_known(args.end, anchor)
     source = StoredFeatureSource(
         PostgresMacroObservationRepository(conn),
         PostgresEventRepository(conn),
@@ -208,7 +232,7 @@ def main() -> None:
         features=timeline,
         # The lead-in only builds bar/indicator/feature state; orders and
         # metrics that matter start at the period's opening instant.
-        evaluate_from=args.start - offset,
+        evaluate_from=broker_label_to_known(args.start, anchor),
     )
     result = engine.run(ticks)
 
@@ -227,7 +251,9 @@ def main() -> None:
         "period_from": args.start.isoformat(),
         "period_to": args.end.isoformat(),
         "warmup_days": warmup / timedelta(days=1),
-        "broker_utc_offset_hours": config.market.broker_utc_offset_hours,
+        "broker_server_ahead_of_ny_hours": (
+            config.market.broker_server_ahead_of_ny_hours
+        ),
         "dataset_hash": dataset_hash(ticks),
         # Ticks alone do not identify the dataset: the stored PIT rows decide
         # what the gates saw, and re-collection changes them under the same

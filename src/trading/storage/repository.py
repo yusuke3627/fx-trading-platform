@@ -82,8 +82,15 @@ class EventRepository(Protocol):
     # (policy meeting scores), re-running is a no-op instead of an error.
     def insert_new(self, event: EventEnvelope) -> bool: ...
 
+    # `since` (a known_at lower bound) is optional, unlike the tick and
+    # observation windows: some readers genuinely need the newest event
+    # however old it is (the latest policy score), and events are sparse
+    # enough per type that an unbounded read stays small.
     def known_before(
-        self, t: datetime, event_type: str | None = None
+        self,
+        t: datetime,
+        event_type: str | None = None,
+        since: datetime | None = None,
     ) -> Sequence[EventEnvelope]: ...
 
 
@@ -134,10 +141,15 @@ class MacroObservationRepository(Protocol):
     # scheduled forward re-collection must not grow the chain.
     def insert_many(self, observations: Sequence[EconomicObservation]) -> int: ...
 
-    # All vintages of a series visible at `t`, oldest first. The caller
-    # derives first print vs revision from the known_at order within one
-    # (series, observation_period).
-    def known_before(self, series: str, t: datetime) -> Sequence[EconomicObservation]: ...
+    # Vintages of a series visible at `t` that became known after `since`,
+    # oldest first. `since` is mandatory for the same reason the tick window
+    # is: the vintage chain grows without bound, and a reader polling this
+    # every few seconds must not re-model the whole history each pass. The
+    # caller derives first print vs revision from the known_at order within
+    # one (series, observation_period).
+    def known_before(
+        self, series: str, t: datetime, since: datetime
+    ) -> Sequence[EconomicObservation]: ...
 
 
 class DecisionRepository(Protocol):

@@ -16,9 +16,13 @@ same refresh against the same rows gives a backtest exactly what live saw.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from trading.data.intervention.features import KIND_TO_STATUS, intervention_risk_inputs
+from trading.data.intervention.features import (
+    KIND_TO_STATUS,
+    RECENCY_WINDOW_DAYS,
+    intervention_risk_inputs,
+)
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
 from trading.data.policy.features import latest_policy_score, us2y_features
 from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
@@ -26,6 +30,15 @@ from trading.intelligence import features as f
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig, intervention_risk_score
 from trading.storage.repository import EventRepository, MacroObservationRepository
+
+# How far back the US2Y vintage read reaches, on the known_at axis. This
+# bounds the query, it does not define the feature: us2y_features needs 20
+# business days of observations (its z-score window) and each day's vintage
+# becomes known the following morning, so 28 calendar days would already
+# cover it. 90 keeps revisions of those days in view and leaves the margin a
+# collection outage would consume, while still reading ~65 rows instead of
+# the whole chain every cycle.
+US2Y_VINTAGE_LOOKBACK = timedelta(days=90)
 
 
 class StoredFeatureSource:
@@ -55,7 +68,13 @@ class StoredFeatureSource:
         """Every feature computable from the series visible at `now`."""
         values: dict[str, float | None] = {}
 
-        values.update(us2y_features(self._observations.known_before(US_TREASURY_2Y_YIELD, now)))
+        values.update(
+            us2y_features(
+                self._observations.known_before(
+                    US_TREASURY_2Y_YIELD, now, now - US2Y_VINTAGE_LOOKBACK
+                )
+            )
+        )
 
         values[f.BOJ_POLICY_SHIFT_SCORE] = self._policy_score(now, EVENT_TYPES["BOJ"])
         values[f.FED_POLICY_SHIFT_SCORE] = self._policy_score(now, EVENT_TYPES["FED"])
@@ -64,10 +83,16 @@ class StoredFeatureSource:
         # computes them. No recent intervention yields no inputs at all, and
         # that is absence of evidence, not evidence of calm — the feature goes
         # missing rather than scoring 0.
+        #
+        # The known_at bound is exact, not a heuristic: nothing is known
+        # before it happens, so known_at >= action_date, and an event outside
+        # this window can only describe an action the recency window already
+        # ignores.
+        recency = now - timedelta(days=RECENCY_WINDOW_DAYS)
         intervention_events = [
             event
             for kind in KIND_TO_STATUS
-            for event in self._events.known_before(now, kind)
+            for event in self._events.known_before(now, kind, since=recency)
         ]
         inputs = intervention_risk_inputs(intervention_events, now)
         if inputs:

@@ -26,11 +26,11 @@ class FakeObservations:
     def __init__(self, observations=()):
         self._observations = list(observations)
 
-    def known_before(self, series, t):
+    def known_before(self, series, t, since):
         return [
             o
             for o in self._observations
-            if o.series == series and o.known_at <= t
+            if o.series == series and since < o.known_at <= t
         ]
 
 
@@ -38,11 +38,13 @@ class FakeEvents:
     def __init__(self, events=()):
         self._events = list(events)
 
-    def known_before(self, t, event_type=None):
+    def known_before(self, t, event_type=None, since=None):
         return [
             e
             for e in self._events
-            if e.known_at <= t and (event_type is None or e.event_type == event_type)
+            if e.known_at <= t
+            and (event_type is None or e.event_type == event_type)
+            and (since is None or e.known_at > since)
         ]
 
 

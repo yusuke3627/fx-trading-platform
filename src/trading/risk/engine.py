@@ -22,8 +22,14 @@ from trading.domain.account import AccountMode, AccountSnapshot
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.market import Tick
+from trading.domain.money import Currency, Money
 from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel, RiskCheck, RiskDecision
+from trading.risk.conversion import (
+    AccountCurrencyConversionService,
+    ConversionError,
+    ConversionPurpose,
+)
 from trading.risk.limits import daily_loss_pct, hwm_drawdown_pct, rolling_24h_loss_pct
 
 
@@ -91,9 +97,17 @@ class PreTradeContext:
 
 
 class RiskEngine:
-    def __init__(self, config: RiskConfig, clock: Clock) -> None:
+    def __init__(
+        self,
+        config: RiskConfig,
+        clock: Clock,
+        conversion: AccountCurrencyConversionService,
+        account_currency: Currency = Currency.JPY,
+    ) -> None:
         self._config = config
         self._clock = clock
+        self._conversion = conversion
+        self._account_currency = account_currency
 
     def evaluate(self, intent: PositionIntent, ctx: PreTradeContext) -> RiskDecision:
         cfg = self._config
@@ -238,7 +252,23 @@ class RiskEngine:
             return None
 
         risk_budget = ctx.account.equity * cfg.max_risk_per_trade_pct / Decimal(100)
-        loss_per_unit = ctx.stop_distance_pips * spec.pip_size
+        # Stop distance × pip size is quote-currency; the budget is account
+        # currency. Sizing this check runs on is risk-increasing, so a missing
+        # or stale conversion rate rejects instead of guessing (ADR-009).
+        # Exits never reach here — _size_check is entry/increase only.
+        try:
+            loss_per_unit = self._conversion.convert(
+                Money(
+                    amount=ctx.stop_distance_pips * spec.pip_size,
+                    currency=spec.quote_currency,
+                ),
+                self._account_currency,
+                now=ctx.now,
+                purpose=ConversionPurpose.RISK_INCREASING,
+            ).money.amount
+        except ConversionError as exc:
+            check(exc.code, False, str(exc))
+            return None
         allowed = (risk_budget / loss_per_unit // spec.volume_step) * spec.volume_step
 
         # Instrument-independent structure means limits must fail closed: a

@@ -31,6 +31,10 @@ class MarketConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     primary_instruments: list[str] = Field(default_factory=lambda: ["USDJPY"])
+    # 口座通貨換算（AccountCurrencyConversionService）の承認 path を張る
+    # broker symbol。取引銘柄とは独立に解決する — EURUSD を取引する場合でも
+    # JPY 換算には USDJPY の spec と quote が要る。
+    conversion_instruments: list[str] = Field(default_factory=lambda: ["USDJPY"])
     quote_max_age_seconds: float = 5.0
     # Zero would turn collection into an unthrottled fetch/commit loop, and a
     # negative value only fails once time.sleep() is reached — after the

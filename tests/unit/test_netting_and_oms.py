@@ -4,6 +4,7 @@ import pytest
 
 from tests.support import T0, FixedClock, make_command, make_intent
 from trading.backtest.clock import SystemClock
+from trading.data.market import InMemoryMarketData
 from trading.domain.account import AccountMode
 from trading.domain.order import ExecutionSide
 from trading.domain.position import (
@@ -19,6 +20,7 @@ from trading.oms.service import (
 )
 from trading.portfolio.manager import PortfolioManager
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
+from trading.risk.conversion import MarketQuoteConversionService
 
 
 class FakeBroker:
@@ -57,7 +59,11 @@ def short_position(ticket: str = "1001", quantity: str = "20000") -> BrokerPosit
 def test_desired_net_exposure_aggregates_conflicting_strategies():
     # Swing -100k, Intraday -30k, Scalp +20k -> broker target -110k (allowed
     # conflict; the portfolio layer owns aggregation).
-    manager = PortfolioManager(VirtualPositionLedger(FixedClock()), FixedClock())
+    manager = PortfolioManager(
+        VirtualPositionLedger(FixedClock()),
+        FixedClock(),
+        MarketQuoteConversionService(InMemoryMarketData()),
+    )
     manager.set_target("swing", "USDJPY", Decimal(-100000))
     manager.set_target("intraday", "USDJPY", Decimal(-30000))
     manager.set_target("scalp", "USDJPY", Decimal(20000))

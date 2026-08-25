@@ -52,6 +52,7 @@ from trading.intelligence.regime import RuleBasedRegimeService
 from trading.oms.service import OMSService
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
+from trading.risk.conversion import MarketQuoteConversionService
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 from trading.risk.event_risk import EventRiskCalendar
 from trading.strategy.base import (
@@ -382,6 +383,17 @@ class BacktestEngine:
         clock = ReplayClock(start)
         market = InMemoryMarketData(clock)
         market.set_instrument(self._spec)
+        # Replay-visible quotes only: the conversion service reads the same
+        # market, so sizing can never use a rate that was not yet known.
+        # 単一銘柄 timeline の現行 engine は換算用の別銘柄 quote（例:
+        # EURUSD backtest に必要な USDJPY）を運べない。その場合 sizing は
+        # CONVERSION_RATE_UNAVAILABLE で fail-close する（意図した挙動）。
+        # 換算 quote を含む複数銘柄 timeline は 4-pair PIT replay（#66）で。
+        conversion = MarketQuoteConversionService(
+            market,
+            [self._spec],
+            max_quote_age_seconds=self._risk_config.quote_max_age_seconds,
+        )
         simulator = ExecutionSimulator(self._costs, self._spec, self._seed, self._mode)
         broker = SimulatedBroker(simulator, clock)
         ledger = VirtualPositionLedger(clock)
@@ -406,8 +418,8 @@ class BacktestEngine:
             broker=broker,
             oms=OMSService(account_mode=self._mode, broker=broker, clock=clock),
             ledger=ledger,
-            portfolio=PortfolioManager(ledger, clock),
-            risk=RiskEngine(self._risk_config, clock),
+            portfolio=PortfolioManager(ledger, clock, conversion),
+            risk=RiskEngine(self._risk_config, clock, conversion),
             strategy=self._strategy_factory(),
             context=StrategyContext(
                 clock=clock,
@@ -444,6 +456,7 @@ class BacktestEngine:
             equity=self._equity(state, w.simulator),
             max_risk_per_trade_pct=self._risk_config.max_risk_per_trade_pct,
             pip_size=self._spec.pip_size,
+            quote_currency=self._spec.quote_currency,
             volume_step=self._spec.volume_step,
             entry_price=entry_price,
         )

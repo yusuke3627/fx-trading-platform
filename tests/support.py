@@ -54,6 +54,24 @@ def usdjpy_spec(**overrides) -> InstrumentSpec:
     return InstrumentSpec(**values)
 
 
+def eurusd_spec(**overrides) -> InstrumentSpec:
+    values = {
+        "symbol": "EURUSD",
+        "base_currency": Currency.EUR,
+        "quote_currency": Currency.USD,
+        "digits": 5,
+        "pip_size": Decimal("0.0001"),
+        "contract_size": Decimal(1000),
+        "volume_min": Decimal(1000),
+        "volume_step": Decimal(1000),
+        "volume_max": Decimal(100000),
+        "stop_level_points": 0,
+        "accepted_filling_modes": frozenset({FillingMode.IMMEDIATE_OR_CANCEL}),
+    }
+    values.update(overrides)
+    return InstrumentSpec(**values)
+
+
 def make_tick(
     bid: str,
     ask: str,

@@ -14,9 +14,15 @@ from uuid import uuid4
 
 from trading.backtest.clock import Clock
 from trading.domain.intent import PositionIntent, ProtectionSpec
+from trading.domain.money import Currency, Money
 from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.signal import StrategySignal
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
+from trading.risk.conversion import (
+    AccountCurrencyConversionService,
+    ConversionError,
+    ConversionPurpose,
+)
 
 
 @dataclass(frozen=True)
@@ -24,15 +30,24 @@ class SizingInput:
     equity: Decimal
     max_risk_per_trade_pct: Decimal
     pip_size: Decimal
+    quote_currency: Currency
     volume_step: Decimal
     entry_price: Decimal
     max_unprotected_seconds: int = 30
 
 
 class PortfolioManager:
-    def __init__(self, ledger: VirtualPositionLedger, clock: Clock) -> None:
+    def __init__(
+        self,
+        ledger: VirtualPositionLedger,
+        clock: Clock,
+        conversion: AccountCurrencyConversionService,
+        account_currency: Currency = Currency.JPY,
+    ) -> None:
         self._ledger = ledger
         self._clock = clock
+        self._conversion = conversion
+        self._account_currency = account_currency
         self._targets: dict[tuple[str, str], Decimal] = {}
 
     def intents_from_signal(
@@ -42,18 +57,41 @@ class PortfolioManager:
         (equity x per-trade risk % against the stop distance, quantized to
         volume_step).
 
+        Stop distance × pip size is a QUOTE-currency loss per unit; the risk
+        budget is account currency. Comparing the two directly is only right
+        when quote == account (USDJPY on a JPY account) and over-sizes by the
+        conversion rate otherwise (~150x on EURUSD), so the loss is converted
+        before it meets the budget.
+
         A direction flip yields CLOSE (held direction) followed by OPEN
         (desired direction): strategies dedupe setups, so collapsing the
         reversal into a bare exit would silently drop the desired position.
         """
         if signal.stop_distance_pips <= 0:
             return []
-        risk_budget = sizing.equity * sizing.max_risk_per_trade_pct / Decimal(100)
-        loss_per_unit = signal.stop_distance_pips * sizing.pip_size
-        raw_quantity = risk_budget / loss_per_unit
-        quantity = (raw_quantity // sizing.volume_step) * sizing.volume_step
-        if quantity <= 0:
-            return []
+        loss_per_unit_quote = Money(
+            amount=signal.stop_distance_pips * sizing.pip_size,
+            currency=sizing.quote_currency,
+        )
+        try:
+            loss_per_unit = self._conversion.convert(
+                loss_per_unit_quote,
+                self._account_currency,
+                now=self._clock.now(),
+                purpose=ConversionPurpose.RISK_INCREASING,
+            ).money.amount
+        except ConversionError:
+            # 換算 rate なしでは安全に size できないが、intent 自体は消さない:
+            # size 未定（target_quantity=None）のまま RiskEngine へ流し、同じ
+            # fail-close が reject code（CONVERSION_RATE_*）を決定記録に残す。
+            # 反転時の CLOSE はリスク削減であり、換算欠損で止めない（ADR-010）。
+            quantity = None
+        else:
+            risk_budget = sizing.equity * sizing.max_risk_per_trade_pct / Decimal(100)
+            raw_quantity = risk_budget / loss_per_unit
+            quantity = (raw_quantity // sizing.volume_step) * sizing.volume_step
+            if quantity <= 0:
+                return []
 
         current = self._ledger.position(signal.strategy_id, signal.symbol)
         if current is None or current.quantity == 0:
@@ -72,7 +110,7 @@ class PortfolioManager:
         signal: StrategySignal,
         sizing: SizingInput,
         action: PositionAction,
-        quantity: Decimal,
+        quantity: Decimal | None,
     ) -> PositionIntent:
         stop_offset = signal.stop_distance_pips * sizing.pip_size
         if signal.desired_direction is PositionDirection.LONG:

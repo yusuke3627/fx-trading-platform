@@ -94,6 +94,40 @@ def make_bar(
     )
 
 
+class FakeObservationRepository:
+    """MacroObservationRepository in memory: series match plus the
+    since-exclusive known_at window, the way Postgres answers it."""
+
+    def __init__(self, observations: Sequence = ()) -> None:
+        self.observations = list(observations)
+
+    def known_before(self, series: str, t: datetime, since: datetime) -> list:
+        return [
+            o for o in self.observations if o.series == series and since < o.known_at <= t
+        ]
+
+
+class FakeEventRepository:
+    """EventRepository reads in memory, mirroring the optional filters."""
+
+    def __init__(self, events: Sequence[EventEnvelope] = ()) -> None:
+        self.events = list(events)
+
+    def known_before(
+        self,
+        t: datetime,
+        event_type: str | None = None,
+        since: datetime | None = None,
+    ) -> list[EventEnvelope]:
+        return [
+            e
+            for e in self.events
+            if e.known_at <= t
+            and (event_type is None or e.event_type == event_type)
+            and (since is None or e.known_at > since)
+        ]
+
+
 class FakeTickRepository:
     """MarketTickRepository in memory, answering the visibility window the way
     Postgres does: event_time >= since AND received_at <= t, ordered by

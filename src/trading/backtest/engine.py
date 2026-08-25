@@ -34,6 +34,7 @@ from trading.backtest.clock import Clock, ReplayClock
 from trading.backtest.costs import CostModel
 from trading.backtest.replay import ReplayEngine
 from trading.backtest.simulator import ExecutionSimulator
+from trading.data.features import ReplayFeatureTimeline
 from trading.data.market import InMemoryMarketData
 from trading.data.market.bars import BarBuilder
 from trading.domain.account import AccountMode, AccountSnapshot
@@ -259,6 +260,7 @@ class BacktestEngine:
         initial_equity: Decimal = Decimal(1_000_000),
         account_mode: AccountMode = AccountMode.HEDGING,
         event_risk: EventRiskCalendar | None = None,
+        features: ReplayFeatureTimeline | None = None,
     ) -> None:
         if account_mode is not AccountMode.HEDGING:
             raise ValueError("the vertical slice runs on HEDGING only")
@@ -276,6 +278,10 @@ class BacktestEngine:
         # loaded grades on the configured default rather than pretending every
         # instant was quiet.
         self._event_risk = event_risk
+        # Optional for the same reason: the synthetic vertical slice has no
+        # PIT rows to step through, and an empty store is the honest state
+        # for it. A research run wires the same timeline live shadow polls.
+        self._features = features
 
     def run(self, ticks: list[Tick]) -> BacktestResult:
         ordered = sorted(ticks, key=lambda t: t.known_time)
@@ -289,6 +295,10 @@ class BacktestEngine:
 
         def handle(item: EventEnvelope | Tick | Bar) -> None:
             assert isinstance(item, Tick)
+            # Features first: everything after this point may read the store,
+            # and what it reads has to be the snapshot at this clock instant.
+            if self._features is not None:
+                self._features.advance(w.clock.now())
             w.market.add_tick(item)
             # Bars close before the strategy is evaluated, so the candle that
             # this tick completed is readable on the very tick that closed it.
@@ -375,7 +385,14 @@ class BacktestEngine:
         simulator = ExecutionSimulator(self._costs, self._spec, self._seed, self._mode)
         broker = SimulatedBroker(simulator, clock)
         ledger = VirtualPositionLedger(clock)
-        features = InMemoryFeatureStore()
+        # reset() every run: the timeline is stateful and this wiring promises
+        # per-run freshness — a second run() must not start where the first
+        # one's pointer stopped.
+        if self._features is not None:
+            self._features.reset(start)
+            features = self._features.store
+        else:
+            features = InMemoryFeatureStore()
         return _Wiring(
             clock=clock,
             market=market,

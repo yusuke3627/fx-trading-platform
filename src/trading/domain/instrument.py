@@ -14,6 +14,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
+from trading.domain.money import Currency
+
 
 class FillingMode(StrEnum):
     """How a broker may fill the requested volume."""
@@ -26,6 +28,11 @@ class InstrumentSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     symbol: str
+    # FX instrument の不変の identity。broker（mapper）またはデータセット定義
+    # から与える。symbol 文字列の parse で導出してはならない — broker の
+    # symbol alias（"USDJPY.oj" 等）で静かに壊れるため。
+    base_currency: Currency
+    quote_currency: Currency
     digits: int
     pip_size: Decimal
     contract_size: Decimal

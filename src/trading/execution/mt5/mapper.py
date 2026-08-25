@@ -13,6 +13,7 @@ from typing import Any
 from trading.domain.account import AccountMode, AccountTradeMode
 from trading.domain.fill import BrokerDeal, ProtectionReason
 from trading.domain.instrument import FillingMode, InstrumentSpec
+from trading.domain.money import Currency
 from trading.domain.order import ExecutionSide
 from trading.domain.position import BrokerPosition, PositionDirection
 
@@ -170,6 +171,11 @@ def instrument_spec_from_symbol_info(info: Any) -> InstrumentSpec:
     contract = Decimal(str(info.trade_contract_size))
     return InstrumentSpec(
         symbol=str(info.name),
+        # FX では currency_profit が quote 通貨。対応外の通貨は Currency の
+        # 変換が ValueError で落とす — 未知の通貨で黙って建玉しないための
+        # broker 境界での検証。
+        base_currency=Currency(str(info.currency_base)),
+        quote_currency=Currency(str(info.currency_profit)),
         digits=digits,
         pip_size=pip_size_for_digits(digits),
         contract_size=contract,

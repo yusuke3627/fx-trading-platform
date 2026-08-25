@@ -1,4 +1,5 @@
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,8 +7,39 @@ from tests.support import usdjpy_spec
 from trading.domain.account import AccountMode
 from trading.domain.fill import ProtectionReason
 from trading.domain.instrument import FillingMode
+from trading.domain.money import Currency
 from trading.domain.order import ExecutionSide
 from trading.execution.mt5 import mapper
+
+
+def _symbol_info(**overrides):
+    values = {
+        "name": "USDJPY",
+        "currency_base": "USD",
+        "currency_profit": "JPY",
+        "digits": 3,
+        "trade_contract_size": 1000.0,
+        "volume_min": 1.0,
+        "volume_step": 1.0,
+        "volume_max": 100.0,
+        "trade_stops_level": 0,
+        "filling_mode": mapper.SYMBOL_FILLING_IOC,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_spec_carries_broker_base_and_quote_currency():
+    spec = mapper.instrument_spec_from_symbol_info(
+        _symbol_info(name="EURUSD", currency_base="EUR", currency_profit="USD")
+    )
+    assert spec.base_currency is Currency.EUR
+    assert spec.quote_currency is Currency.USD
+
+
+def test_unsupported_broker_currency_rejected():
+    with pytest.raises(ValueError):
+        mapper.instrument_spec_from_symbol_info(_symbol_info(currency_profit="CHF"))
 
 
 def test_pip_size_by_quote_digits():

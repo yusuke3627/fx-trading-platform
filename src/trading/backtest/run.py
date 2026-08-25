@@ -26,6 +26,7 @@ from trading.backtest.report import write_report
 from trading.config import load_config
 from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.instrument import FillingMode, InstrumentSpec
+from trading.domain.money import Currency
 from trading.domain.position import PositionDirection
 from trading.strategy.base import StrategyConfig
 
@@ -39,6 +40,8 @@ def synthetic_usdjpy_spec(symbol: str) -> InstrumentSpec:
     not a broker hardcode: recorded datasets carry the broker's spec)."""
     return InstrumentSpec(
         symbol=symbol,
+        base_currency=Currency.USD,
+        quote_currency=Currency.JPY,
         digits=3,
         pip_size=Decimal("0.01"),
         contract_size=Decimal(1000),

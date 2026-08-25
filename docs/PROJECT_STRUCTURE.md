@@ -56,9 +56,9 @@ Portfolio → Risk → OMS → Execution を通る。
 ## Instrument Independence
 
 Strategy ロジックへ `USDJPY` をハードコードしない。対象銘柄は
-`strategies.<id>.instruments` 設定。pip size / contract size / volume min /
-step / session / stop level / 受け付ける filling mode は `InstrumentSpec` として
-Broker / Market Data Layer から取得する。
+`strategies.<id>.instruments` 設定。base/quote 通貨 / pip size / contract size /
+volume min / step / session / stop level / 受け付ける filling mode は
+`InstrumentSpec` として Broker / Market Data Layer から取得する。
 
 ## Invariants（Structure）
 

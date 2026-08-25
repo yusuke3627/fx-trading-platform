@@ -160,6 +160,16 @@ class FakeTickRepository:
             key=lambda tick: tick.time,
         )
 
+    def between(self, symbol: str, start: datetime, end: datetime) -> list[Tick]:
+        return sorted(
+            (
+                tick
+                for tick in self.ticks
+                if tick.symbol == symbol and start <= tick.time < end
+            ),
+            key=lambda tick: tick.time,
+        )
+
 
 class FakeBarRepository:
     """MarketBarRepository in memory, mirroring the unique key: a bar already

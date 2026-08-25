@@ -110,6 +110,35 @@ class StoredFeatureSource:
 
         return {name: value for name, value in values.items() if value is not None}
 
+    def change_instants(self, start: datetime, end: datetime) -> list[datetime]:
+        """Every known_at at which a row snapshot() reads arrives, for replays
+        of [start, end] — the schedule a ReplayFeatureTimeline steps on.
+
+        Each read mirrors the corresponding snapshot() bound taken at
+        now=start, so a row that no snapshot in the range can see is not an
+        instant. Rows already known at `start` are still included: their
+        arrival is folded into the timeline's opening refresh, but their
+        lookback EXPIRY can fall inside the replay, and the timeline derives
+        expiries from these instants.
+        """
+        instants = [
+            row.known_at
+            for row in self._observations.known_before(
+                US_TREASURY_2Y_YIELD, end, start - US2Y_VINTAGE_LOOKBACK
+            )
+        ]
+        for event_type in (EVENT_TYPES["BOJ"], EVENT_TYPES["FED"]):
+            instants.extend(
+                event.known_at for event in self._events.known_before(end, event_type)
+            )
+        recency = start - timedelta(days=RECENCY_WINDOW_DAYS + 1)
+        for kind in KIND_TO_STATUS:
+            instants.extend(
+                event.known_at
+                for event in self._events.known_before(end, kind, since=recency)
+            )
+        return sorted(instants)
+
     def _policy_score(self, now: datetime, event_type: str) -> float | None:
         # A re-tuned scoring algorithm re-ingests past meetings as NEW events
         # (scoring.py versions them instead of rewriting history), so the same

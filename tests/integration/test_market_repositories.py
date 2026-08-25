@@ -178,6 +178,31 @@ def test_a_different_price_at_the_same_instant_is_kept(repos):
     assert store(ticks, [second]) == 1
 
 
+def test_between_reads_the_period_regardless_of_reception(repos):
+    # The research read (ADR-007): a backfilled row's received_at lies far in
+    # the tick's future and must not hide it; the bounds are event_time only,
+    # end-exclusive, in the same (event_time, id) order the visibility reads
+    # use.
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick(
+                "158.840",
+                "158.844",
+                time=at(minutes=minute),
+                received_at=at(days=100),
+                symbol=symbol,
+            )
+            for minute in (0, 5, 9)
+        ],
+    )
+
+    window = ticks.between(symbol, at(minutes=0), at(minutes=9))
+
+    assert [t.time for t in window] == [at(minutes=0), at(minutes=5)]
+
+
 def test_a_bar_round_trips_through_the_database(repos):
     _, bars, symbol = repos
     # ADR-005: the candle sits on the broker's clock, known_at on ours, so

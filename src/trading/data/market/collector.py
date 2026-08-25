@@ -35,7 +35,7 @@ from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 from trading.backtest.clock import Clock, SystemClock
-from trading.data.cli import poll_interval
+from trading.data.cli import aware_utc, poll_interval
 from trading.domain.market import Tick
 from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
 from trading.storage.repository import MarketTickRepository
@@ -204,16 +204,6 @@ class TickCollector:
         )
 
 
-def _aware_utc(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        raise argparse.ArgumentTypeError(
-            f"{value!r} has no timezone; MT5 reads a naive datetime as local "
-            "time, which would shift the requested range"
-        )
-    return parsed.astimezone(UTC)
-
-
 def main() -> None:
     import os
 
@@ -223,8 +213,8 @@ def main() -> None:
     parser.add_argument("--env", default="demo")
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--interval-seconds", type=poll_interval, default=None)
-    parser.add_argument("--backfill-from", type=_aware_utc, default=None)
-    parser.add_argument("--backfill-to", type=_aware_utc, default=None)
+    parser.add_argument("--backfill-from", type=aware_utc, default=None)
+    parser.add_argument("--backfill-to", type=aware_utc, default=None)
     args = parser.parse_args()
 
     if (args.backfill_from is None) != (args.backfill_to is None):

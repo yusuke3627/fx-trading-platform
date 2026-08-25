@@ -415,6 +415,20 @@ class PostgresMarketTickRepository:
         ).fetchone()
         return _row_to_tick(row) if row else None
 
+    def between(self, symbol: str, start: datetime, end: datetime) -> Sequence[Tick]:
+        # The research replay's full-period read (ADR-007): no received_at
+        # filter, same (event_time, id) order and tie-break as known_before.
+        rows = self._conn.execute(
+            """
+            SELECT symbol, bid, ask, event_time, received_at
+            FROM market_ticks
+            WHERE symbol = %s AND event_time >= %s AND event_time < %s
+            ORDER BY event_time, id
+            """,
+            (symbol, start, end),
+        ).fetchall()
+        return [_row_to_tick(r) for r in rows]
+
     def latest_known_before(self, symbol: str, t: datetime) -> Tick | None:
         # Ordered the same way known_before is, reversed: the tie-break decides
         # which of several quotes sharing an event_time counts as the latest

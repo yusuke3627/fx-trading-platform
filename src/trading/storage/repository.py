@@ -122,6 +122,14 @@ class MarketTickRepository(Protocol):
         self, symbol: str, t: datetime, since: datetime
     ) -> Tick | None: ...
 
+    # Every quote with event_time in [start, end), oldest first. Unlike the
+    # visibility reads this does not filter on received_at: a research replay
+    # reads a recorded period in full and reconstructs each tick's known time
+    # from its broker timestamp (ADR-007), so reception time is not a filter.
+    def between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> Sequence[Tick]: ...
+
 
 class MarketBarRepository(Protocol):
     def insert_many(self, bars: Sequence[Bar]) -> int: ...

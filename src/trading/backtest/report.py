@@ -22,7 +22,7 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
     run_dir = out_dir / str(manifest["run_id"])
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    (run_dir / "manifest.json").write_text(_dumps(manifest))
+    (run_dir / "manifest.json").write_text(_dumps(manifest), encoding="utf-8")
     (run_dir / "summary.json").write_text(
         _dumps(
             {
@@ -33,13 +33,15 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
                     for at, codes in result.risk_rejections
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     (run_dir / "trades.json").write_text(
-        _dumps([_jsonable(asdict(f)) for f in result.fills])
+        _dumps([_jsonable(asdict(f)) for f in result.fills]), encoding="utf-8"
     )
     (run_dir / "equity.json").write_text(
-        _dumps([[at.isoformat(), str(equity)] for at, equity in result.equity_curve])
+        _dumps([[at.isoformat(), str(equity)] for at, equity in result.equity_curve]),
+        encoding="utf-8",
     )
     return run_dir
 

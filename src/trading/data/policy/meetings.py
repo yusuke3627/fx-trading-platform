@@ -143,7 +143,7 @@ class _MeetingsFile(BaseModel):
 
 
 def _load_file(path: Path | str) -> _MeetingsFile:
-    raw = yaml.safe_load(Path(path).read_text()) or {}
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     return _MeetingsFile.model_validate(raw)
 
 

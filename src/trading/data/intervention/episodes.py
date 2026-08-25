@@ -52,7 +52,7 @@ class InterventionRecognition(BaseModel):
 
 
 def load_episodes(path: Path | str = DEFAULT_EPISODES_PATH) -> list[InterventionRecognition]:
-    raw = yaml.safe_load(Path(path).read_text()) or {}
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     entries = [
         InterventionRecognition.model_validate(entry)
         for entry in raw.get("recognitions", [])

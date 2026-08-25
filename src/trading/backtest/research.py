@@ -1,8 +1,12 @@
 """Research backtest over recorded ticks.
 
-    python -m trading.backtest.research --env demo --symbol USDJPY \
+    python -m trading.backtest.research --symbol USDJPY \
         --strategy post_event_failed_breakout \
         --from 2026-08-18T00:00:00+00:00 --to 2026-08-23T00:00:00+00:00
+
+The default environment is `backtest`: it enables the risk gate for the
+simulator (demo/shadow configs keep trading_enabled false, which would
+reject every OPEN and grade a strategy at zero fills).
 
 Runs one registered strategy over a period of the stored tick series, with
 the feature timeline stepping through the stored macro/policy/intervention
@@ -62,7 +66,7 @@ def reconstructed(ticks: list[Tick], offset: timedelta) -> list[Tick]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="research backtest over recorded ticks")
-    parser.add_argument("--env", default="demo")
+    parser.add_argument("--env", default="backtest")
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--strategy", required=True, choices=sorted(STRATEGIES))
     parser.add_argument(
@@ -132,8 +136,9 @@ def main() -> None:
         ),
         InMemoryFeatureStore(),
     )
+    known_start, known_end = args.start - offset, args.end - offset
     timeline = ReplayFeatureTimeline(
-        source, source.change_instants(args.start - offset, args.end - offset)
+        source, source.change_instants(known_start, known_end)
     )
 
     seed = args.seed if args.seed is not None else config.simulator.seed
@@ -171,6 +176,10 @@ def main() -> None:
         "period_to": args.end.isoformat(),
         "broker_utc_offset_hours": config.market.broker_utc_offset_hours,
         "dataset_hash": dataset_hash(ticks),
+        # Ticks alone do not identify the dataset: the stored PIT rows decide
+        # what the gates saw, and re-collection changes them under the same
+        # tick series.
+        "feature_dataset_hash": source.dataset_fingerprint(known_start, known_end),
         "config_sha256": hashlib.sha256(config.model_dump_json().encode()).hexdigest(),
         "python_version": sys.version.split()[0],
     }

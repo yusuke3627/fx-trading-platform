@@ -108,3 +108,34 @@ def test_change_instants_mirror_the_snapshot_windows():
             during.known_at,
         ]
     )
+
+
+def test_dataset_fingerprint_follows_content_not_row_identity():
+    # The factories mint fresh UUIDs per row, so equality across two builds
+    # proves the hash covers content, the way a re-ingested archive repeats it.
+    rows = {
+        "observations": [observation(START + timedelta(days=1))],
+        "events": [event("FED_POLICY_SHIFT_SCORE", START - timedelta(days=30))],
+    }
+    first = make_source(**rows).dataset_fingerprint(START, END)
+
+    assert make_source(**rows).dataset_fingerprint(START, END) == first
+
+
+def test_dataset_fingerprint_changes_only_with_rows_a_replay_can_read():
+    observations = [observation(START + timedelta(days=1))]
+    base = make_source(observations=observations).dataset_fingerprint(START, END)
+
+    grown = make_source(
+        observations=observations,
+        events=[event("INTERVENTION_REPORTED", START + timedelta(days=2))],
+    ).dataset_fingerprint(START, END)
+    out_of_window = make_source(
+        observations=[
+            *observations,
+            observation(START - US2Y_VINTAGE_LOOKBACK - timedelta(days=10)),
+        ],
+    ).dataset_fingerprint(START, END)
+
+    assert grown != base
+    assert out_of_window == base

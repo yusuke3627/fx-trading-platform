@@ -187,10 +187,18 @@ class TickCollector:
             # Converted a chunk at a time: a busy day is 10^6 rows, and
             # building every Tick up front would hold the whole day as objects
             # on top of the array the terminal already returned.
+            window_stored = 0
             for chunk in _chunks(rows):
-                stored += self._write(
+                window_stored += self._write(
                     [tick_from_row(row, symbol, received_at) for row in chunk]
                 )
+            stored += window_stored
+            # A year-long import runs for hours; a silent one is
+            # indistinguishable from a hang and gets interrupted.
+            print(
+                f"{window_start:%Y-%m-%d}: {len(rows)} ticks, +{window_stored} new",
+                flush=True,
+            )
         return stored
 
     def run(self, symbol: str, interval_seconds: float) -> None:

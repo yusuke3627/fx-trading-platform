@@ -222,13 +222,15 @@ class ShadowRunner:
         """Graded per horizon: a central-bank decision halts scalp entries
         while swing only reduces.
 
-        With no calendar the configured default applies. That is not the same
-        as NORMAL — NORMAL means "the schedule is known and nothing is near",
-        and an unknown schedule should not read that way.
+        The configured default applies wherever the schedule is unknown —
+        no calendar at all, or an instant past what the one we have covers.
+        That is not the same as NORMAL: NORMAL says the schedule is known and
+        nothing is near, and a gap in the meeting file must not read that way.
         """
         if self._event_risk is None:
             return self._risk_config.event_mode_default
-        return self._event_risk.mode_for(horizon, now)
+        mode = self._event_risk.mode_for(horizon, now)
+        return mode if mode is not None else self._risk_config.event_mode_default
 
     def _pretrade_context(
         self, signal, intent, quote, account, history, now, horizon

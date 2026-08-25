@@ -722,9 +722,13 @@ class BacktestEngine:
         )
 
     def _event_mode(self, w: _Wiring, now: datetime) -> EventRiskMode:
+        """The configured default wherever the schedule is unknown: no
+        calendar, or a replay period past what the calendar covers. A dataset
+        older than the recorded meetings must not grade as quiet."""
         if self._event_risk is None:
             return self._risk_config.event_mode_default
-        return self._event_risk.mode_for(w.strategy.horizon, now)
+        mode = self._event_risk.mode_for(w.strategy.horizon, now)
+        return mode if mode is not None else self._risk_config.event_mode_default
 
     def _unrealized(self, state: _RunState, simulator: ExecutionSimulator) -> Decimal:
         """Unrealized PnL of the open book, marked at the executable side of

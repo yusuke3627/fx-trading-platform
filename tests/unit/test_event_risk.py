@@ -20,10 +20,31 @@ def cluster_window() -> EventRiskWindow:
     )
 
 
-def test_normal_outside_window():
+def test_normal_between_windows_the_calendar_covers():
+    # Between two recorded clusters the schedule IS known, and known to be
+    # quiet.
+    later = cluster_window().model_copy(
+        update={"first_event_at": at(days=40), "last_event_at": at(days=43)}
+    )
+    calendar = EventRiskCalendar([cluster_window(), later])
+
+    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=25)) is EventRiskMode.NORMAL
+
+
+def test_nothing_is_claimed_beyond_what_the_calendar_covers():
+    # The meeting file reaches as far as somebody has recorded. Past its last
+    # window the answer is not "quiet" but "not written down", and the caller
+    # falls back to its configured default rather than being told all is well.
     calendar = EventRiskCalendar([cluster_window()])
-    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=7)) is EventRiskMode.NORMAL
-    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=15)) is EventRiskMode.NORMAL
+
+    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=15)) is None
+    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=7)) is None
+
+
+def test_an_empty_calendar_covers_nothing():
+    calendar = EventRiskCalendar([])
+
+    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=1)) is None
 
 
 def test_pre_and_post_hours_extend_the_window():

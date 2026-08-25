@@ -113,7 +113,10 @@ def test_a_central_bank_window_blocks_entries_in_replay():
     assert any("EVENT_MODE_ALLOWS_ENTRY" in codes for _, codes in halted.risk_rejections)
 
 
-def test_a_calendar_with_no_active_window_leaves_replay_unchanged():
+def test_a_replay_beyond_the_recorded_calendar_falls_back_to_the_default():
+    # The dataset predates every recorded meeting, so the calendar has nothing
+    # to say about it and the configured default applies — the same as running
+    # with no calendar at all. NORMAL here, so the run is unchanged.
     far_off = EventRiskWindow(
         name="dual_central_bank_cluster",
         first_event_at=DATASET_START + timedelta(days=30),

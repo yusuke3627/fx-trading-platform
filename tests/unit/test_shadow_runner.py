@@ -304,7 +304,32 @@ def test_a_central_bank_window_halts_the_scalp_horizon():
     assert "EVENT_MODE_ALLOWS_ENTRY" in result.decision.reject_codes
 
 
-def test_outside_every_window_entries_are_not_event_blocked():
+def test_between_recorded_windows_entries_are_not_event_blocked():
+    # Inside what the calendar covers, with no window active: the schedule is
+    # known and known to be quiet. Two windows are what makes that
+    # distinguishable — with one, "covered" and "inside the window" are the
+    # same span.
+    def decision_at(when):
+        return EventRiskWindow(
+            name="dual_central_bank_cluster",
+            first_event_at=when,
+            last_event_at=when,
+            pre_hours=1,
+            post_hours=1,
+            actions={StrategyHorizon.SCALP: EventRiskMode.HALT},
+        )
+
+    calendar = EventRiskCalendar([decision_at(at(hours=-5)), decision_at(at(hours=5))])
+    runner = build(**quote_and_account(), event_risk=calendar)
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert "EVENT_MODE_ALLOWS_ENTRY" not in result.decision.reject_codes
+
+
+def test_beyond_the_recorded_calendar_the_configured_default_applies():
+    # The meeting file stops somewhere. Past its last window the calendar has
+    # nothing to say, and that must not read as "nothing is near".
     far_off = EventRiskWindow(
         name="dual_central_bank_cluster",
         first_event_at=at(days=30),
@@ -313,11 +338,15 @@ def test_outside_every_window_entries_are_not_event_blocked():
         post_hours=24,
         actions={StrategyHorizon.SCALP: EventRiskMode.HALT},
     )
-    runner = build(**quote_and_account(), event_risk=EventRiskCalendar([far_off]))
+    runner = build(
+        **quote_and_account(),
+        event_risk=EventRiskCalendar([far_off]),
+        event_mode_default=EventRiskMode.HALT,
+    )
 
     (result,) = runner.evaluate_once().decisions
 
-    assert "EVENT_MODE_ALLOWS_ENTRY" not in result.decision.reject_codes
+    assert "EVENT_MODE_ALLOWS_ENTRY" in result.decision.reject_codes
 
 
 def test_without_a_calendar_the_configured_default_applies():

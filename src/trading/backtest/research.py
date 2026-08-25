@@ -48,7 +48,6 @@ from trading.backtest.engine import ENGINE_VERSION, BacktestEngine
 from trading.backtest.report import write_report
 from trading.backtest.run import git_state, synthetic_usdjpy_spec
 from trading.config import load_config
-from trading.data.cli import aware_utc
 from trading.data.features import ReplayFeatureTimeline, StoredFeatureSource
 from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.market import Tick
@@ -104,6 +103,25 @@ def reconstructed(ticks: list[Tick], server_ahead_of_ny: timedelta) -> list[Tick
     ]
 
 
+def broker_label(value: str) -> datetime:
+    """An ISO timestamp naming a broker wall-clock label (+00:00 only).
+
+    The label axis is the server's wall clock STAMPED as UTC (ADR-005).
+    An input carrying any other offset would be normalized onto real UTC and
+    silently name a different label — `2026-08-18T00:00:00+03:00` for the
+    summer broker midnight would read three hours of the wrong range — so
+    only +00:00/Z inputs are accepted.
+    """
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise argparse.ArgumentTypeError(
+            f"{value!r} must carry a +00:00/Z offset: broker labels are "
+            "wall-clock values stamped UTC (ADR-005), and any other offset "
+            "silently shifts the requested range"
+        )
+    return parsed
+
+
 def warmup_days(value: str) -> float:
     """A finite, non-negative number of lead-in days.
 
@@ -124,14 +142,14 @@ def main() -> None:
     parser.add_argument(
         "--from",
         dest="start",
-        type=aware_utc,
+        type=broker_label,
         required=True,
         help="period start, broker-clock (the axis event_time is stored on)",
     )
     parser.add_argument(
         "--to",
         dest="end",
-        type=aware_utc,
+        type=broker_label,
         required=True,
         help="period end (exclusive), broker-clock",
     )

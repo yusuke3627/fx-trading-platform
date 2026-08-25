@@ -102,6 +102,23 @@ def test_reconstruction_follows_the_servers_dst_calendar():
     )
 
 
+def test_period_bounds_accept_only_utc_stamped_labels():
+    # A +03:00 input meant as "the broker's summer midnight" would be
+    # normalized to 21:00Z and silently read a different label range.
+    import argparse
+
+    from trading.backtest.research import broker_label
+
+    assert broker_label("2026-08-18T00:00:00+00:00") == datetime(
+        2026, 8, 18, tzinfo=UTC
+    )
+    assert broker_label("2026-08-18T00:00:00Z") == datetime(2026, 8, 18, tzinfo=UTC)
+    with pytest.raises(argparse.ArgumentTypeError):
+        broker_label("2026-08-18T00:00:00+03:00")
+    with pytest.raises(argparse.ArgumentTypeError):
+        broker_label("2026-08-18T00:00:00")
+
+
 def test_a_label_inside_the_dst_transition_hour_is_refused():
     # New York switches at 02:00 Sunday — inside the FX weekend close, so no
     # correct dataset carries such a label; folding one onto either

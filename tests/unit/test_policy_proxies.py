@@ -17,7 +17,12 @@ from trading.data.macro.registry import (
     period_from_date,
 )
 from trading.data.policy.features import latest_policy_score, us2y_features
-from trading.data.policy.meetings import PolicyMeeting, load_coverage, load_meetings
+from trading.data.policy.meetings import (
+    PolicyMeeting,
+    load_coverage,
+    load_meetings,
+    load_schedule,
+)
 from trading.data.policy.scoring import (
     SCORING_VERSION,
     event_from_meeting,
@@ -135,6 +140,61 @@ def test_committed_seed_file_loads():
     meetings = load_meetings("config/policy_meetings.yaml")
     assert meetings, "seed file must contain at least one meeting"
     assert all(m.source_uri.startswith("https://") for m in meetings)
+
+
+def test_schedule_entries_never_reach_scoring(tmp_path):
+    # 予定はリスク窓専用。load_meetings に混ざると日次 collector が 0 点の
+    # プレースホルダを決定的 id で永続化し、後から実結果を転記しても
+    # ON CONFLICT DO NOTHING で訂正されない。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+meetings:
+  - bank: BOJ
+    decision_date: 2026-07-31
+    statement_published_at: 2026-07-31T06:00:00+00:00
+    verified: false
+    source_uri: https://example.invalid
+schedule:
+  - bank: FED
+    decision_date: 2026-09-16
+    statement_published_at: 2026-09-16T18:00:00+00:00
+    source_uri: https://example.invalid
+"""
+    )
+
+    meetings = load_meetings(path)
+    schedule = load_schedule(path)
+
+    assert [m.bank for m in meetings] == ["BOJ"]
+    assert [s.bank for s in schedule] == ["FED"]
+
+
+def test_a_meeting_in_both_sections_is_rejected(tmp_path):
+    # meetings: へ移した後に schedule: から消し忘れた状態を黙って通さない。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+meetings:
+  - bank: FED
+    decision_date: 2026-09-16
+    statement_published_at: 2026-09-16T18:00:00+00:00
+    verified: false
+    source_uri: https://example.invalid
+schedule:
+  - bank: FED
+    decision_date: 2026-09-16
+    statement_published_at: 2026-09-16T18:00:00+00:00
+    source_uri: https://example.invalid
+"""
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        load_schedule(path)
+
+
+def test_committed_schedule_loads():
+    schedule = load_schedule("config/policy_meetings.yaml")
+    assert all(s.source_uri.startswith("https://") for s in schedule)
 
 
 def test_a_file_that_declares_no_coverage_claims_nothing(tmp_path):

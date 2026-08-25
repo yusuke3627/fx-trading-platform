@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from trading.config import EventRiskWindowSettings, load_config
-from trading.data.policy.meetings import PolicyMeeting
+from trading.data.policy.meetings import PolicyMeeting, ScheduledMeeting
 from trading.data.policy.risk_windows import (
     CENTRAL_BANK_CLUSTER,
     central_bank_calendar,
@@ -33,8 +33,35 @@ def meeting(bank: str, published_at: datetime) -> PolicyMeeting:
     )
 
 
+def scheduled(bank: str, published_at: datetime) -> ScheduledMeeting:
+    return ScheduledMeeting(
+        bank=bank,
+        decision_date=published_at.date(),
+        statement_published_at=published_at,
+        source_uri="https://example.invalid/calendar",
+    )
+
+
 def test_no_meetings_produce_no_windows():
     assert central_bank_windows([], SETTINGS) == []
+
+
+def test_an_announced_meeting_opens_a_window_before_its_results_exist():
+    # The market braces for the date, not the outcome: schedule-only entries
+    # must open windows exactly like transcribed ones.
+    (window,) = central_bank_windows([scheduled("FED", T0)], SETTINGS)
+
+    assert window.first_event_at == T0
+
+
+def test_the_shipped_schedule_reaches_the_calendar():
+    calendar = central_bank_calendar(load_config("shadow"))
+
+    assert calendar is not None
+    # The September FOMC instant is recorded in the shipped schedule: section,
+    # inside the declared coverage.
+    sept_fomc = datetime(2026, 9, 16, 18, 0, tzinfo=UTC)
+    assert calendar.mode_for(StrategyHorizon.SCALP, sept_fomc) is EventRiskMode.HALT
 
 
 def test_no_configured_window_yields_no_calendar():

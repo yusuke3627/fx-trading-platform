@@ -10,7 +10,13 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from trading.data.policy.meetings import PolicyMeeting, load_coverage, load_meetings
+from trading.data.policy.meetings import (
+    PolicyMeeting,
+    ScheduledMeeting,
+    load_coverage,
+    load_meetings,
+    load_schedule,
+)
 from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 
 if TYPE_CHECKING:
@@ -39,14 +45,18 @@ def central_bank_calendar(config: AppConfig) -> EventRiskCalendar | None:
     if settings is None:
         return None
     coverage = load_coverage()
+    # Announced-only meetings open windows just like transcribed ones — the
+    # market braces for the date, not for the outcome. They stay out of
+    # scoring, which is why they live in a separate section of the file.
     return EventRiskCalendar(
-        central_bank_windows(load_meetings(), settings),
+        central_bank_windows([*load_meetings(), *load_schedule()], settings),
         (coverage.since, coverage.until) if coverage else None,
     )
 
 
 def central_bank_windows(
-    meetings: Sequence[PolicyMeeting], settings: EventRiskWindowSettings
+    meetings: Sequence[PolicyMeeting | ScheduledMeeting],
+    settings: EventRiskWindowSettings,
 ) -> list[EventRiskWindow]:
     """One window per cluster of meetings whose risk periods run together.
 

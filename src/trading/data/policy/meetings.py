@@ -102,3 +102,43 @@ def load_meetings(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[PolicyMeetin
             raise ValueError(f"duplicate meeting entry: {key}")
         seen.add(key)
     return meetings
+
+
+class ScheduledMeeting(BaseModel):
+    """A meeting announced on the official calendar whose results are not out.
+
+    Schedule entries feed the risk windows only and never reach scoring. A
+    placeholder scored as "hold, no dissents" would be persisted by the daily
+    collector under the meeting's deterministic event id, and the correction
+    transcribed later would land on ON CONFLICT DO NOTHING — the wrong event
+    would be permanent. Keeping the schedule structurally separate makes that
+    path impossible instead of guarded.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bank: Literal["BOJ", "FED"]
+    decision_date: date
+    statement_published_at: datetime
+    source_uri: str
+
+    @field_validator("statement_published_at")
+    @classmethod
+    def _aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("statement_published_at must be timezone-aware")
+        return value
+
+
+def load_schedule(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[ScheduledMeeting]:
+    """Announced-only meetings. A meeting present here and in meetings: is a
+    move that forgot its second half, so it is rejected rather than shadowed."""
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    schedule = [ScheduledMeeting.model_validate(entry) for entry in raw.get("schedule", [])]
+    seen = {(m.bank, m.decision_date) for m in load_meetings(path)}
+    for entry in schedule:
+        key = (entry.bank, entry.decision_date)
+        if key in seen:
+            raise ValueError(f"duplicate meeting entry: {key}")
+        seen.add(key)
+    return schedule

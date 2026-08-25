@@ -51,6 +51,14 @@ def central_bank_windows(
     Publication instants are what the windows hang off — a decision is risk
     from the moment it can move the market, not from the calendar date it is
     filed under.
+
+    The windows are not look-ahead. A scheduled meeting is announced months in
+    advance, so a replay reacting to one 48 hours early is using the calendar
+    everyone already had. An UNSCHEDULED meeting is the opposite: nobody could
+    position for it beforehand, and recording one here would let a replay brace
+    for a decision that arrived without warning. The file holds only regular
+    meetings today; an emergency one needs its pre-window suppressed rather
+    than simply being added.
     """
     times = sorted(meeting.statement_published_at for meeting in meetings)
     if not times:

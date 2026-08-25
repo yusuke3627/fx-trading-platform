@@ -139,7 +139,7 @@ def main() -> None:
     warmup = (
         timedelta(days=args.warmup_days)
         if args.warmup_days is not None
-        else strategy_class.warmup
+        else strategy_class.warmup(strategy_config)
     )
     read_from = args.start - warmup
 
@@ -149,6 +149,13 @@ def main() -> None:
         raise SystemExit(
             f"no stored ticks for {symbol} in [{read_from}, {args.end}); "
             "collect or backfill the period first"
+        )
+    if stored[-1].time < args.start:
+        # Only lead-in ticks exist: the run would warm up, evaluate nothing
+        # and still write a plausible-looking flat report.
+        raise SystemExit(
+            f"no stored ticks for {symbol} inside the evaluation period "
+            f"[{args.start}, {args.end}); only warm-up ticks were found"
         )
 
     offset = timedelta(hours=config.market.broker_utc_offset_hours)

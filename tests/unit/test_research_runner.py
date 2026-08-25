@@ -164,10 +164,31 @@ def test_frozen_source_ignores_rows_arriving_after_the_load():
     assert live.dataset_fingerprint(START, END) != before
 
 
-def test_every_registered_strategy_declares_its_warmup():
+def test_every_registered_strategy_computes_a_positive_warmup():
     # The research runner sizes its lead-in read from this; a zero warmup
     # would start a real strategy against empty indicator windows.
+    from trading.strategy.base import StrategyConfig
     from trading.strategy.registry import STRATEGIES
 
     for strategy_class in STRATEGIES.values():
-        assert strategy_class.warmup > timedelta(0), strategy_class.strategy_id
+        config = StrategyConfig(
+            strategy_id=strategy_class.strategy_id, instruments=["USDJPY"]
+        )
+        assert strategy_class.warmup(config) > timedelta(0), strategy_class.strategy_id
+
+
+def test_warmup_follows_the_evaluated_configuration():
+    from trading.strategy.base import StrategyConfig
+    from trading.strategy.registry import STRATEGIES
+
+    swing = STRATEGIES["monetary_policy_convergence"]
+    default = StrategyConfig(strategy_id=swing.strategy_id, instruments=["USDJPY"])
+    # The trend gate's EMA(50) on 1d needs ~50 trading days of lead-in.
+    assert swing.warmup(default) >= timedelta(days=70)
+
+    intraday = STRATEGIES["post_event_failed_breakout"]
+    base_config = StrategyConfig(strategy_id=intraday.strategy_id, instruments=["USDJPY"])
+    widened = base_config.model_copy(
+        update={"parameters": {"resistance_lookback": 500}}
+    )
+    assert intraday.warmup(widened) > intraday.warmup(base_config)

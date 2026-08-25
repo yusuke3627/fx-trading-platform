@@ -118,15 +118,27 @@ class StrategyContext:
     config: StrategyConfig
 
 
+def market_span_to_calendar(seconds: float) -> timedelta:
+    """Calendar time holding `seconds` of market time in recorded history.
+
+    Weekends quote nothing (7/5), and a lead-in whose calendar span starts on
+    a closed weekend or holiday still has to reach real ticks (+2 days)."""
+    return timedelta(seconds=seconds * 7 / 5) + timedelta(days=2)
+
+
 class Strategy(ABC):
     strategy_id: ClassVar[str]
     strategy_version: ClassVar[str]
     horizon: ClassVar[StrategyHorizon]
-    # Recorded history the slowest indicator window needs before the first
-    # evaluation can see it populated. A research replay reads this much
-    # lead-in ahead of its period and starts asking the strategy at the
-    # period's opening instant.
-    warmup: ClassVar[timedelta] = timedelta(0)
+
+    @classmethod
+    def warmup(cls, config: StrategyConfig) -> timedelta:
+        """Recorded history the slowest indicator window needs before the
+        first evaluation sees it populated, computed from the configuration
+        the run actually evaluates with. A research replay reads this much
+        lead-in ahead of its period and starts asking the strategy at the
+        period's opening instant."""
+        return timedelta(0)
 
     @abstractmethod
     async def on_event(

@@ -20,11 +20,18 @@ from datetime import timedelta
 from decimal import Decimal
 
 from trading.domain.event import EventEnvelope
+from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection
 from trading.domain.signal import StrategySignal
 from trading.indicators.market_structure import is_lower_high, rolling_low, swing_highs
 from trading.intelligence import features as f
-from trading.strategy.base import Strategy, StrategyContext, StrategyHorizon
+from trading.strategy.base import (
+    Strategy,
+    StrategyConfig,
+    StrategyContext,
+    StrategyHorizon,
+    market_span_to_calendar,
+)
 
 
 class MonetaryPolicyConvergenceStrategy(Strategy):
@@ -34,9 +41,22 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
     # side of that change must not compare as one strategy.
     strategy_version = "0.2.0"
     horizon = StrategyHorizon.SWING
-    # The slowest window is the 1d EMA(50) of the trend gate: ~50 trading
-    # days, which weekends stretch past 70 calendar days.
-    warmup = timedelta(days=75)
+    EMA_FAST = 20
+    EMA_SLOW = 50
+
+    @classmethod
+    def warmup(cls, config: StrategyConfig) -> timedelta:
+        # The slowest window is the trend gate's EMA(50) on the trend
+        # timeframe (~50 trading days on 1d); the trigger-timeframe support
+        # lookback rides inside it unless configured far wider.
+        trend_tf = config.timeframes.role("trend", "1d")
+        trigger_tf = config.timeframes.role("trigger", "4h")
+        support_lookback = int(config.param("support_lookback", 30))
+        span = max(
+            cls.EMA_SLOW * TIMEFRAME_SECONDS[trend_tf],
+            (support_lookback + 10) * TIMEFRAME_SECONDS[trigger_tf],
+        )
+        return market_span_to_calendar(span)
 
     async def on_event(
         self,
@@ -151,6 +171,6 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
         return fed is not None and fed > 0 and boj is not None and boj < 0
 
     def _trend_up(self, ctx: StrategyContext, symbol: str, trend_tf: str) -> bool:
-        fast = ctx.indicators.ema(symbol, trend_tf, 20)
-        slow = ctx.indicators.ema(symbol, trend_tf, 50)
+        fast = ctx.indicators.ema(symbol, trend_tf, self.EMA_FAST)
+        slow = ctx.indicators.ema(symbol, trend_tf, self.EMA_SLOW)
         return fast is not None and slow is not None and fast > slow

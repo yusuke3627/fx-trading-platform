@@ -12,9 +12,9 @@ re-run writes nothing new. A pass whose bucket has not ended yet stops at two
 index seeks, so holding no state does not mean re-reading the day at the poll
 rate. `ON CONFLICT (symbol, timeframe, start_at) DO
 NOTHING` makes the write idempotent; that also means a bar written wrong can
-never be corrected, which is why a candle whose bucket opened before the span
-that was read is dropped rather than persisted from the quotes that survived
-the cut.
+never be corrected, which is why a first pass begins at the first bucket
+boundary its read fully covers rather than persisting a candle assembled from
+part of one.
 
 **What market_bars is.** These rows are the LIVE series: each candle as it
 could be known in real time, from the ticks that had actually arrived when it
@@ -77,14 +77,16 @@ class BarService:
         """
         now = self._clock.now()
         stored = self._bars.known_before(symbol, timeframe, now, 1)
-        # close_time is the next bucket's start, so a resumed fold begins on a
-        # boundary and no candle is entered halfway. A cold start has no such
-        # boundary to resume from and cuts the series wherever the lookback
-        # lands.
-        since = stored[-1].close_time if stored else now - COLD_START_LOOKBACK
+        if stored:
+            # close_time is the next bucket's start, so the fold begins on a
+            # boundary and no candle is entered halfway.
+            since = stored[-1].close_time
+        else:
+            since = self._cold_start(symbol, timeframe, now)
+            if since is None:
+                return 0
 
-        pending = self._pending_bucket(symbol, timeframe, since, now)
-        if pending is None:
+        if not self._a_bucket_has_closed(symbol, timeframe, since, now):
             return 0
 
         builder = BarBuilder(symbol, timeframe)
@@ -94,21 +96,37 @@ class BarService:
             if bar is not None:
                 completed.append(bar)
 
-        # Only a bucket that opened before the window is suspect: the quotes
-        # that started it are outside the read, so its candle is not the one
-        # the market printed. A bucket that opened inside the window is whole,
-        # and dropping it would leave `since` where it was — the next pass
-        # would re-read the same span and discard the same candle, which at 1d
-        # means all day.
-        if pending < since and completed:
-            completed = completed[1:]
         return self._bars.insert_many(completed) if completed else 0
 
-    def _pending_bucket(
+    def _cold_start(self, symbol: str, timeframe: str, now: datetime) -> datetime | None:
+        """Where a first pass begins folding, or None with nothing to read.
+
+        The bucket the oldest readable quote falls in can be cut from either
+        side — by the lookback bound, or by the start of the series itself when
+        collection began partway through it. Neither cut shows in the candle
+        that comes out: an OHLC missing its morning looks like any other, and
+        ON CONFLICT DO NOTHING means it could never be corrected. Beginning at
+        the next boundary gives that bucket up instead.
+
+        Skipping it is also what lets the pass make progress. Folding it and
+        discarding the result afterwards would leave the resume point where it
+        was, so the next pass would re-read the same span to discard the same
+        candle again — at 1d, until a second bucket closes.
+        """
+        first = self._ticks.earliest_known_after(
+            symbol, now, now - COLD_START_LOOKBACK
+        )
+        if first is None:
+            return None
+        start = bucket_start(first.time, timeframe)
+        if first.time == start:
+            return start
+        return start + timedelta(seconds=TIMEFRAME_SECONDS[timeframe])
+
+    def _a_bucket_has_closed(
         self, symbol: str, timeframe: str, since: datetime, now: datetime
-    ) -> datetime | None:
-        """The oldest bucket a fold from `since` would publish, or None while
-        there is nothing to publish.
+    ) -> bool:
+        """Whether folding from `since` could produce anything.
 
         Two index seeks in place of the window read. A pass rebuilds from the
         last stored bar, so without this check the long timeframes re-read
@@ -123,14 +141,13 @@ class BarService:
         """
         first = self._ticks.earliest_known_after(symbol, now, since)
         if first is None:
-            return None
-        start = bucket_start(first.time, timeframe)
-        end = start + timedelta(seconds=TIMEFRAME_SECONDS[timeframe])
+            return False
+        end = bucket_start(first.time, timeframe) + timedelta(
+            seconds=TIMEFRAME_SECONDS[timeframe]
+        )
         # The same proof BarBuilder needs: a broker timestamp past the bucket's
         # end, which no later quote can fall back behind.
-        if self._ticks.earliest_known_after(symbol, now, end) is None:
-            return None
-        return start
+        return self._ticks.earliest_known_after(symbol, now, end) is not None
 
     def run(self, symbol: str, timeframes: list[str], interval_seconds: float) -> None:
         while True:

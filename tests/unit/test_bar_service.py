@@ -64,11 +64,26 @@ def test_bars_are_folded_from_the_stored_ticks():
     assert all(b.timeframe == "1m" for b in bars.bars)
 
 
+def test_a_series_that_begins_mid_bucket_does_not_publish_that_bucket():
+    # Collection started at noon with no backfill behind it, so the day's
+    # candle would be missing its morning. Nothing in the OHLC would show
+    # that, and the write can never be corrected.
+    ticks = FakeTickRepository(
+        [
+            make_tick("158.840", "158.844", time=at(hours=h), received_at=at(hours=h))
+            for h in (12, 18, 24, 36, 48)
+        ]
+    )
+    bars = FakeBarRepository()
+    service = BarService(ticks, bars, clock=FixedClock(at(hours=48)))
+
+    assert service.build_once("USDJPY", "1d") == 1
+    assert [b.start for b in bars.bars] == [at(days=1)]
+
+
 def test_a_candle_whose_bucket_opened_before_the_window_is_dropped():
-    # The cold-start lookback lands wherever it lands, and the quotes that
-    # opened the bucket it cut into are outside the read. The write is
-    # idempotent and can never be corrected, so the candle folded from what
-    # survived the cut is not persisted at all.
+    # The other cut: the lookback bound lands wherever it lands, and the
+    # quotes that opened the bucket it fell inside are outside the read.
     ticks = FakeTickRepository(
         [
             make_tick("158.840", "158.844", time=at(seconds=s), received_at=at(seconds=s))

@@ -386,7 +386,9 @@ class BacktestEngine:
         # Replay-visible quotes only: the conversion service reads the same
         # market, so sizing can never use a rate that was not yet known.
         conversion = MarketQuoteConversionService(
-            market, max_quote_age_seconds=self._risk_config.quote_max_age_seconds
+            market,
+            [self._spec],
+            max_quote_age_seconds=self._risk_config.quote_max_age_seconds,
         )
         simulator = ExecutionSimulator(self._costs, self._spec, self._seed, self._mode)
         broker = SimulatedBroker(simulator, clock)

@@ -55,7 +55,7 @@ def engine(
     return RiskEngine(
         config,
         FixedClock(),
-        MarketQuoteConversionService(market or InMemoryMarketData()),
+        MarketQuoteConversionService(market or InMemoryMarketData(), [usdjpy_spec()]),
     )
 
 

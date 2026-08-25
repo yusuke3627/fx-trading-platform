@@ -109,10 +109,12 @@ def build(
     return ShadowRunner(
         runner=StrategyRunner([binding]),
         portfolio=PortfolioManager(
-            ledger, clock, MarketQuoteConversionService(market)
+            ledger, clock, MarketQuoteConversionService(market, [usdjpy_spec()])
         ),
         ledger=ledger,
-        risk=RiskEngine(risk_config, clock, MarketQuoteConversionService(market)),
+        risk=RiskEngine(
+            risk_config, clock, MarketQuoteConversionService(market, [usdjpy_spec()])
+        ),
         risk_config=risk_config,
         market=market,
         snapshots=snapshot_store,

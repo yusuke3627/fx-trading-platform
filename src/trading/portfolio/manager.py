@@ -81,15 +81,17 @@ class PortfolioManager:
                 purpose=ConversionPurpose.RISK_INCREASING,
             ).money.amount
         except ConversionError:
-            # 換算 rate なしでは安全に size できない = intent を出さない
-            # （fail-close、ADR-009）。stop 距離不明と同じ「size 不能」扱い。
-            # reject 理由の記録は RiskEngine 側の同一 fail-close が担う。
-            return []
-        risk_budget = sizing.equity * sizing.max_risk_per_trade_pct / Decimal(100)
-        raw_quantity = risk_budget / loss_per_unit
-        quantity = (raw_quantity // sizing.volume_step) * sizing.volume_step
-        if quantity <= 0:
-            return []
+            # 換算 rate なしでは安全に size できないが、intent 自体は消さない:
+            # size 未定（target_quantity=None）のまま RiskEngine へ流し、同じ
+            # fail-close が reject code（CONVERSION_RATE_*）を決定記録に残す。
+            # 反転時の CLOSE はリスク削減であり、換算欠損で止めない（ADR-010）。
+            quantity = None
+        else:
+            risk_budget = sizing.equity * sizing.max_risk_per_trade_pct / Decimal(100)
+            raw_quantity = risk_budget / loss_per_unit
+            quantity = (raw_quantity // sizing.volume_step) * sizing.volume_step
+            if quantity <= 0:
+                return []
 
         current = self._ledger.position(signal.strategy_id, signal.symbol)
         if current is None or current.quantity == 0:
@@ -108,7 +110,7 @@ class PortfolioManager:
         signal: StrategySignal,
         sizing: SizingInput,
         action: PositionAction,
-        quantity: Decimal,
+        quantity: Decimal | None,
     ) -> PositionIntent:
         stop_offset = signal.stop_distance_pips * sizing.pip_size
         if signal.desired_direction is PositionDirection.LONG:

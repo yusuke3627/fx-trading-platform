@@ -376,7 +376,7 @@ def main() -> None:
     # 換算も市場と同じ stored series を読む: sizing の quote 鮮度制約と
     # risk config の quote_max_age を一致させる。
     conversion = MarketQuoteConversionService(
-        market, max_quote_age_seconds=config.risk.quote_max_age_seconds
+        market, [instrument], max_quote_age_seconds=config.risk.quote_max_age_seconds
     )
     store = InMemoryFeatureStore()
     features = StoredFeatureSource(

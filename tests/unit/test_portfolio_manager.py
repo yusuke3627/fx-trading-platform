@@ -1,7 +1,7 @@
 from decimal import Decimal
 from uuid import uuid4
 
-from tests.support import T0, FixedClock, make_tick
+from tests.support import T0, FixedClock, make_tick, usdjpy_spec
 from trading.data.market import InMemoryMarketData
 from trading.domain.money import Currency
 from trading.domain.position import PositionAction, PositionDirection, VirtualPosition
@@ -52,7 +52,7 @@ def manager_with(
     return PortfolioManager(
         ledger,
         FixedClock(),
-        MarketQuoteConversionService(market or InMemoryMarketData()),
+        MarketQuoteConversionService(market or InMemoryMarketData(), [usdjpy_spec()]),
     )
 
 
@@ -111,12 +111,33 @@ def test_usd_quote_loss_is_converted_before_sizing():
     assert intents[0].target_quantity != Decimal(250_000)
 
 
-def test_no_conversion_quote_means_no_intent():
-    # USDJPY quote が無ければ EURUSD は size できない（fail-close、ADR-009）。
+def test_no_conversion_quote_emits_an_unsized_intent_for_risk_to_reject():
+    # USDJPY quote が無ければ size できないが、intent は消さない: size 未定の
+    # まま RiskEngine へ届き、CONVERSION_RATE_* が決定記録に残る（ADR-009）。
     intents = manager_with().intents_from_signal(
         make_signal(symbol="EURUSD", stop_pips="20"), eurusd_sizing()
     )
-    assert intents == []
+    assert len(intents) == 1
+    assert intents[0].action is PositionAction.OPEN
+    assert intents[0].target_quantity is None
+
+
+def test_conversion_failure_keeps_the_reversal_close():
+    # 反転シグナル時に換算が失敗しても、既存 position の CLOSE は生成される
+    # （ADR-010: リスク削減は換算欠損で止めない）。抑止されるのは新規 OPEN の
+    # size だけで、それも size 未定 intent として RiskEngine の判定に委ねる。
+    held_long = VirtualPosition(
+        strategy_id="test_strategy",
+        symbol="EURUSD",
+        direction=PositionDirection.LONG,
+        quantity=Decimal(1000),
+        as_of=T0,
+    )
+    intents = manager_with(held_long).intents_from_signal(
+        make_signal(symbol="EURUSD", stop_pips="20"), eurusd_sizing()
+    )
+    assert [i.action for i in intents] == [PositionAction.CLOSE, PositionAction.OPEN]
+    assert intents[1].target_quantity is None
 
 
 def test_same_direction_becomes_increase():

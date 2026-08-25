@@ -28,7 +28,7 @@ jobs:
       - name: Run pytest
         run: pytest -q
 
-  migration-check:
+  integration:
     runs-on: ubuntu-latest
 
     services:
@@ -46,8 +46,17 @@ jobs:
         ports:
           - 5432:5432
 
+    env:
+      TRADING_DB_DSN: postgresql://postgres:postgres@localhost:5432/trading_test
+
     steps:
       - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
 
       - name: Apply migrations
         env:
@@ -57,3 +66,15 @@ jobs:
             echo "applying $f"
             psql -h localhost -U postgres -d trading_test -v ON_ERROR_STOP=1 -f "$f"
           done
+
+      - name: Install dependencies
+        run: pip install -e '.[dev,db]'
+
+      # Integration tests skip themselves when TRADING_DB_DSN is unset, and a
+      # skipped suite is green. Connecting here first turns a broken DSN into a
+      # failure instead of a silently empty run.
+      - name: Verify the database is reachable
+        run: python -c "import os, psycopg; psycopg.connect(os.environ['TRADING_DB_DSN']).close()"
+
+      - name: Run integration tests
+        run: pytest tests/integration -q

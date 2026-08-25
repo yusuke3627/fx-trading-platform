@@ -128,6 +128,29 @@ def test_the_window_starts_at_since(repos):
     assert [t.time for t in window] == [at(minutes=5), at(minutes=9)]
 
 
+def test_the_same_quote_twice_is_stored_once(repos):
+    # Re-ingesting a range is the normal way to fill a gap, so insert_many
+    # reports what it actually added rather than what it was handed.
+    ticks, _, symbol = repos
+    quote = make_tick("158.840", "158.844", time=at(minutes=1), symbol=symbol)
+
+    assert store(ticks, [quote]) == 1
+    assert store(ticks, [quote]) == 0
+
+
+def test_a_different_price_at_the_same_instant_is_kept(repos):
+    # The uniqueness key includes bid/ask: a repeated event_time carrying a
+    # different price is a genuine second quote within that second, not a
+    # duplicate to discard.
+    ticks, _, symbol = repos
+
+    first = make_tick("158.840", "158.844", time=at(minutes=1), symbol=symbol)
+    second = make_tick("158.841", "158.845", time=at(minutes=1), symbol=symbol)
+
+    assert store(ticks, [first]) == 1
+    assert store(ticks, [second]) == 1
+
+
 def test_a_bar_round_trips_through_the_database(repos):
     _, bars, symbol = repos
     # ADR-005: the candle sits on the broker's clock, known_at on ours, so

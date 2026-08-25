@@ -192,3 +192,20 @@ def test_no_conversion_instruments_means_no_cross_currency_path():
         service.convert(
             USD_100, Currency.JPY, now=T0, purpose=ConversionPurpose.MONITORING
         )
+
+
+def test_non_finite_quote_age_limit_rejected_at_construction():
+    # NaN / inf の上限は age > max が恒偽になり staleness fail-close が消える。
+    for bad in (float("nan"), float("inf"), -1.0):
+        with pytest.raises(ValueError):
+            MarketQuoteConversionService(
+                InMemoryMarketData(), max_quote_age_seconds=bad
+            )
+
+
+def test_negative_or_non_finite_haircut_rejected_at_construction():
+    for bad in (Decimal(-1), Decimal("NaN"), Decimal("Infinity")):
+        with pytest.raises(ValueError):
+            MarketQuoteConversionService(
+                InMemoryMarketData(), stale_monitoring_haircut_pct=bad
+            )

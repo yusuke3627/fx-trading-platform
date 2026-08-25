@@ -11,6 +11,7 @@ risk domain は生の conversion rate を扱わない: 換算はこのサービ�
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
@@ -115,6 +116,21 @@ class MarketQuoteConversionService:
         max_quote_age_seconds: float = 5.0,
         stale_monitoring_haircut_pct: Decimal = Decimal(1),
     ) -> None:
+        # 設定境界の検証: 非有限の age 上限は staleness 判定を恒偽にし、負の
+        # haircut は stale 時の評価を縮める。どちらも fail-close 契約を静かに
+        # 無効化するため、構築時点で拒否する。
+        if not math.isfinite(max_quote_age_seconds) or max_quote_age_seconds < 0:
+            raise ValueError(
+                f"max_quote_age_seconds must be finite and >= 0: {max_quote_age_seconds}"
+            )
+        if (
+            not stale_monitoring_haircut_pct.is_finite()
+            or stale_monitoring_haircut_pct < 0
+        ):
+            raise ValueError(
+                "stale_monitoring_haircut_pct must be finite and >= 0: "
+                f"{stale_monitoring_haircut_pct}"
+            )
         self._market = market
         self._max_quote_age_seconds = max_quote_age_seconds
         self._stale_monitoring_haircut_pct = stale_monitoring_haircut_pct

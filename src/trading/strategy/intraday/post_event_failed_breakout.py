@@ -32,7 +32,10 @@ from trading.strategy.base import Strategy, StrategyContext, StrategyHorizon
 
 class PostEventFailedBreakoutStrategy(Strategy):
     strategy_id = "post_event_failed_breakout"
-    strategy_version = "0.1.0"
+    # 0.2.0: the macro gates read the US2Y proxies and the BOJ statement score
+    # instead of the expectation-series features nothing produced. Recorded
+    # signals from either side of that change must not compare as one strategy.
+    strategy_version = "0.2.0"
     horizon = StrategyHorizon.INTRADAY
 
     async def on_event(

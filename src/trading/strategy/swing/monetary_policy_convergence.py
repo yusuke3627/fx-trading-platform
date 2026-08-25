@@ -28,7 +28,10 @@ from trading.strategy.base import Strategy, StrategyContext, StrategyHorizon
 
 class MonetaryPolicyConvergenceStrategy(Strategy):
     strategy_id = "monetary_policy_convergence"
-    strategy_version = "0.1.0"
+    # 0.2.0: the fundamental gate reads statement scores instead of the
+    # expectation-path features nothing produced. Recorded signals from either
+    # side of that change must not compare as one strategy.
+    strategy_version = "0.2.0"
     horizon = StrategyHorizon.SWING
 
     async def on_event(

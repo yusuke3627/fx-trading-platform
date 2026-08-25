@@ -14,7 +14,7 @@
 # 暦が痩せている間はサイズが絞られたままになる。
 covers:
   since: 2026-07-01T00:00:00+00:00
-  until: 2026-08-01T00:00:00+00:00
+  until: 2027-01-01T00:00:00+00:00
 
 meetings:
   - bank: FED
@@ -38,3 +38,46 @@ meetings:
     explicit_future_hike_language: false
     verified: false  # 8対1（1名が25bp利上げ提案）は research note 転記。公式と要照合
     source_uri: https://www.boj.or.jp/mopo/mpmdeci/index.htm
+
+  # --- 以下は予定のみの登録（結果未転記） ---
+  # 日程の一次資料: FED は FRB 公式カレンダー、BOJ は 2025-07-31 公表の
+  # 「2026年の金融政策決定会合等の日程」PDF。8 月は両行とも会合なし。
+  # 結果フィールド（rate_change_bp / dissents 等）は既定値のままなので、
+  # 各会合の statement 公表後すみやかに実結果を転記して verified を立てる。
+  # 転記が遅れると、公表時刻以降は「据え置き・反対票ゼロ」として採点される。
+
+  - bank: FED
+    decision_date: 2026-09-16
+    statement_published_at: 2026-09-16T18:00:00+00:00  # 14:00 EDT
+    verified: false
+    source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - bank: BOJ
+    decision_date: 2026-09-18
+    statement_published_at: 2026-09-18T06:00:00+00:00  # 15:00 JST（保守置き）
+    verified: false
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: FED
+    decision_date: 2026-10-28
+    statement_published_at: 2026-10-28T18:00:00+00:00  # 14:00 EDT（米夏時間は 11/1 まで）
+    verified: false
+    source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - bank: BOJ
+    decision_date: 2026-10-30
+    statement_published_at: 2026-10-30T06:00:00+00:00  # 15:00 JST（保守置き・展望レポート回）
+    verified: false
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: FED
+    decision_date: 2026-12-09
+    statement_published_at: 2026-12-09T19:00:00+00:00  # 14:00 EST（冬時間）
+    verified: false
+    source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - bank: BOJ
+    decision_date: 2026-12-18
+    statement_published_at: 2026-12-18T06:00:00+00:00  # 15:00 JST（保守置き）
+    verified: false
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf

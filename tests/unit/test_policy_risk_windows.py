@@ -50,9 +50,19 @@ def test_a_configured_window_grades_against_the_shipped_meetings():
     calendar = central_bank_calendar(config)
 
     assert calendar is not None
-    # The meeting file is edited by hand; what matters here is that the
-    # configured window reached the calendar, not which dates are in it.
-    assert calendar.mode_for(StrategyHorizon.SCALP, T0) in set(EventRiskMode)
+    # T0 is the Fed decision instant recorded in the shipped file, inside the
+    # coverage it declares.
+    assert calendar.mode_for(StrategyHorizon.SCALP, T0) is EventRiskMode.HALT
+
+
+def test_the_shipped_calendar_claims_nothing_beyond_its_coverage():
+    # The file records July 2026 and says so. A year later it has nothing to
+    # offer, and risk falls back to its configured default rather than reading
+    # the silence as quiet.
+    calendar = central_bank_calendar(load_config("shadow"))
+
+    assert calendar is not None
+    assert calendar.mode_for(StrategyHorizon.SCALP, T0 + timedelta(days=365)) is None
 
 
 def test_a_single_meeting_becomes_one_window():

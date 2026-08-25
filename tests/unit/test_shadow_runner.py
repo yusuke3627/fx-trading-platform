@@ -41,9 +41,11 @@ from trading.strategy.base import (
 )
 
 ACCOUNT = "Test-Broker Demo:10000001"
-# A calendar that knows the schedule and finds nothing near, as opposed to
+# The span these tests operate in, declared as recorded.
+COVERED = (at(days=-1), at(days=60))
+# A calendar that knows the schedule and finds nothing near — as opposed to
 # None, which means the schedule is not known at all.
-NO_WINDOWS = EventRiskCalendar([])
+NO_WINDOWS = EventRiskCalendar([], COVERED)
 
 
 class SignallingStrategy(Strategy):
@@ -297,7 +299,9 @@ def test_a_central_bank_window_halts_the_scalp_horizon():
             StrategyHorizon.SWING: EventRiskMode.REDUCED,
         },
     )
-    runner = build(**quote_and_account(), event_risk=EventRiskCalendar([window]))
+    runner = build(
+        **quote_and_account(), event_risk=EventRiskCalendar([window], COVERED)
+    )
 
     (result,) = runner.evaluate_once().decisions
 
@@ -319,7 +323,9 @@ def test_between_recorded_windows_entries_are_not_event_blocked():
             actions={StrategyHorizon.SCALP: EventRiskMode.HALT},
         )
 
-    calendar = EventRiskCalendar([decision_at(at(hours=-5)), decision_at(at(hours=5))])
+    calendar = EventRiskCalendar(
+        [decision_at(at(hours=-5)), decision_at(at(hours=5))], COVERED
+    )
     runner = build(**quote_and_account(), event_risk=calendar)
 
     (result,) = runner.evaluate_once().decisions
@@ -340,7 +346,8 @@ def test_beyond_the_recorded_calendar_the_configured_default_applies():
     )
     runner = build(
         **quote_and_account(),
-        event_risk=EventRiskCalendar([far_off]),
+        # Recorded only around that distant decision; now is outside it.
+        event_risk=EventRiskCalendar([far_off], (at(days=28), at(days=32))),
         event_mode_default=EventRiskMode.HALT,
     )
 

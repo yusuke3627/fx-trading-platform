@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from trading.data.policy.meetings import PolicyMeeting, load_meetings
+from trading.data.policy.meetings import PolicyMeeting, load_coverage, load_meetings
 from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 
 if TYPE_CHECKING:
@@ -30,11 +30,19 @@ def central_bank_calendar(config: AppConfig) -> EventRiskCalendar | None:
     calendar instead would claim every instant is quiet, which is the opposite
     of what an absent schedule tells you. Both the replay engine and the live
     runner go through here so the two cannot disagree about that.
+
+    The coverage the file declares travels with the windows. A file that
+    claims nothing produces a calendar that answers nothing, which keeps an
+    unstated span from reading as a recorded one.
     """
     settings = config.event_risk.get(CENTRAL_BANK_CLUSTER)
     if settings is None:
         return None
-    return EventRiskCalendar(central_bank_windows(load_meetings(), settings))
+    coverage = load_coverage()
+    return EventRiskCalendar(
+        central_bank_windows(load_meetings(), settings),
+        (coverage.since, coverage.until) if coverage else None,
+    )
 
 
 def central_bank_windows(

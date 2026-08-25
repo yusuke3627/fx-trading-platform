@@ -106,7 +106,10 @@ def test_a_central_bank_window_blocks_entries_in_replay():
     )
 
     halted = run_slice(
-        STRESS_SCENARIOS["normal"], event_risk=EventRiskCalendar([window])
+        STRESS_SCENARIOS["normal"],
+        event_risk=EventRiskCalendar(
+            [window], (DATASET_START - timedelta(days=1), DATASET_START + timedelta(days=60))
+        ),
     )
 
     assert halted.fills == []
@@ -127,7 +130,12 @@ def test_a_replay_beyond_the_recorded_calendar_falls_back_to_the_default():
     )
 
     with_calendar = run_slice(
-        STRESS_SCENARIOS["normal"], event_risk=EventRiskCalendar([far_off])
+        STRESS_SCENARIOS["normal"],
+        # Recorded only around that distant decision; the dataset predates it.
+        event_risk=EventRiskCalendar(
+            [far_off],
+            (DATASET_START + timedelta(days=28), DATASET_START + timedelta(days=32)),
+        ),
     )
     without = run_slice(STRESS_SCENARIOS["normal"])
 

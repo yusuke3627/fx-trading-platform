@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DEFAULT_MEETINGS_PATH = Path("config/policy_meetings.yaml")
 
@@ -51,6 +51,45 @@ class PolicyMeeting(BaseModel):
         if value.tzinfo is None:
             raise ValueError("statement_published_at must be timezone-aware")
         return value
+
+
+class MeetingCoverage(BaseModel):
+    """The span the meeting file claims to be complete over.
+
+    Not the range of the meetings it lists: that only says how far somebody
+    has written. A file backfilled in pieces can hold January and December
+    with nothing in between, and the gap is unrecorded rather than quiet —
+    telling the two apart is what this exists for.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    since: datetime
+    until: datetime
+
+    @field_validator("since", "until")
+    @classmethod
+    def _aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("coverage bounds must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def _ordered(self) -> MeetingCoverage:
+        if self.until < self.since:
+            raise ValueError("coverage until must not precede since")
+        return self
+
+
+def load_coverage(path: Path | str = DEFAULT_MEETINGS_PATH) -> MeetingCoverage | None:
+    """What the file says it covers, or None when it makes no claim.
+
+    None means the schedule is unknown everywhere, so risk falls back to its
+    configured default rather than reading an unstated span as quiet.
+    """
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    covers = raw.get("covers")
+    return MeetingCoverage.model_validate(covers) if covers else None
 
 
 def load_meetings(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[PolicyMeeting]:

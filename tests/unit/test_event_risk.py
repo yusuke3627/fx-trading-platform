@@ -3,6 +3,10 @@ from trading.domain.risk import EventRiskMode
 from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 from trading.strategy.base import StrategyHorizon
 
+# What the source file would claim to be complete over. Declared, never
+# inferred from where the windows happen to sit.
+COVERS = (at(days=0), at(days=60))
+
 
 def cluster_window() -> EventRiskWindow:
     # FOMC + BOJ back-to-back: one independent risk state, not a sum.
@@ -20,38 +24,43 @@ def cluster_window() -> EventRiskWindow:
     )
 
 
-def test_normal_between_windows_the_calendar_covers():
-    # Between two recorded clusters the schedule IS known, and known to be
-    # quiet.
-    later = cluster_window().model_copy(
-        update={"first_event_at": at(days=40), "last_event_at": at(days=43)}
+def calendar(*windows: EventRiskWindow, covers=COVERS) -> EventRiskCalendar:
+    return EventRiskCalendar(list(windows), covers)
+
+
+def test_normal_inside_the_covered_span_with_no_window_active():
+    # The schedule is recorded here and recorded as quiet, which is a
+    # different statement from having no record at all.
+    assert (
+        calendar(cluster_window()).mode_for(StrategyHorizon.SCALP, at(days=20))
+        is EventRiskMode.NORMAL
     )
-    calendar = EventRiskCalendar([cluster_window(), later])
-
-    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=25)) is EventRiskMode.NORMAL
 
 
-def test_nothing_is_claimed_beyond_what_the_calendar_covers():
-    # The meeting file reaches as far as somebody has recorded. Past its last
-    # window the answer is not "quiet" but "not written down", and the caller
-    # falls back to its configured default rather than being told all is well.
-    calendar = EventRiskCalendar([cluster_window()])
+def test_nothing_is_claimed_outside_the_covered_span():
+    # Past what the file says it covers, the answer is "not written down".
+    # The caller falls back to its configured default rather than being told
+    # all is well.
+    known = calendar(cluster_window())
 
-    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=15)) is None
-    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=7)) is None
+    assert known.mode_for(StrategyHorizon.SCALP, at(days=61)) is None
+    assert known.mode_for(StrategyHorizon.SCALP, at(days=-1)) is None
 
 
-def test_an_empty_calendar_covers_nothing():
-    calendar = EventRiskCalendar([])
+def test_a_calendar_claiming_nothing_answers_nothing():
+    # A source that declares no coverage cannot be read as quiet anywhere,
+    # however many windows it happens to carry.
+    unclaimed = EventRiskCalendar([cluster_window()])
 
-    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=1)) is None
+    assert unclaimed.mode_for(StrategyHorizon.SCALP, at(days=11)) is None
 
 
 def test_pre_and_post_hours_extend_the_window():
-    calendar = EventRiskCalendar([cluster_window()])
-    assert calendar.mode_for(StrategyHorizon.SCALP, at(days=8, hours=1)) is EventRiskMode.HALT
+    known = calendar(cluster_window())
+
+    assert known.mode_for(StrategyHorizon.SCALP, at(days=8, hours=1)) is EventRiskMode.HALT
     assert (
-        calendar.mode_for(StrategyHorizon.INTRADAY, at(days=13, hours=20))
+        known.mode_for(StrategyHorizon.INTRADAY, at(days=13, hours=20))
         is EventRiskMode.REDUCED
     )
 
@@ -65,8 +74,10 @@ def test_most_severe_mode_wins_across_overlapping_windows():
         post_hours=2,
         actions={StrategyHorizon.INTRADAY: EventRiskMode.HALT},
     )
-    calendar = EventRiskCalendar([cluster_window(), surprise])
-    assert calendar.mode_for(StrategyHorizon.INTRADAY, at(days=11)) is EventRiskMode.HALT
+
+    known = calendar(cluster_window(), surprise)
+
+    assert known.mode_for(StrategyHorizon.INTRADAY, at(days=11)) is EventRiskMode.HALT
 
 
 def test_horizon_without_action_defaults_to_normal():
@@ -78,5 +89,7 @@ def test_horizon_without_action_defaults_to_normal():
         post_hours=1,
         actions={StrategyHorizon.SCALP: EventRiskMode.HALT},
     )
-    calendar = EventRiskCalendar([window])
-    assert calendar.mode_for(StrategyHorizon.SWING, at(days=1)) is EventRiskMode.NORMAL
+
+    known = calendar(window)
+
+    assert known.mode_for(StrategyHorizon.SWING, at(days=1)) is EventRiskMode.NORMAL

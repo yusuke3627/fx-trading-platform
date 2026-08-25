@@ -15,6 +15,7 @@ from trading.strategy.base import (
     LIVE_ELIGIBLE_STATUSES,
     Strategy,
     StrategyContext,
+    StrategyHorizon,
     StrategyStatus,
 )
 
@@ -38,6 +39,10 @@ class CollectedSignal:
     signal: StrategySignal
     status: StrategyStatus
     live_eligible: bool
+    # Which horizon produced it. Event risk grades per horizon (scalp halts
+    # around a central-bank decision while swing only reduces), and the signal
+    # itself does not carry one — the strategy class does.
+    horizon: StrategyHorizon
 
 
 class StrategyRunner:
@@ -65,6 +70,7 @@ class StrategyRunner:
                     signal=s,
                     status=binding.status,
                     live_eligible=binding.live_eligible,
+                    horizon=binding.strategy.horizon,
                 )
                 for s in signals
             )

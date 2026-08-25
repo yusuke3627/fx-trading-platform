@@ -24,6 +24,7 @@ from trading.backtest.data import dataset_hash, synthetic_ticks
 from trading.backtest.engine import ENGINE_VERSION, BacktestEngine, ScriptedStrategy
 from trading.backtest.report import write_report
 from trading.config import load_config
+from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.instrument import FillingMode, InstrumentSpec
 from trading.domain.position import PositionDirection
 from trading.strategy.base import StrategyConfig
@@ -116,6 +117,9 @@ def main() -> None:
             enabled=True,
             instruments=[symbol],
         ),
+        # The same calendar live grades against. A replay that ignored it would
+        # let a strategy trade through a decision the live path refuses.
+        event_risk=central_bank_calendar(config),
     )
     result = engine.run(ticks)
 

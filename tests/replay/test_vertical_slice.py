@@ -17,6 +17,7 @@ from trading.backtest.engine import BacktestEngine, BacktestResult, ScriptedStra
 from trading.domain.position import PositionDirection
 from trading.domain.risk import EventRiskMode
 from trading.risk.engine import RiskConfig
+from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 from trading.strategy.base import StrategyConfig
 
 DATASET_START = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
@@ -43,6 +44,7 @@ def build_engine(
     plan: dict[int, PositionDirection] | None = None,
     stop_distance_pips: Decimal = Decimal(200),
     risk_config: RiskConfig | None = None,
+    event_risk: EventRiskCalendar | None = None,
 ) -> BacktestEngine:
     resolved_plan = (
         plan
@@ -62,6 +64,7 @@ def build_engine(
             enabled=True,
             instruments=["USDJPY"],
         ),
+        event_risk=event_risk,
     )
 
 
@@ -73,6 +76,7 @@ def run_slice(
     plan: dict[int, PositionDirection] | None = None,
     stop_distance_pips: Decimal = Decimal(200),
     risk_config: RiskConfig | None = None,
+    event_risk: EventRiskCalendar | None = None,
 ) -> BacktestResult:
     ticks = synthetic_ticks(
         spec=usdjpy_spec(), start=DATASET_START, count=count, seed=seed
@@ -83,8 +87,48 @@ def run_slice(
         plan=plan,
         stop_distance_pips=stop_distance_pips,
         risk_config=risk_config,
+        event_risk=event_risk,
     )
     return engine.run(ticks)
+
+
+def test_a_central_bank_window_blocks_entries_in_replay():
+    # Replay grades against the same calendar live does. Ignoring it here
+    # would report trades the live path refuses, which is the one difference
+    # between the two that research cannot see.
+    window = EventRiskWindow(
+        name="dual_central_bank_cluster",
+        first_event_at=DATASET_START,
+        last_event_at=DATASET_START,
+        pre_hours=48,
+        post_hours=24,
+        actions={ScriptedStrategy.horizon: EventRiskMode.HALT},
+    )
+
+    halted = run_slice(
+        STRESS_SCENARIOS["normal"], event_risk=EventRiskCalendar([window])
+    )
+
+    assert halted.fills == []
+    assert any("EVENT_MODE_ALLOWS_ENTRY" in codes for _, codes in halted.risk_rejections)
+
+
+def test_a_calendar_with_no_active_window_leaves_replay_unchanged():
+    far_off = EventRiskWindow(
+        name="dual_central_bank_cluster",
+        first_event_at=DATASET_START + timedelta(days=30),
+        last_event_at=DATASET_START + timedelta(days=30),
+        pre_hours=48,
+        post_hours=24,
+        actions={ScriptedStrategy.horizon: EventRiskMode.HALT},
+    )
+
+    with_calendar = run_slice(
+        STRESS_SCENARIOS["normal"], event_risk=EventRiskCalendar([far_off])
+    )
+    without = run_slice(STRESS_SCENARIOS["normal"])
+
+    assert with_calendar.fills == without.fills
 
 
 def test_same_dataset_config_seed_reproduces_identical_runs():

@@ -19,6 +19,7 @@ from tests.support import (
 from trading.data.market.stored import StoredMarketData
 from trading.domain.account import AccountMode
 from trading.domain.position import PositionDirection
+from trading.domain.risk import EventRiskMode
 from trading.execution.mt5.adapter import MT5ConnectionError
 from trading.execution.mt5.mapper import account_key_from_info
 from trading.indicators import IndicatorService
@@ -29,6 +30,7 @@ from trading.live.shadow import ShadowRunner, broker_identity, describe
 from trading.portfolio.manager import PortfolioManager
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.engine import RiskConfig, RiskEngine
+from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 from trading.runner import StrategyBinding, StrategyRunner
 from trading.strategy.base import (
     Strategy,
@@ -39,6 +41,9 @@ from trading.strategy.base import (
 )
 
 ACCOUNT = "Test-Broker Demo:10000001"
+# A calendar that knows the schedule and finds nothing near, as opposed to
+# None, which means the schedule is not known at all.
+NO_WINDOWS = EventRiskCalendar([])
 
 
 class SignallingStrategy(Strategy):
@@ -79,6 +84,8 @@ def build(
     trading_enabled=False,
     source_clock=None,
     decisions=None,
+    event_risk=NO_WINDOWS,
+    event_mode_default=EventRiskMode.NORMAL,
 ):
     clock = CycleClock(source_clock or FixedClock(at(minutes=1)))
     market = StoredMarketData(
@@ -92,7 +99,9 @@ def build(
         strategy=(strategy or SignallingStrategy)(),
         context=_context(clock, market, ledger, enabled),
     )
-    risk_config = RiskConfig(trading_enabled=trading_enabled)
+    risk_config = RiskConfig(
+        trading_enabled=trading_enabled, event_mode_default=event_mode_default
+    )
     return ShadowRunner(
         runner=StrategyRunner([binding]),
         portfolio=PortfolioManager(ledger, clock),
@@ -102,6 +111,7 @@ def build(
         market=market,
         snapshots=snapshot_store,
         decisions=decisions or FakeDecisionRepository(),
+        event_risk=event_risk,
         clock=clock,
         account_id=ACCOUNT,
         account_mode=AccountMode.HEDGING,
@@ -270,6 +280,59 @@ def test_a_broker_clock_offset_does_not_age_the_quote():
     (result,) = runner.evaluate_once().decisions
 
     assert "QUOTE_FRESH" not in result.decision.reject_codes
+
+
+def test_a_central_bank_window_halts_the_scalp_horizon():
+    # The signalling strategy is SCALP, and the configuration says scalp halts
+    # around a central-bank decision. Without the calendar wired, event_mode
+    # stayed at the configured default and the halt never applied.
+    window = EventRiskWindow(
+        name="dual_central_bank_cluster",
+        first_event_at=at(hours=2),
+        last_event_at=at(hours=2),
+        pre_hours=48,
+        post_hours=24,
+        actions={
+            StrategyHorizon.SCALP: EventRiskMode.HALT,
+            StrategyHorizon.SWING: EventRiskMode.REDUCED,
+        },
+    )
+    runner = build(**quote_and_account(), event_risk=EventRiskCalendar([window]))
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert "EVENT_MODE_ALLOWS_ENTRY" in result.decision.reject_codes
+
+
+def test_outside_every_window_entries_are_not_event_blocked():
+    far_off = EventRiskWindow(
+        name="dual_central_bank_cluster",
+        first_event_at=at(days=30),
+        last_event_at=at(days=30),
+        pre_hours=48,
+        post_hours=24,
+        actions={StrategyHorizon.SCALP: EventRiskMode.HALT},
+    )
+    runner = build(**quote_and_account(), event_risk=EventRiskCalendar([far_off]))
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert "EVENT_MODE_ALLOWS_ENTRY" not in result.decision.reject_codes
+
+
+def test_without_a_calendar_the_configured_default_applies():
+    # "No schedule is known" is not "nothing is near". With no calendar the
+    # configured default decides, and replacing it with NORMAL would turn an
+    # unknown schedule into a clear one.
+    runner = build(
+        **quote_and_account(),
+        event_risk=None,
+        event_mode_default=EventRiskMode.HALT,
+    )
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert "EVENT_MODE_ALLOWS_ENTRY" in result.decision.reject_codes
 
 
 def test_the_configured_trading_switch_reaches_the_decision():

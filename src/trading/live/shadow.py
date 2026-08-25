@@ -39,7 +39,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.position import PositionDirection
-from trading.domain.risk import KillSwitchLevel, RiskDecision
+from trading.domain.risk import EventRiskMode, KillSwitchLevel, RiskDecision
 from trading.domain.signal import StrategySignal
 from trading.execution.mt5 import mapper
 from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
@@ -47,8 +47,10 @@ from trading.live.clock import CycleClock
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
+from trading.risk.event_risk import EventRiskCalendar
 from trading.runner import StrategyRunner
 from trading.storage.repository import AccountSnapshotRepository, DecisionRepository
+from trading.strategy.base import StrategyHorizon
 
 DEFAULT_INTERVAL_SECONDS = 5.0
 
@@ -99,6 +101,7 @@ class ShadowRunner:
         market: MarketDataService,
         snapshots: AccountSnapshotRepository,
         decisions: DecisionRepository,
+        event_risk: EventRiskCalendar | None,
         clock: CycleClock,
         account_id: str,
         account_mode: AccountMode,
@@ -112,6 +115,7 @@ class ShadowRunner:
         self._market = market
         self._snapshots = snapshots
         self._decisions = decisions
+        self._event_risk = event_risk
         self._clock = clock
         self._account_id = account_id
         self._account_mode = account_mode
@@ -188,7 +192,7 @@ class ShadowRunner:
                 continue
             for intent in intents:
                 context = self._pretrade_context(
-                    signal, intent, quote, account, history, now
+                    signal, intent, quote, account, history, now, item.horizon
                 )
                 decision = self._risk.evaluate(intent, context)
                 # Written before it is reported: the record is the point of a
@@ -214,8 +218,20 @@ class ShadowRunner:
                 print(describe(result))
             time.sleep(interval_seconds)
 
+    def _event_mode(self, horizon: StrategyHorizon, now: datetime) -> EventRiskMode:
+        """Graded per horizon: a central-bank decision halts scalp entries
+        while swing only reduces.
+
+        With no calendar the configured default applies. That is not the same
+        as NORMAL — NORMAL means "the schedule is known and nothing is near",
+        and an unknown schedule should not read that way.
+        """
+        if self._event_risk is None:
+            return self._risk_config.event_mode_default
+        return self._event_risk.mode_for(horizon, now)
+
     def _pretrade_context(
-        self, signal, intent, quote, account, history, now
+        self, signal, intent, quote, account, history, now, horizon
     ) -> PreTradeContext:
         symbol = signal.symbol
         return PreTradeContext(
@@ -237,7 +253,7 @@ class ShadowRunner:
             # the day a fill does arrive, they follow it.
             open_positions_count=len(self._ledger.positions_for_symbol(symbol)),
             symbol_exposure_units=self._ledger.net_exposure(symbol),
-            event_mode=self._risk_config.event_mode_default,
+            event_mode=self._event_mode(horizon, now),
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,
             account_mode=self._account_mode,
@@ -293,6 +309,7 @@ def main() -> None:
 
     from trading.config import load_config
     from trading.data.market.stored import StoredMarketData
+    from trading.data.policy.risk_windows import central_bank_calendar
     from trading.live.wiring import build_runner, traded_symbols
 
     parser = argparse.ArgumentParser(description="Shadow strategy runner")
@@ -349,6 +366,7 @@ def main() -> None:
         market=market,
         snapshots=PostgresAccountSnapshotRepository(conn),
         decisions=PostgresDecisionRepository(conn),
+        event_risk=central_bank_calendar(config),
         clock=clock,
         account_id=account_id,
         account_mode=AccountMode(config.broker.expected_account_mode),

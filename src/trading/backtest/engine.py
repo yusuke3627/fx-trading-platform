@@ -43,7 +43,7 @@ from trading.domain.intent import PositionIntent
 from trading.domain.market import Bar, Tick
 from trading.domain.order import ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
-from trading.domain.risk import KillSwitchLevel
+from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.domain.signal import StrategySignal
 from trading.indicators import IndicatorService
 from trading.intelligence.features import InMemoryFeatureStore
@@ -52,6 +52,7 @@ from trading.oms.service import OMSService
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
+from trading.risk.event_risk import EventRiskCalendar
 from trading.strategy.base import (
     Strategy,
     StrategyConfig,
@@ -257,6 +258,7 @@ class BacktestEngine:
         strategy_config: StrategyConfig,
         initial_equity: Decimal = Decimal(1_000_000),
         account_mode: AccountMode = AccountMode.HEDGING,
+        event_risk: EventRiskCalendar | None = None,
     ) -> None:
         if account_mode is not AccountMode.HEDGING:
             raise ValueError("the vertical slice runs on HEDGING only")
@@ -270,6 +272,10 @@ class BacktestEngine:
         self._strategy_config = strategy_config
         self._initial_equity = initial_equity
         self._mode = account_mode
+        # Optional: a research run over a period whose meeting calendar is not
+        # loaded grades on the configured default rather than pretending every
+        # instant was quiet.
+        self._event_risk = event_risk
 
     def run(self, ticks: list[Tick]) -> BacktestResult:
         ordered = sorted(ticks, key=lambda t: t.known_time)
@@ -702,9 +708,10 @@ class BacktestEngine:
             open_positions_count=len(w.simulator.open_positions(symbol))
             + pending_count,
             symbol_exposure_units=w.broker.net_exposure(symbol) + pending_signed,
-            # No event calendar in the slice: the configured default mode
-            # applies to every evaluation.
-            event_mode=self._risk_config.event_mode_default,
+            # Graded per horizon against the same calendar live uses. A run
+            # given no calendar falls back to the configured default, which is
+            # what "no schedule is known" means — not "no event is near".
+            event_mode=self._event_mode(w, w.clock.now()),
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,
             account_mode=self._mode,
@@ -713,6 +720,11 @@ class BacktestEngine:
             stop_distance_pips=signal.stop_distance_pips,
             requested_quantity=intent.target_quantity or Decimal(0),
         )
+
+    def _event_mode(self, w: _Wiring, now: datetime) -> EventRiskMode:
+        if self._event_risk is None:
+            return self._risk_config.event_mode_default
+        return self._event_risk.mode_for(w.strategy.horizon, now)
 
     def _unrealized(self, state: _RunState, simulator: ExecutionSimulator) -> Decimal:
         """Unrealized PnL of the open book, marked at the executable side of

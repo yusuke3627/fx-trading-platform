@@ -108,6 +108,13 @@ class MarketTickRepository(Protocol):
     # would answer "no price" for a market that simply is not quoting.
     def latest_known_before(self, symbol: str, t: datetime) -> Tick | None: ...
 
+    # The first row known_before would return. Answers "is there a quote at or
+    # after this broker time" without reading the series it would have to scan
+    # to find out.
+    def earliest_known_after(
+        self, symbol: str, t: datetime, since: datetime
+    ) -> Tick | None: ...
+
 
 class MarketBarRepository(Protocol):
     def insert_many(self, bars: Sequence[Bar]) -> int: ...

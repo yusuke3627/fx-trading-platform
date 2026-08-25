@@ -10,13 +10,10 @@ from tests.support import (
     FakeTickRepository,
     FixedClock,
     at,
+    make_bar,
     make_tick,
 )
-from trading.data.market.bar_service import (
-    BarService,
-    configured_timeframes,
-    foldable_timeframes,
-)
+from trading.data.market.bar_service import BarService, configured_timeframes
 from trading.domain.market import TIMEFRAME_SECONDS
 
 
@@ -37,6 +34,21 @@ def make_service(ticks, clock=None):
     tick_store = FakeTickRepository(ticks)
     bar_store = FakeBarRepository()
     return BarService(tick_store, bar_store, clock=clock or FixedClock(at(hours=1))), bar_store
+
+
+class CountingTicks(FakeTickRepository):
+    """Counts window reads. What a pass costs when it cannot publish anything
+    is the point of the check under test, and the count is the only way to see
+    it from outside.
+    """
+
+    def __init__(self, ticks):
+        super().__init__(ticks)
+        self.window_reads = 0
+
+    def known_before(self, symbol, t, since):
+        self.window_reads += 1
+        return super().known_before(symbol, t, since)
 
 
 def test_bars_are_folded_from_the_stored_ticks():
@@ -104,11 +116,62 @@ def test_bars_carry_the_broker_clock_for_the_candle_and_ours_for_visibility():
     assert bar.known_at == at(minutes=2)
 
 
-def test_session_anchored_timeframes_are_reported_not_silently_skipped():
-    foldable, refused = foldable_timeframes(["1m", "1h", "4h", "1d"])
+def test_a_pass_whose_bucket_is_still_open_does_not_read_the_series():
+    # Half a day of quotes into a 1d bucket: folding them could only rebuild
+    # what is already there. Reading them to find that out — every interval,
+    # growing as the day goes on — is the cost this avoids.
+    ticks = CountingTicks(
+        [
+            make_tick("158.840", "158.844", time=at(hours=h), received_at=at(hours=h))
+            for h in range(12)
+        ]
+    )
+    service = BarService(ticks, FakeBarRepository(), clock=FixedClock(at(hours=12)))
 
-    assert foldable == ["1m", "1h"]
-    assert refused == ["4h", "1d"]
+    assert service.build_once("USDJPY", "1d") == 0
+    assert ticks.window_reads == 0
+
+
+def test_an_empty_stretch_after_the_last_bar_does_not_force_a_read():
+    # The stored bar ends where a market closure begins, so `since` sits on a
+    # stretch the series skipped entirely. The bucket actually waiting is the
+    # one quoting reopened into, and it is still open — deciding from `since`
+    # instead would re-read everything since the reopen, every interval.
+    ticks = CountingTicks(
+        [
+            make_tick(
+                "158.840",
+                "158.844",
+                time=at(days=3, hours=h),
+                received_at=at(days=3, hours=h),
+            )
+            for h in range(12)
+        ]
+    )
+    stored = FakeBarRepository([make_bar("1", "1", "1", "1", timeframe="1d")])
+    service = BarService(ticks, stored, clock=FixedClock(at(days=3, hours=12)))
+
+    assert service.build_once("USDJPY", "1d") == 0
+    assert ticks.window_reads == 0
+
+
+def test_the_series_is_read_once_the_pending_bucket_has_ended():
+    # The counterpart: a quote past the bucket's end is the proof BarBuilder
+    # needs, so the pass goes ahead and publishes.
+    ticks = CountingTicks(
+        [
+            make_tick("158.840", "158.844", time=at(hours=h), received_at=at(hours=h))
+            for h in (0, 12, 24)
+        ]
+    )
+    stored = FakeBarRepository(
+        [make_bar("1", "1", "1", "1", start=at(days=-1), timeframe="1d")]
+    )
+    service = BarService(ticks, stored, clock=FixedClock(at(hours=24)))
+
+    assert service.build_once("USDJPY", "1d") == 1
+    assert ticks.window_reads == 1
+    assert stored.bars[-1].start == T0
 
 
 def test_configured_timeframes_are_collected_across_strategies():
@@ -138,8 +201,8 @@ def _config_with(strategies):
     )
 
 
-@pytest.mark.parametrize("timeframe", ["1m", "5m", "15m", "1h"])
-def test_every_foldable_timeframe_lands_on_its_own_grid(timeframe):
+@pytest.mark.parametrize("timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"])
+def test_every_timeframe_lands_on_its_own_grid(timeframe):
     seconds = TIMEFRAME_SECONDS[timeframe]
     ticks = [
         make_tick(
@@ -150,9 +213,15 @@ def test_every_foldable_timeframe_lands_on_its_own_grid(timeframe):
         )
         for i in range(8)
     ]
-    service, bars = make_service(ticks, clock=FixedClock(T0 + timedelta(days=1)))
+    # Long enough for every quote to be visible whatever the timeframe: a
+    # fixed horizon would hide the later ones for 4h and 1d and leave nothing
+    # to assert on.
+    service, bars = make_service(
+        ticks, clock=FixedClock(T0 + timedelta(seconds=seconds * 4))
+    )
 
     service.build_once("USDJPY", timeframe)
 
+    assert bars.bars
     for bar in bars.bars:
         assert int(bar.start.timestamp()) % seconds == 0

@@ -112,6 +112,14 @@ class FakeTickRepository:
         visible = self._visible(symbol, t)
         return visible[-1] if visible else None
 
+    def earliest_known_after(
+        self, symbol: str, t: datetime, since: datetime
+    ) -> Tick | None:
+        # Stops at the first match rather than building the window, mirroring
+        # the LIMIT 1 the real query relies on.
+        visible = self._visible(symbol, t)
+        return next((tick for tick in visible if tick.time >= since), None)
+
     def _visible(self, symbol: str, t: datetime) -> list[Tick]:
         return sorted(
             (tick for tick in self.ticks if tick.symbol == symbol and tick.known_time <= t),

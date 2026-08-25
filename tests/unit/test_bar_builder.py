@@ -2,8 +2,6 @@
 from datetime import timedelta
 from decimal import Decimal
 
-import pytest
-
 from tests.support import T0, at, make_tick
 from trading.data.market.bars import BarBuilder
 from trading.domain.market import Bar
@@ -229,18 +227,30 @@ def test_a_quote_from_a_later_bucket_closes_the_open_bar_and_seeds_its_own():
     assert second.known_at == at(minutes=4)
 
 
-def test_timeframes_hanging_off_the_broker_session_anchor_are_refused():
-    # 4h and 1d candles start at the trade server's midnight, not UTC, so
-    # folding them from ticks here would disagree with copy_rates. Both are
-    # configured in config/base.yaml, so this must fail loudly rather than
-    # produce a plausible-looking misaligned series.
-    for timeframe in ("4h", "1d"):
-        with pytest.raises(ValueError, match="session anchor"):
-            BarBuilder("USDJPY", timeframe)
+def test_four_hour_bars_fold_on_the_trade_servers_own_grid():
+    # tick.time is the server's wall clock labelled UTC (ADR-005), so the
+    # bucket a quote joins is the server's candle without an anchor having to
+    # be known. 05:30 belongs to the 04:00 candle, not to one opened wherever
+    # the first quote happened to land.
+    builder = BarBuilder("USDJPY", "4h")
+    assert builder.on_tick(make_tick("158.840", "158.844", time=at(hours=5, minutes=30))) is None
 
-    # Everything dividing an hour is unaffected by a whole-hour server offset.
-    for timeframe in ("1m", "5m", "15m", "30m", "1h"):
-        assert BarBuilder("USDJPY", timeframe).on_tick(make_tick("158.840", "158.844")) is None
+    bar = builder.on_tick(make_tick("158.900", "158.904", time=at(hours=8)))
+    assert bar is not None
+    assert bar.start == at(hours=4)
+    assert bar.close_time == at(hours=8)
+
+
+def test_daily_bars_fold_on_the_trade_servers_midnight():
+    builder = BarBuilder("USDJPY", "1d")
+    for hour in (0, 13, 23):
+        assert builder.on_tick(make_tick("158.840", "158.844", time=at(hours=hour))) is None
+
+    bar = builder.on_tick(make_tick("158.900", "158.904", time=at(days=1)))
+    assert bar is not None
+    assert bar.start == T0
+    assert bar.close_time == at(days=1)
+    assert bar.tick_volume == 3
 
 
 def test_a_quote_stamped_exactly_on_the_boundary_belongs_to_the_next_bar():

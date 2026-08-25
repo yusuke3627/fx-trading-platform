@@ -128,6 +128,33 @@ def test_the_window_starts_at_since(repos):
     assert [t.time for t in window] == [at(minutes=5), at(minutes=9)]
 
 
+def test_earliest_after_is_the_first_row_of_the_window(repos):
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick(
+                "158.840",
+                "158.844",
+                time=at(minutes=minute),
+                received_at=at(minutes=minute),
+                symbol=symbol,
+            )
+            for minute in (0, 5, 9)
+        ],
+    )
+
+    at_ten = at(minutes=10)
+    assert ticks.earliest_known_after(symbol, at_ten, at(minutes=5)).time == at(minutes=5)
+    # Both bounds still apply: a quote before `since`, and one that has not
+    # been received yet, are equally invisible.
+    assert ticks.earliest_known_after(symbol, at_ten, at(minutes=10)) is None
+    assert ticks.earliest_known_after(symbol, at(minutes=1), at(minutes=5)) is None
+
+    window = ticks.known_before(symbol, at_ten, at(minutes=5))
+    assert ticks.earliest_known_after(symbol, at_ten, at(minutes=5)) == window[0]
+
+
 def test_the_same_quote_twice_is_stored_once(repos):
     # Re-ingesting a range is the normal way to fill a gap, so insert_many
     # reports what it actually added rather than what it was handed.

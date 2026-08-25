@@ -140,3 +140,49 @@ def test_warmup_ticks_build_state_but_are_never_evaluated():
     # Ticks 0..199 are warm-up (known times before evaluate_from); the tick
     # AT the boundary already evaluates.
     assert len(readings) == 400
+
+
+class WideTickWindowStrategy(Strategy):
+    """Requests a tick window far beyond the default retention horizon."""
+
+    strategy_id = "wide_tick_window_probe"
+    strategy_version = "0.0.1"
+    horizon = StrategyHorizon.SCALP
+
+    @classmethod
+    def tick_window_seconds(cls, config) -> float:
+        return float(config.param("window_seconds", 0))
+
+    def __init__(self, counts: list[int]) -> None:
+        self._counts = counts
+
+    async def on_event(self, event, context):
+        window = float(context.config.param("window_seconds", 0))
+        self._counts.append(len(context.market.ticks("USDJPY", window)))
+        return []
+
+
+def test_tick_retention_follows_the_strategy_configuration():
+    # 7200s is beyond the default 3600s horizon; the engine must size
+    # retention from the strategy's declared window instead of refusing the
+    # read mid-replay.
+    counts: list[int] = []
+    engine = BacktestEngine(
+        risk_config=RiskConfig(
+            trading_enabled=False, event_mode_default=EventRiskMode.NORMAL
+        ),
+        spec=usdjpy_spec(),
+        costs=CostModel(),
+        seed=7,
+        strategy_factory=lambda: WideTickWindowStrategy(counts),
+        strategy_config=StrategyConfig(
+            strategy_id=WideTickWindowStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+            parameters={"window_seconds": 7200},
+        ),
+    )
+
+    engine.run(reconstructed(archived_ticks(600), OFFSET))
+
+    assert counts[-1] == 600

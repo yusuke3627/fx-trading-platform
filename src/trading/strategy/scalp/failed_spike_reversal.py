@@ -42,6 +42,12 @@ class FailedSpikeReversalStrategy(Strategy):
         span = (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf] + window_seconds * 3
         return market_span_to_calendar(span)
 
+    @classmethod
+    def tick_window_seconds(cls, config: StrategyConfig) -> float:
+        # _evaluate reads spike_window x 3 of raw ticks; the momentum window
+        # (spike_window / 2) sits inside it.
+        return float(config.param("spike_window_seconds", 60)) * 3
+
     async def on_event(
         self,
         event: EventEnvelope,

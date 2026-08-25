@@ -140,6 +140,14 @@ class Strategy(ABC):
         period's opening instant."""
         return timedelta(0)
 
+    @classmethod
+    def tick_window_seconds(cls, config: StrategyConfig) -> float:
+        """The widest raw-tick window on_event may request from
+        market.ticks() under this configuration. The replay engine sizes its
+        tick retention from it, so a re-tuned window is retained instead of
+        refused mid-replay."""
+        return 0.0
+
     @abstractmethod
     async def on_event(
         self,

@@ -4,13 +4,14 @@ InMemoryMarketData re-filters its whole history on every read because
 arbitrary preloads may hold data the clock has not reached. The engine never
 produces that shape: it advances the clock to a tick's known time BEFORE
 adding it, and a bar is added at the instant of the tick that closed it, so
-everything stored here is already visible and arrives in known-time order.
-That contract makes every read O(window) instead of O(history) — the
-difference between a recorded scalp week replaying in minutes and never
-finishing (reads per tick times a scan of all ticks so far is quadratic).
+everything stored here is already visible. That contract makes every read
+O(window) instead of O(history) — the difference between a recorded scalp
+week replaying in minutes and never finishing (reads per tick times a scan
+of all ticks so far is quadratic). A late-received quote whose broker time
+is older than the newest is handled by add_tick keeping the window sorted.
 
-Only the engine may feed this class. Anything preloading history or adding
-out of clock order needs InMemoryMarketData and its visibility filter.
+Only the engine may feed this class. Anything preloading history the clock
+has not reached needs InMemoryMarketData and its visibility filter.
 """
 from __future__ import annotations
 
@@ -35,8 +36,21 @@ class ReplayMarketData:
 
     def add_tick(self, tick: Tick) -> None:
         window = self._ticks.setdefault(tick.symbol, deque())
-        window.append(tick)
-        cutoff = tick.time - self._horizon
+        # The engine feeds in known-time order, which is broker-time order
+        # except when a late-received old quote replays. Inserting that one
+        # back at its broker position keeps the deque sorted on (time,
+        # arrival) — the stored series' (event_time, id) order — so the
+        # window scan stays a tail read and latest_tick is never rewound to
+        # the late old price. The scan is O(1) for the in-order case and
+        # reaches only as far back as the quote is late.
+        position = len(window)
+        while position > 0 and window[position - 1].time > tick.time:
+            position -= 1
+        if position == len(window):
+            window.append(tick)
+        else:
+            window.insert(position, tick)
+        cutoff = window[-1].time - self._horizon
         while window and window[0].time < cutoff:
             window.popleft()
 

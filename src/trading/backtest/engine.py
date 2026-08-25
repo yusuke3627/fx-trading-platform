@@ -32,7 +32,7 @@ from uuid import uuid4
 
 from trading.backtest.clock import Clock, ReplayClock
 from trading.backtest.costs import CostModel
-from trading.backtest.market import ReplayMarketData
+from trading.backtest.market import TICK_HORIZON_SECONDS, ReplayMarketData
 from trading.backtest.replay import ReplayEngine
 from trading.backtest.simulator import ExecutionSimulator
 from trading.data.features import ReplayFeatureTimeline
@@ -386,7 +386,16 @@ class BacktestEngine:
 
     def _wire(self, start: datetime) -> _Wiring:
         clock = ReplayClock(start)
-        market = ReplayMarketData()
+        strategy = self._strategy_factory()
+        # Retention must hold the widest tick window this configuration lets
+        # the strategy request, or a legitimately re-tuned window would be
+        # refused mid-replay.
+        market = ReplayMarketData(
+            tick_horizon_seconds=max(
+                TICK_HORIZON_SECONDS,
+                type(strategy).tick_window_seconds(self._strategy_config),
+            )
+        )
         market.set_instrument(self._spec)
         simulator = ExecutionSimulator(self._costs, self._spec, self._seed, self._mode)
         broker = SimulatedBroker(simulator, clock)
@@ -414,7 +423,7 @@ class BacktestEngine:
             ledger=ledger,
             portfolio=PortfolioManager(ledger, clock),
             risk=RiskEngine(self._risk_config, clock),
-            strategy=self._strategy_factory(),
+            strategy=strategy,
             context=StrategyContext(
                 clock=clock,
                 market=market,

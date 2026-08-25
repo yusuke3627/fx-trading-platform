@@ -49,3 +49,19 @@ def test_a_window_wider_than_the_horizon_is_refused():
 
     with pytest.raises(ValueError):
         market.ticks("USDJPY", 101)
+
+
+def test_a_late_old_quote_neither_rewinds_latest_nor_breaks_the_window():
+    # Reception order 0s, 60s, then a quote whose broker time is 30s — a
+    # reconnect replaying an old tick. It has to slot into broker order.
+    market = ReplayMarketData()
+    market.add_tick(tick(0))
+    market.add_tick(tick(60, bid="157.100"))
+    market.add_tick(tick(30, bid="157.050"))
+
+    assert market.latest_tick("USDJPY").time == T0 + timedelta(seconds=60)
+    assert [t.time for t in market.ticks("USDJPY", 60)] == [
+        T0,
+        T0 + timedelta(seconds=30),
+        T0 + timedelta(seconds=60),
+    ]

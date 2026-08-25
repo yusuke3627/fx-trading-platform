@@ -1,10 +1,10 @@
 """Tick -> Bar aggregation.
 
-Live MT5 serves bars directly (copy_rates); replay has only the bid/ask tick
-stream, so bars are folded from ticks here. The two have to agree candle for
-candle, which drives two decisions: OHLC follows the bid series MT5 charts FX
-on rather than the mid, and only timeframes whose grid is independent of the
-broker's session anchor are built at all (see BarBuilder).
+Every candle in this system is folded from the bid/ask tick stream: replay has
+nothing else, and live bar_service reads the same stored series. copy_rates is
+never called, so the two agree candle for candle by construction rather than by
+matching an external grid. OHLC follows the bid series MT5 charts FX on rather
+than the mid.
 """
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
-
-SECONDS_PER_HOUR = 3600
 
 
 @dataclass
@@ -69,16 +67,6 @@ def _fold(bucket: _Bucket, tick: Tick) -> None:
     bucket.known_at = max(bucket.known_at, tick.known_time)
 
 
-def is_foldable(timeframe: str) -> bool:
-    """Whether ticks alone can fold this timeframe.
-
-    Timeframes dividing one hour sit on a UTC grid that a whole-hour server
-    offset cannot move, so they agree with the broker's own candles without
-    knowing its anchor. 4h and 1d hang off the server's midnight and do not.
-    """
-    return SECONDS_PER_HOUR % TIMEFRAME_SECONDS[timeframe] == 0
-
-
 class BarBuilder:
     """Folds the ticks of one (symbol, timeframe) into completed bars.
 
@@ -87,25 +75,19 @@ class BarBuilder:
     the market has not printed yet. There is deliberately no flush(): an
     unfinished bucket has no completed bar to give.
 
-    Buckets sit on a UTC grid. That matches the broker for any timeframe
-    dividing one hour, because MT5 trade servers are offset from UTC by whole
-    hours; 4h and 1d candles instead hang off the server's own midnight, so
-    building them here would silently disagree with copy_rates. Those
-    timeframes are rejected rather than approximated - the anchor has to come
-    from the broker before they can be folded from ticks.
+    Buckets are floored on the epoch grid of tick.time, and tick.time is the
+    trade server's own wall clock labelled UTC (ADR-005). That grid is
+    therefore already the server's: a 1d bucket opens at the server's midnight
+    and a 4h bucket at its 00:00 / 04:00 / 08:00 ..., the boundaries the
+    terminal draws. There is no session anchor to configure, and nothing here
+    depends on how large the server's offset is or on when DST moves it,
+    because broker timestamps are never converted into our own time.
     """
 
     def __init__(self, symbol: str, timeframe: str) -> None:
-        seconds = TIMEFRAME_SECONDS[timeframe]
-        if not is_foldable(timeframe):
-            raise ValueError(
-                f"{timeframe} bars cannot be folded from ticks yet: their boundaries "
-                "follow the broker's session anchor, which the platform does not know. "
-                "Timeframes dividing one hour are anchor-independent and are supported."
-            )
         self._symbol = symbol
         self._timeframe = timeframe
-        self._seconds = seconds
+        self._seconds = TIMEFRAME_SECONDS[timeframe]
         self._bucket: _Bucket | None = None
 
     def on_tick(self, tick: Tick) -> Bar | None:

@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 
 from trading.backtest.clock import Clock, SystemClock
 from trading.data.cli import poll_interval
-from trading.data.market.bars import BarBuilder, is_foldable
+from trading.data.market.bars import BarBuilder
 from trading.domain.market import TIMEFRAME_SECONDS, Bar
 from trading.storage.repository import MarketBarRepository, MarketTickRepository
 
@@ -101,20 +101,6 @@ class BarService:
             time.sleep(interval_seconds)
 
 
-def foldable_timeframes(configured: list[str]) -> tuple[list[str], list[str]]:
-    """Split configured timeframes into the ones ticks can fold and the rest.
-
-    4h and 1d hang off the trade server's session anchor, which BarBuilder
-    refuses rather than approximate (issue #11). They are reported, not
-    silently dropped: a strategy configured for one of them would otherwise
-    wait forever for bars nobody is building.
-    """
-    foldable, refused = [], []
-    for timeframe in sorted(set(configured), key=lambda tf: TIMEFRAME_SECONDS[tf]):
-        (foldable if is_foldable(timeframe) else refused).append(timeframe)
-    return foldable, refused
-
-
 def configured_timeframes(config: AppConfig, symbol: str) -> list[str]:
     """Every timeframe any strategy declares for this symbol.
 
@@ -152,11 +138,9 @@ def main() -> None:
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")
 
-    timeframes, refused = foldable_timeframes(configured_timeframes(config, symbol))
-    if refused:
-        print(f"not folded from ticks (session-anchored, see issue #11): {refused}")
+    timeframes = configured_timeframes(config, symbol)
     if not timeframes:
-        raise SystemExit(f"no foldable timeframe configured for {symbol}")
+        raise SystemExit(f"no timeframe configured for {symbol}")
     print(f"building {timeframes} for {symbol}")
 
     # Imported here so the module stays unit-testable without the db extra.

@@ -12,11 +12,7 @@ from tests.support import (
     at,
     make_tick,
 )
-from trading.data.market.bar_service import (
-    BarService,
-    configured_timeframes,
-    foldable_timeframes,
-)
+from trading.data.market.bar_service import BarService, configured_timeframes
 from trading.domain.market import TIMEFRAME_SECONDS
 
 
@@ -104,13 +100,6 @@ def test_bars_carry_the_broker_clock_for_the_candle_and_ours_for_visibility():
     assert bar.known_at == at(minutes=2)
 
 
-def test_session_anchored_timeframes_are_reported_not_silently_skipped():
-    foldable, refused = foldable_timeframes(["1m", "1h", "4h", "1d"])
-
-    assert foldable == ["1m", "1h"]
-    assert refused == ["4h", "1d"]
-
-
 def test_configured_timeframes_are_collected_across_strategies():
     config = _config_with(
         {
@@ -138,8 +127,8 @@ def _config_with(strategies):
     )
 
 
-@pytest.mark.parametrize("timeframe", ["1m", "5m", "15m", "1h"])
-def test_every_foldable_timeframe_lands_on_its_own_grid(timeframe):
+@pytest.mark.parametrize("timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"])
+def test_every_timeframe_lands_on_its_own_grid(timeframe):
     seconds = TIMEFRAME_SECONDS[timeframe]
     ticks = [
         make_tick(
@@ -150,9 +139,15 @@ def test_every_foldable_timeframe_lands_on_its_own_grid(timeframe):
         )
         for i in range(8)
     ]
-    service, bars = make_service(ticks, clock=FixedClock(T0 + timedelta(days=1)))
+    # Long enough for every quote to be visible whatever the timeframe: a
+    # fixed horizon would hide the later ones for 4h and 1d and leave nothing
+    # to assert on.
+    service, bars = make_service(
+        ticks, clock=FixedClock(T0 + timedelta(seconds=seconds * 4))
+    )
 
     service.build_once("USDJPY", timeframe)
 
+    assert bars.bars
     for bar in bars.bars:
         assert int(bar.start.timestamp()) % seconds == 0

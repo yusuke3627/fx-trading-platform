@@ -24,10 +24,15 @@ class IndicatorService:
         self._bar_count = bar_count
 
     def atr(self, symbol: str, timeframe: str, period: int = 14) -> float | None:
-        return _atr(self._market.bars(symbol, timeframe, self._bar_count), period)
+        # The read follows the requested period: a configured period beyond
+        # the default window must widen the read, not silently starve the
+        # indicator into a permanent None.
+        count = max(self._bar_count, period + 1)
+        return _atr(self._market.bars(symbol, timeframe, count), period)
 
     def ema(self, symbol: str, timeframe: str, period: int) -> float | None:
-        closes = [float(b.close) for b in self._market.bars(symbol, timeframe, self._bar_count)]
+        count = max(self._bar_count, period + 1)
+        closes = [float(b.close) for b in self._market.bars(symbol, timeframe, count)]
         return _ema(closes, period)
 
     def vwap(

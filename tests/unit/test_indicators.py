@@ -105,3 +105,20 @@ def test_tick_momentum_sign():
     ] + [make_tick("100.100", "100.104", time=T0 + timedelta(seconds=5))]
     momentum = tick_momentum(ticks, window_seconds=10)
     assert momentum is not None and momentum > 0
+
+
+def test_service_read_follows_a_period_beyond_the_default_window():
+    # A configured atr_period past DEFAULT_BAR_COUNT must widen the read;
+    # a capped read would leave the indicator permanently None even with
+    # plenty of history stored.
+    from trading.data.market import InMemoryMarketData
+    from trading.indicators import DEFAULT_BAR_COUNT, IndicatorService
+
+    market = InMemoryMarketData()
+    period = DEFAULT_BAR_COUNT + 50
+    for bar in bars_from_closes([100.0 + 0.01 * i for i in range(period + 1)]):
+        market.add_bar(bar)
+    service = IndicatorService(market)
+
+    assert service.atr("USDJPY", "1m", period) is not None
+    assert service.ema("USDJPY", "1m", period) is not None

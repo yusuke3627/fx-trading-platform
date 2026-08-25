@@ -113,7 +113,7 @@ def test_a_row_another_worker_holds_is_skipped_not_waited_on(workers):
     # the same command — the same order, sent twice.
     worker, prefix = workers
     holder, holder_conn = worker()
-    other, _ = worker()
+    other, other_conn = worker()
     first, second = command(prefix, 1), command(prefix, 2)
     holder.insert(first)
     holder.insert(second)
@@ -121,6 +121,11 @@ def test_a_row_another_worker_holds_is_skipped_not_waited_on(workers):
         "SELECT id FROM execution_commands WHERE id = %s FOR UPDATE",
         (first.command_id,),
     )
+    # Should SKIP LOCKED ever be dropped from the claim, the query below waits
+    # on the held row instead of stepping past it — and the holder never
+    # commits, so it waits until the job is killed. The timeout makes that a
+    # failing test rather than a hung one.
+    other_conn.execute("SET lock_timeout = '2s'")
 
     claimed = other.claim_next("worker-b", 30, T0)
 

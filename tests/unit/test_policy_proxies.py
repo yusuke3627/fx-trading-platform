@@ -17,7 +17,7 @@ from trading.data.macro.registry import (
     period_from_date,
 )
 from trading.data.policy.features import latest_policy_score, us2y_features
-from trading.data.policy.meetings import PolicyMeeting, load_meetings
+from trading.data.policy.meetings import PolicyMeeting, load_coverage, load_meetings
 from trading.data.policy.scoring import (
     SCORING_VERSION,
     event_from_meeting,
@@ -135,6 +135,52 @@ def test_committed_seed_file_loads():
     meetings = load_meetings("config/policy_meetings.yaml")
     assert meetings, "seed file must contain at least one meeting"
     assert all(m.source_uri.startswith("https://") for m in meetings)
+
+
+def test_a_file_that_declares_no_coverage_claims_nothing(tmp_path):
+    # Absent coverage is not "covers everything": risk falls back to its
+    # configured default wherever the schedule is unstated.
+    path = tmp_path / "meetings.yaml"
+    path.write_text("meetings: []\n")
+
+    assert load_coverage(path) is None
+
+
+def test_coverage_bounds_must_be_ordered(tmp_path):
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+covers:
+  since: 2026-08-01T00:00:00+00:00
+  until: 2026-07-01T00:00:00+00:00
+meetings: []
+"""
+    )
+    with pytest.raises(ValueError, match="precede"):
+        load_coverage(path)
+
+
+def test_coverage_bounds_must_be_timezone_aware(tmp_path):
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+covers:
+  since: 2026-07-01 00:00:00
+  until: 2026-08-01T00:00:00+00:00
+meetings: []
+"""
+    )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        load_coverage(path)
+
+
+def test_the_committed_file_states_what_it_covers():
+    # Without this the shipped calendar answers nothing anywhere, and every
+    # configured halt would go unapplied while looking configured.
+    coverage = load_coverage("config/policy_meetings.yaml")
+
+    assert coverage is not None
+    assert coverage.since < coverage.until
 
 
 # ---------------------------------------------------------------------------

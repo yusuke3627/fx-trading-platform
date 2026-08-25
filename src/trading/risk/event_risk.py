@@ -37,11 +37,34 @@ class EventRiskWindow(BaseModel):
 
 
 class EventRiskCalendar:
-    def __init__(self, windows: list[EventRiskWindow]) -> None:
-        self._windows = windows
+    """The scheduled events a run knows about, and the span they describe.
 
-    def mode_for(self, horizon: StrategyHorizon, now: datetime) -> EventRiskMode:
-        """Most severe mode across all active windows; NORMAL when none."""
+    A calendar speaks only for the period its windows cover. The meeting file
+    is maintained by hand and reaches as far as somebody has recorded, so an
+    instant past its last window is not a quiet one — it is one nobody has
+    written down yet. Answering NORMAL there would turn a gap in the file into
+    a statement that nothing is happening, which is how a run ends up trading
+    through a decision it simply had not heard of.
+    """
+
+    def __init__(
+        self,
+        windows: list[EventRiskWindow],
+        covers: tuple[datetime, datetime] | None = None,
+    ) -> None:
+        self._windows = windows
+        # Declared by the source, never inferred from the windows. Where the
+        # windows happen to sit says how far somebody has written, not what is
+        # complete: a file backfilled in pieces can hold two distant clusters
+        # with an unrecorded year between them.
+        self._covers = covers
+
+    def mode_for(self, horizon: StrategyHorizon, now: datetime) -> EventRiskMode | None:
+        """Most severe mode across the active windows, NORMAL when the instant
+        is covered and none is active, and None when it falls outside what the
+        calendar claims to cover."""
+        if self._covers is None or not (self._covers[0] <= now <= self._covers[1]):
+            return None
         mode = EventRiskMode.NORMAL
         for w in self._windows:
             if not w.active_at(now):

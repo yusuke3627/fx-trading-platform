@@ -12,8 +12,9 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from trading.domain.risk import EventRiskMode
 from trading.risk.engine import RiskConfig
-from trading.strategy.base import StrategyConfig
+from trading.strategy.base import StrategyConfig, StrategyHorizon
 
 ENVIRONMENTS = ("backtest", "demo", "shadow", "micro_live", "production")
 
@@ -58,11 +59,26 @@ class MacroDataConfig(BaseModel):
 class EventRiskWindowSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    pre_hours: int = 24
-    post_hours: int = 12
-    scalp: str = "HALT"
-    intraday: str = "REDUCED"
-    swing: str = "REDUCED"
+    # A negative bound inverts the window — its start lands after its end, so
+    # it never activates and the configured halt quietly stops applying. Zero
+    # is meaningful (guard only from the announcement onward, or only up to
+    # it); negative is not.
+    pre_hours: int = Field(default=24, ge=0)
+    post_hours: int = Field(default=12, ge=0)
+    # Typed rather than free strings: a mode nobody recognises would otherwise
+    # reach EventRiskWindow.actions and grade as NORMAL — a halt configured and
+    # then silently not applied.
+    scalp: EventRiskMode = EventRiskMode.HALT
+    intraday: EventRiskMode = EventRiskMode.REDUCED
+    swing: EventRiskMode = EventRiskMode.REDUCED
+
+    def actions(self) -> dict[StrategyHorizon, EventRiskMode]:
+        """Per-horizon action, in the shape EventRiskWindow carries."""
+        return {
+            StrategyHorizon.SCALP: self.scalp,
+            StrategyHorizon.INTRADAY: self.intraday,
+            StrategyHorizon.SWING: self.swing,
+        }
 
 
 class InterventionRiskSettings(BaseModel):

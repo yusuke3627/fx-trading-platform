@@ -35,7 +35,9 @@ def repo():
 
     conn = connect(DSN)
     strategy_id = f"test_{uuid4().hex[:12]}"
-    yield PostgresDecisionRepository(conn), strategy_id
+    account = f"test-account-{uuid4().hex[:8]}"
+    other_account = f"test-account-{uuid4().hex[:8]}"
+    yield PostgresDecisionRepository(conn), strategy_id, account, other_account
     # Foreign keys run signal <- intent <- decision, so removal runs the other
     # way round.
     conn.execute(
@@ -101,15 +103,15 @@ def make_trail(strategy_id: str, *, protected: bool = True, signal=None):
 
 
 def only_ours(repo_and_id, limit: int = 50):
-    r, strategy_id = repo_and_id
-    return [t for t in r.recent(limit) if t[0].strategy_id == strategy_id]
+    r, _, account, _ = repo_and_id
+    return r.recent(account, limit)
 
 
 def test_a_trail_round_trips_through_the_database(repo):
-    r, strategy_id = repo
+    r, strategy_id, account, _ = repo
     signal, intent, decision = make_trail(strategy_id)
 
-    r.record(signal, intent, decision)
+    r.record(account, signal, intent, decision)
 
     (read,) = only_ours(repo)
     assert read == (signal, intent, decision)
@@ -118,10 +120,10 @@ def test_a_trail_round_trips_through_the_database(repo):
 def test_the_risk_checks_survive_the_json_column(repo):
     # checks is JSONB; a detail string and the passed flags have to come back
     # as they went in, or a recorded rejection cannot be explained later.
-    r, strategy_id = repo
+    r, strategy_id, account, _ = repo
     signal, intent, decision = make_trail(strategy_id)
 
-    r.record(signal, intent, decision)
+    r.record(account, signal, intent, decision)
 
     (_, _, read) = only_ours(repo)[0]
     assert [(c.name, c.passed, c.detail) for c in read.checks] == [
@@ -132,24 +134,40 @@ def test_the_risk_checks_survive_the_json_column(repo):
 
 def test_an_intent_without_protection_round_trips_as_none(repo):
     # An exit carries no protection, and the columns are nullable for it.
-    r, strategy_id = repo
+    r, strategy_id, account, _ = repo
     signal, intent, decision = make_trail(strategy_id, protected=False)
 
-    r.record(signal, intent, decision)
+    r.record(account, signal, intent, decision)
 
     (_, read, _) = only_ours(repo)[0]
     assert read.protection is None
 
 
+def test_another_accounts_trail_is_never_read(repo):
+    # An intent is sized from the account's equity and a decision is graded
+    # against its loss history, so a trail from another account is a different
+    # judgement about a different book.
+    r, strategy_id, account, other = repo
+    ours = make_trail(strategy_id)
+    theirs = make_trail(strategy_id)
+
+    r.record(other, *theirs)
+    r.record(account, *ours)
+
+    trails = only_ours(repo)
+
+    assert [t[0].signal_id for t in trails] == [ours[0].signal_id]
+
+
 def test_a_signal_shared_by_two_intents_is_stored_once(repo):
     # A direction flip yields CLOSE then OPEN from one signal. Both trails name
     # it, and the primary key is what keeps it a single row.
-    r, strategy_id = repo
+    r, strategy_id, account, _ = repo
     signal, first, first_decision = make_trail(strategy_id)
     _, second, second_decision = make_trail(strategy_id, signal=signal)
 
-    r.record(signal, first, first_decision)
-    r.record(signal, second, second_decision)
+    r.record(account, signal, first, first_decision)
+    r.record(account, signal, second, second_decision)
 
     trails = only_ours(repo)
     assert len(trails) == 2

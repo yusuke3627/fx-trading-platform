@@ -6,12 +6,22 @@
 -- live login mixes the two, and afterwards nothing tells them apart.
 -- account_snapshots was scoped the same way in 0005; there the consequence was
 -- a wrong calculation, here it is a record that cannot be read back.
---
--- The columns are NOT NULL without a default: nothing wrote these tables
--- before the shadow runner started recording, and it has not yet produced a
--- signal, so there is no row to backfill.
 
 BEGIN;
+
+-- Rows written before this migration carry no account, and nothing in them
+-- can supply one: the runner knew which account it was evaluating, the row
+-- does not. Putting a guessed account on a record whose entire point is to say
+-- which account a judgement was for would be worse than not having the record,
+-- so the earlier trail is removed rather than backfilled.
+--
+-- What that costs is the decisions recorded between the shadow runner gaining
+-- its store and this migration. Shadow evaluates every few seconds and nothing
+-- reads these rows yet, so recording resumes at once. Deletion follows the
+-- foreign keys in reverse.
+DELETE FROM risk_decisions;
+DELETE FROM position_intents;
+DELETE FROM strategy_signals;
 
 ALTER TABLE strategy_signals ADD COLUMN account_id TEXT NOT NULL;
 ALTER TABLE position_intents ADD COLUMN account_id TEXT NOT NULL;

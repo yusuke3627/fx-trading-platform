@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 
 from trading.backtest.clock import SystemClock
-from trading.data.policy.meetings import DEFAULT_MEETINGS_PATH, load_meetings
+from trading.data.policy.meetings import DEFAULT_MEETINGS_PATH, load_meetings, load_schedule
 from trading.data.policy.scoring import event_from_meeting
 
 
@@ -31,11 +31,16 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.env)
+
+    meetings = load_meetings(args.meetings)
+    # Validates the schedule: section too. Results transcribed onto a schedule
+    # entry instead of moved into meetings: must fail this daily run loudly —
+    # scoring only meetings would leave that meeting silently unscored forever.
+    load_schedule(args.meetings)
+
     dsn = os.environ.get(config.storage.dsn_env)
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")
-
-    meetings = load_meetings(args.meetings)
     clock = SystemClock()
     events = [event_from_meeting(meeting, clock) for meeting in meetings]
 

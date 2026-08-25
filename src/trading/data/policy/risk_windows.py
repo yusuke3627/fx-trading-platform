@@ -79,39 +79,38 @@ def central_bank_windows(
     than simply being added.
     """
     # A transcribed meeting published at one known instant; a scheduled one
-    # only bounds it. Both bounds join the clustering, so the window opens off
-    # the earliest a statement could land and closes off the latest — the
-    # uncertainty widens the window rather than shifting it.
-    times = sorted(
-        instant
+    # only bounds it. Each meeting enters the clustering as one indivisible
+    # span, so the publication uncertainty widens its window rather than
+    # shifting it — and can never split it, no matter how the span compares
+    # to pre + post.
+    spans = sorted(
+        (meeting.statement_published_at, meeting.statement_published_at)
+        if isinstance(meeting, PolicyMeeting)
+        else (meeting.earliest_published_at, meeting.latest_published_at)
         for meeting in meetings
-        for instant in (
-            (meeting.statement_published_at,)
-            if isinstance(meeting, PolicyMeeting)
-            else (meeting.earliest_published_at, meeting.latest_published_at)
-        )
     )
-    if not times:
+    if not spans:
         return []
 
     pre = timedelta(hours=settings.pre_hours)
     post = timedelta(hours=settings.post_hours)
-    clusters: list[list[datetime]] = [[times[0]]]
-    for event_at in times[1:]:
-        if event_at - pre <= clusters[-1][-1] + post:
-            clusters[-1].append(event_at)
+    clusters: list[tuple[datetime, datetime]] = [spans[0]]
+    for start, end in spans[1:]:
+        first, last = clusters[-1]
+        if start - pre <= last + post:
+            clusters[-1] = (first, max(last, end))
         else:
-            clusters.append([event_at])
+            clusters.append((start, end))
 
     actions = settings.actions()
     return [
         EventRiskWindow(
             name=CENTRAL_BANK_CLUSTER,
-            first_event_at=cluster[0],
-            last_event_at=cluster[-1],
+            first_event_at=first,
+            last_event_at=last,
             pre_hours=settings.pre_hours,
             post_hours=settings.post_hours,
             actions=actions,
         )
-        for cluster in clusters
+        for first, last in clusters
     ]

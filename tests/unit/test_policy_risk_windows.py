@@ -70,6 +70,19 @@ def test_an_uncertain_publication_time_widens_the_window_not_shifts_it():
     assert window.last_event_at == late
 
 
+def test_a_publication_interval_wider_than_the_padding_stays_one_window():
+    # A meeting is one span however its uncertainty compares to pre + post.
+    # Clustering the bounds as separate instants would split the window and
+    # grade the middle — where the statement can land — as NORMAL.
+    early = T0
+    late = T0 + timedelta(hours=200)
+
+    (window,) = central_bank_windows([scheduled("BOJ", early, late)], SETTINGS)
+
+    assert window.first_event_at == early
+    assert window.last_event_at == late
+
+
 def test_the_shipped_schedule_reaches_the_calendar():
     calendar = central_bank_calendar(load_config("shadow"))
 

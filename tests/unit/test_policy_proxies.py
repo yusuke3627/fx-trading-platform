@@ -16,6 +16,7 @@ from trading.data.macro.registry import (
     US_TREASURY_2Y_YIELD,
     period_from_date,
 )
+from trading.data.policy.collector import main as collector_main
 from trading.data.policy.features import latest_policy_score, us2y_features
 from trading.data.policy.meetings import (
     PolicyMeeting,
@@ -212,6 +213,29 @@ schedule:
     )
     with pytest.raises(ValueError, match="rate_change_bp"):
         load_schedule(path)
+
+
+def test_the_collector_validates_the_whole_file_before_scoring(tmp_path, monkeypatch):
+    # 日次 collector が meetings: しか読まないと、schedule: への書き足しは
+    # 本番で一度も検証されず、その会合は正常終了の裏で採点され続けない。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+schedule:
+  - bank: FED
+    decision_date: 2026-09-16
+    earliest_published_at: 2026-09-16T18:00:00+00:00
+    latest_published_at: 2026-09-16T18:00:00+00:00
+    rate_change_bp: 25
+    source_uri: https://example.invalid
+"""
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["collector", "--env", "demo", "--meetings", str(path)]
+    )
+
+    with pytest.raises(ValueError, match="rate_change_bp"):
+        collector_main()
 
 
 def test_committed_schedule_loads():

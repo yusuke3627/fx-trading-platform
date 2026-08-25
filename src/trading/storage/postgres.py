@@ -564,7 +564,9 @@ class PostgresMacroObservationRepository:
         # the number of genuinely new vintages the batch added.
         return cursor.rowcount
 
-    def known_before(self, series: str, t: datetime) -> Sequence[EconomicObservation]:
+    def known_before(
+        self, series: str, t: datetime, since: datetime
+    ) -> Sequence[EconomicObservation]:
         # id breaks ties when two vintages share a known_at (UUIDs order
         # arbitrarily but stably), keeping replay order planner-independent.
         rows = self._conn.execute(
@@ -572,10 +574,10 @@ class PostgresMacroObservationRepository:
             SELECT id, series, observation_period, value, unit, source,
                    source_uri, payload_hash, published_at, retrieved_at, known_at
             FROM macro_observations
-            WHERE series = %s AND known_at <= %s
+            WHERE series = %s AND known_at <= %s AND known_at > %s
             ORDER BY known_at, id
             """,
-            (series, t),
+            (series, t, since),
         ).fetchall()
         return [_row_to_observation(r) for r in rows]
 
@@ -658,17 +660,23 @@ class PostgresEventRepository:
         return cursor.rowcount == 1
 
     def known_before(
-        self, t: datetime, event_type: str | None = None
+        self,
+        t: datetime,
+        event_type: str | None = None,
+        since: datetime | None = None,
     ) -> Sequence[EventEnvelope]:
-        if event_type is None:
-            rows = self._conn.execute(
-                "SELECT * FROM events WHERE known_at <= %s ORDER BY known_at", (t,)
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM events WHERE known_at <= %s AND event_type = %s ORDER BY known_at",
-                (t, event_type),
-            ).fetchall()
+        conditions = ["known_at <= %s"]
+        params: list[Any] = [t]
+        if event_type is not None:
+            conditions.append("event_type = %s")
+            params.append(event_type)
+        if since is not None:
+            conditions.append("known_at > %s")
+            params.append(since)
+        rows = self._conn.execute(
+            f"SELECT * FROM events WHERE {' AND '.join(conditions)} ORDER BY known_at",
+            params,
+        ).fetchall()
         return [_row_to_event(r) for r in rows]
 
 

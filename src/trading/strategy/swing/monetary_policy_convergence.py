@@ -3,12 +3,16 @@
 Fundamental is a prior deciding which direction technical entries are taken
 in, never an immediate SELL trigger.
 
-Short: fundamental gate (Fed expected path down AND BOJ expected path up AND
-intervention risk non-low) + technical trigger on the trigger timeframe
-(lower high, support break, failed retest).
+The prior is read from what is actually measured — the mechanical scores of
+the latest BOJ and Fed statements — not from an expectations series nobody
+produces. A dovish Fed statement AND a hawkish BOJ statement AND non-low
+intervention risk open the short side; the reverse pair opens the long side
+(plus trend-timeframe uptrend restoration). Statement scores are a coarse,
+meeting-frequency proxy for the expected-path repricing the research frames
+this trade on; a market-implied path measure would replace them here.
 
-Long is re-prioritized only when Fed hawkish repricing + BOJ dovish repricing
-+ trend-timeframe uptrend restoration all hold.
+Short: fundamental gate + technical trigger on the trigger timeframe
+(lower high, support break, failed retest).
 """
 from __future__ import annotations
 
@@ -24,7 +28,10 @@ from trading.strategy.base import Strategy, StrategyContext, StrategyHorizon
 
 class MonetaryPolicyConvergenceStrategy(Strategy):
     strategy_id = "monetary_policy_convergence"
-    strategy_version = "0.1.0"
+    # 0.2.0: the fundamental gate reads statement scores instead of the
+    # expectation-path features nothing produced. Recorded signals from either
+    # side of that change must not compare as one strategy.
+    strategy_version = "0.2.0"
     horizon = StrategyHorizon.SWING
 
     async def on_event(
@@ -121,8 +128,8 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
 
     @staticmethod
     def _short_fundamental_gate(ctx: StrategyContext, intervention_min: float) -> bool:
-        fed = ctx.features.get(f.FED_EXPECTED_PATH_CHANGE)
-        boj = ctx.features.get(f.BOJ_EXPECTED_PATH_CHANGE)
+        fed = ctx.features.get(f.FED_POLICY_SHIFT_SCORE)
+        boj = ctx.features.get(f.BOJ_POLICY_SHIFT_SCORE)
         intervention = ctx.features.get(f.INTERVENTION_RISK)
         return (
             fed is not None
@@ -135,8 +142,8 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
 
     @staticmethod
     def _long_fundamental_gate(ctx: StrategyContext) -> bool:
-        fed = ctx.features.get(f.FED_EXPECTED_PATH_CHANGE)
-        boj = ctx.features.get(f.BOJ_EXPECTED_PATH_CHANGE)
+        fed = ctx.features.get(f.FED_POLICY_SHIFT_SCORE)
+        boj = ctx.features.get(f.BOJ_POLICY_SHIFT_SCORE)
         return fed is not None and fed > 0 and boj is not None and boj < 0
 
     def _trend_up(self, ctx: StrategyContext, symbol: str, trend_tf: str) -> bool:

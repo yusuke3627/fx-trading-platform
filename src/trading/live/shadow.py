@@ -33,6 +33,7 @@ from typing import Any
 from uuid import uuid4
 
 from trading.data.cli import poll_interval
+from trading.data.features import StoredFeatureSource
 from trading.data.market import MarketDataService
 from trading.domain.account import AccountMode
 from trading.domain.event import EventEnvelope
@@ -43,6 +44,8 @@ from trading.domain.risk import EventRiskMode, KillSwitchLevel, RiskDecision
 from trading.domain.signal import StrategySignal
 from trading.execution.mt5 import mapper
 from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
+from trading.intelligence.features import InMemoryFeatureStore
+from trading.intelligence.intervention import InterventionRiskConfig
 from trading.live.clock import CycleClock
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
@@ -106,6 +109,7 @@ class ShadowRunner:
         account_id: str,
         account_mode: AccountMode,
         instrument: InstrumentSpec,
+        features: StoredFeatureSource | None = None,
     ) -> None:
         self._runner = runner
         self._portfolio = portfolio
@@ -120,6 +124,7 @@ class ShadowRunner:
         self._account_id = account_id
         self._account_mode = account_mode
         self._instrument = instrument
+        self._features = features
 
     def evaluate_once(self) -> ShadowCycle:
         """One evaluation of every enabled strategy at a single instant."""
@@ -140,6 +145,11 @@ class ShadowRunner:
         age = now - account.observed_at
         if age > ACCOUNT_MAX_AGE:
             return ShadowCycle(at=now, blocked=f"account snapshot is {age} old")
+
+        # Refreshed inside the cycle so every strategy in it reads one
+        # consistent snapshot, taken at the frozen cycle instant.
+        if self._features is not None:
+            self._features.refresh(now)
 
         event = EventEnvelope(
             event_id=uuid4(),
@@ -345,6 +355,8 @@ def main() -> None:
     from trading.storage.postgres import (
         PostgresAccountSnapshotRepository,
         PostgresDecisionRepository,
+        PostgresEventRepository,
+        PostgresMacroObservationRepository,
         PostgresMarketBarRepository,
         PostgresMarketTickRepository,
         connect,
@@ -359,8 +371,20 @@ def main() -> None:
         {symbol: instrument},
     )
     ledger = VirtualPositionLedger(clock)
+    store = InMemoryFeatureStore()
+    features = StoredFeatureSource(
+        PostgresMacroObservationRepository(conn),
+        PostgresEventRepository(conn),
+        InterventionRiskConfig(
+            version=config.intelligence.intervention_risk.version,
+            weights=config.intelligence.intervention_risk.weights,
+        ),
+        store,
+    )
     runner = ShadowRunner(
-        runner=build_runner(config, market=market, clock=clock, ledger=ledger),
+        runner=build_runner(
+            config, market=market, clock=clock, ledger=ledger, features=store
+        ),
         portfolio=PortfolioManager(ledger, clock),
         ledger=ledger,
         risk=RiskEngine(config.risk, clock),
@@ -373,6 +397,7 @@ def main() -> None:
         account_id=account_id,
         account_mode=AccountMode(config.broker.expected_account_mode),
         instrument=instrument,
+        features=features,
     )
 
     print(f"shadow on {symbol} for {account_id}")

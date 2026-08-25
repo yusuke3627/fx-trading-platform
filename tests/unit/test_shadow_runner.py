@@ -88,6 +88,7 @@ def build(
     decisions=None,
     event_risk=NO_WINDOWS,
     event_mode_default=EventRiskMode.NORMAL,
+    features=None,
 ):
     clock = CycleClock(source_clock or FixedClock(at(minutes=1)))
     market = StoredMarketData(
@@ -118,6 +119,7 @@ def build(
         account_id=ACCOUNT,
         account_mode=AccountMode.HEDGING,
         instrument=usdjpy_spec(),
+        features=features,
     )
 
 
@@ -467,6 +469,33 @@ def test_a_blocked_cycle_records_nothing():
 
     assert runner.evaluate_once().blocked is not None
     assert store.trails == []
+
+
+class RecordingFeatureSource:
+    def __init__(self):
+        self.refreshed_at = []
+
+    def refresh(self, now):
+        self.refreshed_at.append(now)
+
+
+def test_features_are_refreshed_at_the_cycle_instant():
+    source = RecordingFeatureSource()
+    runner = build(**quote_and_account(), features=source)
+
+    cycle = runner.evaluate_once()
+
+    assert source.refreshed_at == [cycle.at]
+
+
+def test_a_blocked_cycle_does_not_refresh_features():
+    # No strategy will read the store this cycle, and half the point of the
+    # guards is that a stalled collector stops the loop touching anything.
+    source = RecordingFeatureSource()
+    runner = build(features=source)
+
+    assert runner.evaluate_once().blocked is not None
+    assert source.refreshed_at == []
 
 
 def test_describe_names_the_strategy_and_the_verdict():

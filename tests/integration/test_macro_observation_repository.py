@@ -53,14 +53,14 @@ def test_unchanged_value_is_not_a_new_vintage(repo):
     assert r.insert_many([observation(series, "321.5")]) == 1
     # Scheduled re-collection: same value, later known_at -> no new row.
     assert r.insert_many([observation(series, "321.5", known_offset_hours=24)]) == 0
-    assert len(r.known_before(series, T0 + timedelta(days=30))) == 1
+    assert len(r.known_before(series, T0 + timedelta(days=30), T0 - timedelta(days=1))) == 1
 
 
 def test_changed_value_appends_a_revision(repo):
     r, series = repo
     r.insert_many([observation(series, "321.5")])
     assert r.insert_many([observation(series, "321.7", known_offset_hours=24)]) == 1
-    chain = r.known_before(series, T0 + timedelta(days=30))
+    chain = r.known_before(series, T0 + timedelta(days=30), T0 - timedelta(days=1))
     assert [o.value for o in chain] == [Decimal("321.5"), Decimal("321.7")]
     assert chain[0].known_at < chain[1].known_at
 
@@ -80,7 +80,7 @@ def test_backfill_before_existing_forward_row_is_kept(repo):
     # ...then an ALFRED backfill inserts the true first print, earlier and
     # with the same value: it precedes the forward row, so it must be kept.
     assert r.insert_many([observation(series, "321.5")]) == 1
-    chain = r.known_before(series, T0 + timedelta(days=30))
+    chain = r.known_before(series, T0 + timedelta(days=30), T0 - timedelta(days=1))
     assert len(chain) == 2
     assert chain[0].known_at == T0
 
@@ -92,7 +92,7 @@ def test_value_can_revert_to_an_earlier_vintage(repo):
     # A revision back to the original value differs from its immediate
     # predecessor (321.7), so it is a real vintage.
     assert r.insert_many([observation(series, "321.5", known_offset_hours=48)]) == 1
-    chain = r.known_before(series, T0 + timedelta(days=30))
+    chain = r.known_before(series, T0 + timedelta(days=30), T0 - timedelta(days=1))
     assert [str(o.value) for o in chain] == ["321.5", "321.7", "321.5"]
 
 
@@ -100,5 +100,13 @@ def test_visibility_cutoff_hides_future_vintages(repo):
     r, series = repo
     r.insert_many([observation(series, "321.5")])
     r.insert_many([observation(series, "321.7", known_offset_hours=24)])
-    visible = r.known_before(series, T0 + timedelta(hours=1))
+    visible = r.known_before(series, T0 + timedelta(hours=1), T0 - timedelta(days=1))
     assert [o.value for o in visible] == [Decimal("321.5")]
+
+
+def test_the_window_excludes_vintages_known_at_or_before_since(repo):
+    r, series = repo
+    r.insert_many([observation(series, "321.5")])
+    r.insert_many([observation(series, "321.7", known_offset_hours=24)])
+    window = r.known_before(series, T0 + timedelta(days=30), T0)
+    assert [o.value for o in window] == [Decimal("321.7")]

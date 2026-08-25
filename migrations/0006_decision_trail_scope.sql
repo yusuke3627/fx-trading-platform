@@ -19,6 +19,13 @@ BEGIN;
 -- its store and this migration. Shadow evaluates every few seconds and nothing
 -- reads these rows yet, so recording resumes at once. Deletion follows the
 -- foreign keys in reverse.
+--
+-- execution_commands also references position_intents, and is deliberately not
+-- touched: no row there can point at one of these intents. An order is built
+-- by the OMS, the shadow runner holds none, and nothing in the codebase writes
+-- execution_commands yet. Should that change, this DELETE fails on the foreign
+-- key — which is the right outcome, because an intent an order was built from
+-- is not something to discard without a person deciding to.
 DELETE FROM risk_decisions;
 DELETE FROM position_intents;
 DELETE FROM strategy_signals;

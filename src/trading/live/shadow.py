@@ -184,7 +184,7 @@ class ShadowRunner:
                 # not usable. The signal still happened, and a strategy whose
                 # signals never become intents is the kind of thing a shadow
                 # run exists to surface — losing it here would hide it.
-                self._decisions.record_signal(signal)
+                self._decisions.record_signal(self._account_id, signal)
                 continue
             for intent in intents:
                 context = self._pretrade_context(
@@ -194,7 +194,7 @@ class ShadowRunner:
                 # Written before it is reported: the record is the point of a
                 # shadow run, and printing a decision that never reached the
                 # database would make the log and the trail disagree.
-                self._decisions.record(signal, intent, decision)
+                self._decisions.record(self._account_id, signal, intent, decision)
                 results.append(
                     ShadowDecision(signal=signal, intent=intent, decision=decision)
                 )

@@ -139,10 +139,15 @@ class DecisionRepository(Protocol):
     # (signal <- intent <- decision), so they are written together or not at
     # all — a half-written trail cannot be read back as either outcome.
     #
+    # Every call names the account: an intent is sized from its equity and a
+    # decision is graded against its loss history, so the same trail means
+    # something different depending on which account it was made for.
+    #
     # A signal that produced several intents is recorded once per intent and
     # must stay one row, so writing it again is a no-op rather than an error.
     def record(
         self,
+        account_id: str,
         signal: StrategySignal,
         intent: PositionIntent,
         decision: RiskDecision,
@@ -152,11 +157,11 @@ class DecisionRepository(Protocol):
     # step, or the stop distance was not usable. It still happened, and a
     # strategy whose signals never become intents is exactly what a shadow run
     # is there to reveal.
-    def record_signal(self, signal: StrategySignal) -> None: ...
+    def record_signal(self, account_id: str, signal: StrategySignal) -> None: ...
 
     # The most recent trails, newest first: what a run decided, read back whole.
     def recent(
-        self, limit: int
+        self, account_id: str, limit: int
     ) -> Sequence[tuple[StrategySignal, PositionIntent, RiskDecision]]: ...
 
 

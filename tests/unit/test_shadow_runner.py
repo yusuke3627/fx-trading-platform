@@ -322,7 +322,7 @@ def test_every_graded_decision_is_recorded():
 
     (result,) = runner.evaluate_once().decisions
 
-    assert store.trails == [(result.signal, result.intent, result.decision)]
+    assert store.trails == [(ACCOUNT, result.signal, result.intent, result.decision)]
 
 
 def test_a_signal_that_sizes_to_nothing_is_still_recorded():
@@ -342,7 +342,9 @@ def test_a_signal_that_sizes_to_nothing_is_still_recorded():
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
-    assert [s.strategy_id for s in store.signals] == ["test_signaller"]
+    assert [(owner, s.strategy_id) for owner, s in store.signals] == [
+        (ACCOUNT, "test_signaller")
+    ]
     assert store.trails == []
 
 

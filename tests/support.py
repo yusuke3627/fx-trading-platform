@@ -181,31 +181,33 @@ class FakeAccountSnapshotRepository:
 
 
 class FakeDecisionRepository:
-    """DecisionRepository in memory, keeping one row per signal the way the
-    primary key does.
+    """DecisionRepository in memory, scoped per account and keeping one row
+    per signal the way the primary key does.
     """
 
     def __init__(self) -> None:
-        self.trails: list[tuple[StrategySignal, PositionIntent, RiskDecision]] = []
-        self.signals: list[StrategySignal] = []
+        self.trails: list[tuple[str, StrategySignal, PositionIntent, RiskDecision]] = []
+        self.signals: list[tuple[str, StrategySignal]] = []
 
     def record(
         self,
+        account_id: str,
         signal: StrategySignal,
         intent: PositionIntent,
         decision: RiskDecision,
     ) -> None:
-        self.record_signal(signal)
-        self.trails.append((signal, intent, decision))
+        self.record_signal(account_id, signal)
+        self.trails.append((account_id, signal, intent, decision))
 
-    def record_signal(self, signal: StrategySignal) -> None:
-        if all(s.signal_id != signal.signal_id for s in self.signals):
-            self.signals.append(signal)
+    def record_signal(self, account_id: str, signal: StrategySignal) -> None:
+        if all(s.signal_id != signal.signal_id for _, s in self.signals):
+            self.signals.append((account_id, signal))
 
     def recent(
-        self, limit: int
+        self, account_id: str, limit: int
     ) -> list[tuple[StrategySignal, PositionIntent, RiskDecision]]:
-        return list(reversed(self.trails))[:limit]
+        owned = [t[1:] for t in self.trails if t[0] == account_id]
+        return list(reversed(owned))[:limit]
 
 
 def make_snapshot(

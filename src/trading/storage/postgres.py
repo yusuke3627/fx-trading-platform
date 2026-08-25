@@ -715,30 +715,33 @@ class PostgresDecisionRepository:
 
     def record(
         self,
+        account_id: str,
         signal: StrategySignal,
         intent: PositionIntent,
         decision: RiskDecision,
     ) -> None:
         # One transaction for the three: the foreign keys chain them, and a
         # trail that stopped halfway would read as a signal nobody graded.
-        self._insert_signal(signal)
+        self._insert_signal(account_id, signal)
         protection = intent.protection
         self._conn.execute(
             """
             INSERT INTO position_intents (
-                id, signal_id, strategy_id, strategy_version, symbol, action,
-                direction, target_quantity, delta_quantity, stop_loss_price,
-                take_profit_price, protection_source,
+                id, account_id, signal_id, strategy_id, strategy_version,
+                symbol, action, direction, target_quantity, delta_quantity,
+                stop_loss_price, take_profit_price, protection_source,
                 maximum_unprotected_seconds, reason_codes, generated_at
             ) VALUES (
-                %(id)s, %(signal_id)s, %(strategy_id)s, %(strategy_version)s,
-                %(symbol)s, %(action)s, %(direction)s, %(target)s, %(delta)s,
-                %(stop_loss)s, %(take_profit)s, %(protection_source)s,
-                %(unprotected)s, %(reason_codes)s, %(generated_at)s
+                %(id)s, %(account_id)s, %(signal_id)s, %(strategy_id)s,
+                %(strategy_version)s, %(symbol)s, %(action)s, %(direction)s,
+                %(target)s, %(delta)s, %(stop_loss)s, %(take_profit)s,
+                %(protection_source)s, %(unprotected)s, %(reason_codes)s,
+                %(generated_at)s
             )
             """,
             {
                 "id": intent.intent_id,
+                "account_id": account_id,
                 "signal_id": signal.signal_id,
                 "strategy_id": intent.strategy_id,
                 "strategy_version": intent.strategy_version,
@@ -760,15 +763,17 @@ class PostgresDecisionRepository:
         self._conn.execute(
             """
             INSERT INTO risk_decisions (
-                id, intent_id, approved, approved_quantity, checks,
+                id, account_id, intent_id, approved, approved_quantity, checks,
                 reject_codes, decided_at
             ) VALUES (
-                %(id)s, %(intent_id)s, %(approved)s, %(approved_quantity)s,
-                %(checks)s, %(reject_codes)s, %(decided_at)s
+                %(id)s, %(account_id)s, %(intent_id)s, %(approved)s,
+                %(approved_quantity)s, %(checks)s, %(reject_codes)s,
+                %(decided_at)s
             )
             """,
             {
                 "id": decision.decision_id,
+                "account_id": account_id,
                 "intent_id": decision.intent_id,
                 "approved": decision.approved,
                 "approved_quantity": decision.approved_quantity,
@@ -779,28 +784,29 @@ class PostgresDecisionRepository:
         )
         self._conn.commit()
 
-    def record_signal(self, signal: StrategySignal) -> None:
-        self._insert_signal(signal)
+    def record_signal(self, account_id: str, signal: StrategySignal) -> None:
+        self._insert_signal(account_id, signal)
         self._conn.commit()
 
-    def _insert_signal(self, signal: StrategySignal) -> None:
+    def _insert_signal(self, account_id: str, signal: StrategySignal) -> None:
         # A signal that produced several intents is written once per intent and
         # has to stay one row, so a repeat is a no-op rather than an error.
         self._conn.execute(
             """
             INSERT INTO strategy_signals (
-                id, strategy_id, strategy_version, symbol, desired_direction,
-                conviction, expected_horizon_seconds, stop_distance_pips,
-                reason_codes, generated_at
+                id, account_id, strategy_id, strategy_version, symbol,
+                desired_direction, conviction, expected_horizon_seconds,
+                stop_distance_pips, reason_codes, generated_at
             ) VALUES (
-                %(id)s, %(strategy_id)s, %(strategy_version)s, %(symbol)s,
-                %(direction)s, %(conviction)s, %(horizon)s, %(stop_pips)s,
-                %(reason_codes)s, %(generated_at)s
+                %(id)s, %(account_id)s, %(strategy_id)s, %(strategy_version)s,
+                %(symbol)s, %(direction)s, %(conviction)s, %(horizon)s,
+                %(stop_pips)s, %(reason_codes)s, %(generated_at)s
             )
             ON CONFLICT (id) DO NOTHING
             """,
             {
                 "id": signal.signal_id,
+                "account_id": account_id,
                 "strategy_id": signal.strategy_id,
                 "strategy_version": signal.strategy_version,
                 "symbol": signal.symbol,
@@ -814,7 +820,7 @@ class PostgresDecisionRepository:
         )
 
     def recent(
-        self, limit: int
+        self, account_id: str, limit: int
     ) -> Sequence[tuple[StrategySignal, PositionIntent, RiskDecision]]:
         # Every column the three tables have in common is aliased by table (id,
         # strategy_id, strategy_version, symbol, reason_codes, generated_at).
@@ -846,10 +852,11 @@ class PostgresDecisionRepository:
             FROM risk_decisions d
             JOIN position_intents i ON i.id = d.intent_id
             JOIN strategy_signals s ON s.id = i.signal_id
+            WHERE d.account_id = %s
             ORDER BY d.decided_at DESC, d.created_at DESC
             LIMIT %s
             """,
-            (limit,),
+            (account_id, limit),
         ).fetchall()
         return [
             (_row_to_signal(r), _row_to_intent(r), _row_to_decision(r)) for r in rows

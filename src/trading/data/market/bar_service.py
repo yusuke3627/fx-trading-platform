@@ -8,7 +8,9 @@ bar's known_at is made of (ADR-005).
 
 Each pass rebuilds forward from the end of the last stored bar with a fresh
 builder, so the process holds no state that a restart could lose and a
-re-run writes nothing new. `ON CONFLICT (symbol, timeframe, start_at) DO
+re-run writes nothing new. A pass whose bucket has not ended yet stops at two
+index seeks, so holding no state does not mean re-reading the day at the poll
+rate. `ON CONFLICT (symbol, timeframe, start_at) DO
 NOTHING` makes the write idempotent; that also means a bar written wrong can
 never be corrected, which is why a cold start drops its first candle rather
 than risk persisting one whose bucket it entered halfway.
@@ -35,12 +37,12 @@ from __future__ import annotations
 
 import argparse
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from trading.backtest.clock import Clock, SystemClock
 from trading.data.cli import poll_interval
-from trading.data.market.bars import BarBuilder
+from trading.data.market.bars import BarBuilder, bucket_start
 from trading.domain.market import TIMEFRAME_SECONDS, Bar
 from trading.storage.repository import MarketBarRepository, MarketTickRepository
 
@@ -83,6 +85,9 @@ class BarService:
             since = now - COLD_START_LOOKBACK
             drop_first = True
 
+        if not self._a_bucket_has_closed(symbol, timeframe, since, now):
+            return 0
+
         builder = BarBuilder(symbol, timeframe)
         completed: list[Bar] = []
         for tick in self._ticks.known_before(symbol, now, since):
@@ -93,6 +98,32 @@ class BarService:
         if drop_first and completed:
             completed = completed[1:]
         return self._bars.insert_many(completed) if completed else 0
+
+    def _a_bucket_has_closed(
+        self, symbol: str, timeframe: str, since: datetime, now: datetime
+    ) -> bool:
+        """Whether folding from `since` could produce anything.
+
+        Two index seeks in place of the window read. A pass rebuilds from the
+        last stored bar, so without this check the long timeframes re-read
+        their whole span every interval to publish nothing until the boundary
+        — for 1d that is the trading day so far, growing all day, at the poll
+        rate.
+
+        Which bucket is pending is decided by the first unfolded quote, not by
+        `since`: after a market closure `since` sits on an empty stretch the
+        series skipped, and the bucket actually waiting is the one that opens
+        when quoting resumes.
+        """
+        first = self._ticks.earliest_known_after(symbol, now, since)
+        if first is None:
+            return False
+        end = bucket_start(first.time, timeframe) + timedelta(
+            seconds=TIMEFRAME_SECONDS[timeframe]
+        )
+        # The same proof BarBuilder needs: a broker timestamp past the bucket's
+        # end, which no later quote can fall back behind.
+        return self._ticks.earliest_known_after(symbol, now, end) is not None
 
     def run(self, symbol: str, timeframes: list[str], interval_seconds: float) -> None:
         while True:

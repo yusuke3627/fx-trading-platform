@@ -59,3 +59,8 @@ trading host, but no behaviour here depends on its outcome.
 - `BarService.build_once` reaches back `COLD_START_LOOKBACK` (7 days) on a cold
   start and drops the bucket it entered halfway, so a first pass yields a
   handful of daily bars rather than a full history.
+- A pass rebuilds from the last stored bar, which at 1m is a minute of quotes
+  and at 1d is the trading day so far. Long timeframes are therefore polled
+  behind a check that costs two index seeks and stops there while the bucket is
+  still open, rather than at a slower interval — a daily bar has to appear when
+  it closes, not up to a day later.

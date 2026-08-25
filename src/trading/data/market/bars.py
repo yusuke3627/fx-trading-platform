@@ -67,6 +67,17 @@ def _fold(bucket: _Bucket, tick: Tick) -> None:
     bucket.known_at = max(bucket.known_at, tick.known_time)
 
 
+def bucket_start(at: datetime, timeframe: str) -> datetime:
+    """The start of the candle a broker timestamp falls in.
+
+    Flooring the epoch grid lands on the trade server's own boundaries — see
+    BarBuilder for why that needs no anchor.
+    """
+    seconds = TIMEFRAME_SECONDS[timeframe]
+    epoch = int(at.timestamp())
+    return datetime.fromtimestamp(epoch - epoch % seconds, tz=UTC)
+
+
 class BarBuilder:
     """Folds the ticks of one (symbol, timeframe) into completed bars.
 
@@ -99,7 +110,7 @@ class BarBuilder:
         The two are never compared: the broker's zone is not ours, and mixing
         them stalls the builder outright under a constant offset (ADR-005).
         """
-        start = self._bucket_start(tick.time)
+        start = bucket_start(tick.time, self._timeframe)
         bucket = self._bucket
 
         # Fold before publishing: a quote timestamped exactly at the close
@@ -125,10 +136,6 @@ class BarBuilder:
 
     def _end_of(self, bucket: _Bucket) -> datetime:
         return bucket.start + timedelta(seconds=self._seconds)
-
-    def _bucket_start(self, at: datetime) -> datetime:
-        epoch = int(at.timestamp())
-        return datetime.fromtimestamp(epoch - epoch % self._seconds, tz=UTC)
 
     def _to_bar(self, bucket: _Bucket, closing_known_at: datetime) -> Bar:
         return Bar(

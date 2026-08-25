@@ -397,6 +397,24 @@ class PostgresMarketTickRepository:
         ).fetchall()
         return [_row_to_tick(r) for r in rows]
 
+    def earliest_known_after(
+        self, symbol: str, t: datetime, since: datetime
+    ) -> Tick | None:
+        # known_before's predicate and order, stopped at the first row. The
+        # UNIQUE (symbol, event_time, bid, ask) index leads with the columns
+        # this scans, so it is a seek rather than the window read it replaces.
+        row = self._conn.execute(
+            """
+            SELECT symbol, bid, ask, event_time, received_at
+            FROM market_ticks
+            WHERE symbol = %s AND event_time >= %s AND received_at <= %s
+            ORDER BY event_time, id
+            LIMIT 1
+            """,
+            (symbol, since, t),
+        ).fetchone()
+        return _row_to_tick(row) if row else None
+
     def latest_known_before(self, symbol: str, t: datetime) -> Tick | None:
         # Ordered the same way known_before is, reversed: the tie-break decides
         # which of several quotes sharing an event_time counts as the latest

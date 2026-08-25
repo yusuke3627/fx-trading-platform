@@ -374,9 +374,18 @@ def main() -> None:
     )
     ledger = VirtualPositionLedger(clock)
     # 換算も市場と同じ stored series を読む: sizing の quote 鮮度制約と
-    # risk config の quote_max_age を一致させる。
+    # risk config の quote_max_age を一致させる。換算 path の spec は取引銘柄
+    # と独立に config から解決する — 非 JPY quote の銘柄（EURUSD 等）では
+    # 取引銘柄自身の path（EUR↔USD）だけでは JPY 換算が張れない。
+    conversion_specs = [instrument] + [
+        broker_identity(sym)[1]
+        for sym in config.market.conversion_instruments
+        if sym != symbol
+    ]
     conversion = MarketQuoteConversionService(
-        market, [instrument], max_quote_age_seconds=config.risk.quote_max_age_seconds
+        market,
+        conversion_specs,
+        max_quote_age_seconds=config.risk.quote_max_age_seconds,
     )
     store = InMemoryFeatureStore()
     features = StoredFeatureSource(

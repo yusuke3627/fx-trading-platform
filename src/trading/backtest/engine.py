@@ -385,6 +385,10 @@ class BacktestEngine:
         market.set_instrument(self._spec)
         # Replay-visible quotes only: the conversion service reads the same
         # market, so sizing can never use a rate that was not yet known.
+        # 単一銘柄 timeline の現行 engine は換算用の別銘柄 quote（例:
+        # EURUSD backtest に必要な USDJPY）を運べない。その場合 sizing は
+        # CONVERSION_RATE_UNAVAILABLE で fail-close する（意図した挙動）。
+        # 換算 quote を含む複数銘柄 timeline は 4-pair PIT replay（#66）で。
         conversion = MarketQuoteConversionService(
             market,
             [self._spec],

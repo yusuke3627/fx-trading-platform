@@ -1,9 +1,18 @@
 """Replay determinism and look-ahead prohibition."""
+from decimal import Decimal
+
 import pytest
 
 from tests.support import T0, at, make_bar, make_event, make_tick
 from trading.backtest.clock import ClockRegressionError, ReplayClock
 from trading.backtest.replay import LookaheadError, ReplayEngine, assert_visible, visible
+from trading.data.market import InMemoryMarketData
+from trading.domain.money import Currency, Money
+from trading.risk.conversion import (
+    ConversionPurpose,
+    ConversionRateUnavailableError,
+    MarketQuoteConversionService,
+)
 
 
 def test_replay_clock_never_regresses():
@@ -71,6 +80,33 @@ def test_bar_is_delivered_when_it_becomes_known_not_at_its_start():
     delivered_at: list[str] = []
     engine.run([bar], lambda item: delivered_at.append(clock.now().isoformat()))
     assert delivered_at == [at(hours=1).isoformat()]
+
+
+def test_conversion_quote_respects_replay_visibility():
+    # EURUSD の historical sizing が未来の USDJPY quote を見てはならない:
+    # conversion も known_at <= replay_clock.now() のデータだけを使う。
+    clock = ReplayClock(T0)
+    market = InMemoryMarketData(clock=clock)
+    market.add_tick(make_tick("150.000", "150.004", time=at(minutes=10)))
+    service = MarketQuoteConversionService(market)
+    usd_loss = Money(amount=Decimal(100), currency=Currency.USD)
+
+    with pytest.raises(ConversionRateUnavailableError):
+        service.convert(
+            usd_loss,
+            Currency.JPY,
+            now=clock.now(),
+            purpose=ConversionPurpose.RISK_INCREASING,
+        )
+
+    clock.advance_to(at(minutes=10))
+    result = service.convert(
+        usd_loss,
+        Currency.JPY,
+        now=clock.now(),
+        purpose=ConversionPurpose.RISK_INCREASING,
+    )
+    assert result.money == Money(amount=Decimal("15000.400"), currency=Currency.JPY)
 
 
 def test_replay_is_deterministic_across_runs():

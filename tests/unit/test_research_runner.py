@@ -102,6 +102,30 @@ def test_reconstruction_follows_the_servers_dst_calendar():
     )
 
 
+def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
+    from trading.backtest.research import ensure_period_covered
+
+    read_from = START - timedelta(days=10)
+    covered = [
+        tick(read_from + timedelta(hours=1), START),
+        tick(START + timedelta(hours=1), START),
+    ]
+    ensure_period_covered(covered, read_from, START, END)
+
+    with pytest.raises(SystemExit):
+        ensure_period_covered([], read_from, START, END)
+    # Only lead-in ticks: nothing would be evaluated.
+    with pytest.raises(SystemExit):
+        ensure_period_covered(covered[:1], read_from, START, END)
+    # History begins days into the requested warm-up: starved indicators.
+    late_history = [
+        tick(START - timedelta(days=2), START),
+        tick(START + timedelta(hours=1), START),
+    ]
+    with pytest.raises(SystemExit):
+        ensure_period_covered(late_history, read_from, START, END)
+
+
 def test_period_bounds_accept_only_utc_stamped_labels():
     # A +03:00 input meant as "the broker's summer midnight" would be
     # normalized to 21:00Z and silently read a different label range.

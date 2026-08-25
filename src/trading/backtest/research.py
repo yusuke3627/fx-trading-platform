@@ -53,6 +53,7 @@ from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
+from trading.strategy.base import CLOSED_MARKET_ALLOWANCE
 from trading.strategy.registry import STRATEGIES
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -120,6 +121,36 @@ def broker_label(value: str) -> datetime:
             "silently shifts the requested range"
         )
     return parsed
+
+
+def ensure_period_covered(
+    ticks: list[Tick], read_from: datetime, start: datetime, end: datetime
+) -> None:
+    """SystemExit unless the stored series can honestly serve the run.
+
+    All three failure shapes would otherwise finish and write a
+    plausible-looking report: an empty read, a read holding only lead-in
+    ticks (nothing evaluated), and a history that begins well after the
+    requested warm-up start (the opening evaluations run on starved
+    indicator state while the manifest claims the full lead-in).
+    """
+    if not ticks:
+        raise SystemExit(
+            f"no stored ticks in [{read_from}, {end}); "
+            "collect or backfill the period first"
+        )
+    if ticks[-1].time < start:
+        raise SystemExit(
+            f"no stored ticks inside the evaluation period [{start}, {end}); "
+            "only warm-up ticks were found"
+        )
+    if ticks[0].time > read_from + CLOSED_MARKET_ALLOWANCE:
+        raise SystemExit(
+            f"stored history begins at {ticks[0].time}, after the requested "
+            f"warm-up start {read_from}; the opening evaluations would run "
+            "on starved indicator state — backfill earlier history or move "
+            "--from later"
+        )
 
 
 def warmup_days(value: str) -> float:
@@ -211,18 +242,7 @@ def main() -> None:
 
     conn = connect(dsn)
     stored = PostgresMarketTickRepository(conn).between(symbol, read_from, args.end)
-    if not stored:
-        raise SystemExit(
-            f"no stored ticks for {symbol} in [{read_from}, {args.end}); "
-            "collect or backfill the period first"
-        )
-    if stored[-1].time < args.start:
-        # Only lead-in ticks exist: the run would warm up, evaluate nothing
-        # and still write a plausible-looking flat report.
-        raise SystemExit(
-            f"no stored ticks for {symbol} inside the evaluation period "
-            f"[{args.start}, {args.end}); only warm-up ticks were found"
-        )
+    ensure_period_covered(list(stored), read_from, args.start, args.end)
 
     anchor = timedelta(hours=config.market.broker_server_ahead_of_ny_hours)
     ticks = reconstructed(list(stored), anchor)

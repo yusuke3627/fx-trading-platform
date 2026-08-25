@@ -118,12 +118,17 @@ class StrategyContext:
     config: StrategyConfig
 
 
+# The stretch a closed market adds to a calendar span: a lead-in landing on
+# a weekend (or a holiday joining one) still has to reach real ticks.
+CLOSED_MARKET_ALLOWANCE = timedelta(days=2)
+
+
 def market_span_to_calendar(seconds: float) -> timedelta:
     """Calendar time holding `seconds` of market time in recorded history.
 
-    Weekends quote nothing (7/5), and a lead-in whose calendar span starts on
-    a closed weekend or holiday still has to reach real ticks (+2 days)."""
-    return timedelta(seconds=seconds * 7 / 5) + timedelta(days=2)
+    Weekends quote nothing (7/5), plus the closed-market allowance for a
+    span whose calendar start falls inside a closure."""
+    return timedelta(seconds=seconds * 7 / 5) + CLOSED_MARKET_ALLOWANCE
 
 
 class Strategy(ABC):

@@ -13,6 +13,8 @@ from trading.domain.intent import PositionIntent, ProtectionSpec
 from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand, ExecutionSide
 from trading.domain.position import PositionAction, PositionDirection
+from trading.domain.risk import RiskDecision
+from trading.domain.signal import StrategySignal
 
 T0 = datetime(2026, 8, 13, 0, 0, tzinfo=UTC)
 
@@ -176,6 +178,34 @@ class FakeAccountSnapshotRepository:
             (s for owner, s in self.snapshots if owner == account_id),
             key=lambda s: s.observed_at,
         )
+
+
+class FakeDecisionRepository:
+    """DecisionRepository in memory, keeping one row per signal the way the
+    primary key does.
+    """
+
+    def __init__(self) -> None:
+        self.trails: list[tuple[StrategySignal, PositionIntent, RiskDecision]] = []
+        self.signals: list[StrategySignal] = []
+
+    def record(
+        self,
+        signal: StrategySignal,
+        intent: PositionIntent,
+        decision: RiskDecision,
+    ) -> None:
+        self.record_signal(signal)
+        self.trails.append((signal, intent, decision))
+
+    def record_signal(self, signal: StrategySignal) -> None:
+        if all(s.signal_id != signal.signal_id for s in self.signals):
+            self.signals.append(signal)
+
+    def recent(
+        self, limit: int
+    ) -> list[tuple[StrategySignal, PositionIntent, RiskDecision]]:
+        return list(reversed(self.trails))[:limit]
 
 
 def make_snapshot(

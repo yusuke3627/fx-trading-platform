@@ -14,8 +14,11 @@ from trading.domain.account import AccountSnapshot
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope
 from trading.domain.fill import Fill
+from trading.domain.intent import PositionIntent
 from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand
+from trading.domain.risk import RiskDecision
+from trading.domain.signal import StrategySignal
 
 
 class StaleCommandStateError(RuntimeError):
@@ -128,6 +131,33 @@ class MacroObservationRepository(Protocol):
     # derives first print vs revision from the known_at order within one
     # (series, observation_period).
     def known_before(self, series: str, t: datetime) -> Sequence[EconomicObservation]: ...
+
+
+class DecisionRepository(Protocol):
+    # One decision trail: what a strategy saw, what Portfolio made of it, and
+    # how Risk graded that. The three tables are chained by foreign key
+    # (signal <- intent <- decision), so they are written together or not at
+    # all — a half-written trail cannot be read back as either outcome.
+    #
+    # A signal that produced several intents is recorded once per intent and
+    # must stay one row, so writing it again is a no-op rather than an error.
+    def record(
+        self,
+        signal: StrategySignal,
+        intent: PositionIntent,
+        decision: RiskDecision,
+    ) -> None: ...
+
+    # A signal that produced no intent at all — sizing landed below one volume
+    # step, or the stop distance was not usable. It still happened, and a
+    # strategy whose signals never become intents is exactly what a shadow run
+    # is there to reveal.
+    def record_signal(self, signal: StrategySignal) -> None: ...
+
+    # The most recent trails, newest first: what a run decided, read back whole.
+    def recent(
+        self, limit: int
+    ) -> Sequence[tuple[StrategySignal, PositionIntent, RiskDecision]]: ...
 
 
 class IncidentRepository(Protocol):

@@ -48,7 +48,7 @@ from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 from trading.runner import StrategyRunner
-from trading.storage.repository import AccountSnapshotRepository
+from trading.storage.repository import AccountSnapshotRepository, DecisionRepository
 
 DEFAULT_INTERVAL_SECONDS = 5.0
 
@@ -98,6 +98,7 @@ class ShadowRunner:
         risk_config: RiskConfig,
         market: MarketDataService,
         snapshots: AccountSnapshotRepository,
+        decisions: DecisionRepository,
         clock: CycleClock,
         account_id: str,
         account_mode: AccountMode,
@@ -110,6 +111,7 @@ class ShadowRunner:
         self._risk_config = risk_config
         self._market = market
         self._snapshots = snapshots
+        self._decisions = decisions
         self._clock = clock
         self._account_id = account_id
         self._account_mode = account_mode
@@ -176,16 +178,25 @@ class ShadowRunner:
                 volume_step=self._instrument.volume_step,
                 entry_price=entry_price,
             )
-            for intent in self._portfolio.intents_from_signal(signal, sizing):
+            intents = self._portfolio.intents_from_signal(signal, sizing)
+            if not intents:
+                # Sizing landed below one volume step, or the stop distance was
+                # not usable. The signal still happened, and a strategy whose
+                # signals never become intents is the kind of thing a shadow
+                # run exists to surface — losing it here would hide it.
+                self._decisions.record_signal(signal)
+                continue
+            for intent in intents:
                 context = self._pretrade_context(
                     signal, intent, quote, account, history, now
                 )
+                decision = self._risk.evaluate(intent, context)
+                # Written before it is reported: the record is the point of a
+                # shadow run, and printing a decision that never reached the
+                # database would make the log and the trail disagree.
+                self._decisions.record(signal, intent, decision)
                 results.append(
-                    ShadowDecision(
-                        signal=signal,
-                        intent=intent,
-                        decision=self._risk.evaluate(intent, context),
-                    )
+                    ShadowDecision(signal=signal, intent=intent, decision=decision)
                 )
         return ShadowCycle(at=now, decisions=tuple(results))
 
@@ -314,6 +325,7 @@ def main() -> None:
     # Imported here so the module stays unit-testable without the db extra.
     from trading.storage.postgres import (
         PostgresAccountSnapshotRepository,
+        PostgresDecisionRepository,
         PostgresMarketBarRepository,
         PostgresMarketTickRepository,
         connect,
@@ -336,6 +348,7 @@ def main() -> None:
         risk_config=config.risk,
         market=market,
         snapshots=PostgresAccountSnapshotRepository(conn),
+        decisions=PostgresDecisionRepository(conn),
         clock=clock,
         account_id=account_id,
         account_mode=AccountMode(config.broker.expected_account_mode),

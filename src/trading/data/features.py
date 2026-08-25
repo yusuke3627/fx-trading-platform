@@ -30,6 +30,8 @@ from trading.data.intervention.features import (
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
 from trading.data.policy.features import latest_policy_score, us2y_features
 from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
+from trading.domain.economic import EconomicObservation
+from trading.domain.event import EventEnvelope
 from trading.intelligence import features as f
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig, intervention_risk_score
@@ -154,6 +156,25 @@ class StoredFeatureSource:
             digest.update(b"\n")
         return digest.hexdigest()
 
+    def frozen(self, start: datetime, end: datetime) -> StoredFeatureSource:
+        """A source answering every read of a [start, end] replay from one
+        consistent load of the stored rows.
+
+        The reads behind change_instants(), each snapshot() and
+        dataset_fingerprint() are separate queries on the live connection; a
+        collector inserting history between them could put rows in the
+        fingerprint the replay never saw, or surface a row at an instant the
+        change schedule does not contain. Freezing pins all three to the same
+        rows.
+        """
+        observations, events = self._replay_rows(start, end)
+        return StoredFeatureSource(
+            _FrozenObservations(observations),
+            _FrozenEvents(events),
+            self._intervention,
+            self._store,
+        )
+
     def _replay_rows(self, start: datetime, end: datetime):
         """The rows any snapshot inside [start, end] can read, window by
         window: US2Y inside its lookback, policy unbounded, intervention
@@ -183,6 +204,44 @@ class StoredFeatureSource:
                 if event.payload.get("scoring_version") == SCORING_VERSION
             ]
         )
+
+
+class _FrozenObservations:
+    """One load of observation rows, answering known_before the way the
+    stored repository does: series match, since-exclusive known_at window."""
+
+    def __init__(self, observations: Sequence[EconomicObservation]) -> None:
+        self._observations = list(observations)
+
+    def known_before(
+        self, series: str, t: datetime, since: datetime
+    ) -> list[EconomicObservation]:
+        return [
+            o
+            for o in self._observations
+            if o.series == series and since < o.known_at <= t
+        ]
+
+
+class _FrozenEvents:
+    """One load of event rows, mirroring the stored repository's filters."""
+
+    def __init__(self, events: Sequence[EventEnvelope]) -> None:
+        self._events = list(events)
+
+    def known_before(
+        self,
+        t: datetime,
+        event_type: str | None = None,
+        since: datetime | None = None,
+    ) -> list[EventEnvelope]:
+        return [
+            e
+            for e in self._events
+            if e.known_at <= t
+            and (event_type is None or e.event_type == event_type)
+            and (since is None or e.known_at > since)
+        ]
 
 
 class ReplayFeatureTimeline:

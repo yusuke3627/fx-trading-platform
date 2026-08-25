@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import ClassVar, Protocol
@@ -121,6 +122,11 @@ class Strategy(ABC):
     strategy_id: ClassVar[str]
     strategy_version: ClassVar[str]
     horizon: ClassVar[StrategyHorizon]
+    # Recorded history the slowest indicator window needs before the first
+    # evaluation can see it populated. A research replay reads this much
+    # lead-in ahead of its period and starts asking the strategy at the
+    # period's opening instant.
+    warmup: ClassVar[timedelta] = timedelta(0)
 
     @abstractmethod
     async def on_event(

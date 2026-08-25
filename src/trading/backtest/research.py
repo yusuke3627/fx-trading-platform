@@ -20,6 +20,10 @@ time is reconstructed as event_time minus the configured broker offset
 backfilled archive lies far in the tick's future and would collapse the
 whole period onto one replay instant.
 
+Each strategy declares the lead-in its slowest indicator window needs
+(`Strategy.warmup`); the runner reads that much history ahead of --from so
+state is populated, and evaluations start at --from itself.
+
 The engine materializes the period in memory (ticks and the equity curve),
 so a run is a period of days to weeks, not years; longer studies run as
 consecutive periods.
@@ -86,6 +90,13 @@ def main() -> None:
     parser.add_argument("--scenario", default=None, choices=sorted(STRESS_SCENARIOS))
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--out", default="reports")
+    parser.add_argument(
+        "--warmup-days",
+        type=float,
+        default=None,
+        help="lead-in read before --from to populate indicator state; "
+        "defaults to the strategy's own declared warmup",
+    )
     args = parser.parse_args()
 
     if args.start >= args.end:
@@ -93,6 +104,14 @@ def main() -> None:
 
     config = load_config(args.env)
     symbol = args.symbol or config.market.primary_instruments[0]
+    if symbol != "USDJPY":
+        # The only dataset spec wired is the vertical slice's USD/JPY one;
+        # replaying another pair against its digits/pip/volume values would
+        # misprice sizing and costs while finishing without complaint.
+        raise SystemExit(
+            f"only USDJPY has a dataset spec; {symbol!r} needs a persisted "
+            "broker spec first"
+        )
     strategy_config = config.strategies.get(args.strategy)
     if strategy_config is None:
         raise SystemExit(f"config for env {args.env!r} has no strategy {args.strategy!r}")
@@ -116,17 +135,29 @@ def main() -> None:
         connect,
     )
 
+    strategy_class = STRATEGIES[args.strategy]
+    warmup = (
+        timedelta(days=args.warmup_days)
+        if args.warmup_days is not None
+        else strategy_class.warmup
+    )
+    read_from = args.start - warmup
+
     conn = connect(dsn)
-    stored = PostgresMarketTickRepository(conn).between(symbol, args.start, args.end)
+    stored = PostgresMarketTickRepository(conn).between(symbol, read_from, args.end)
     if not stored:
         raise SystemExit(
-            f"no stored ticks for {symbol} in [{args.start}, {args.end}); "
+            f"no stored ticks for {symbol} in [{read_from}, {args.end}); "
             "collect or backfill the period first"
         )
 
     offset = timedelta(hours=config.market.broker_utc_offset_hours)
     ticks = reconstructed(list(stored), offset)
 
+    # One consistent load of the PIT rows: change schedule, every snapshot
+    # during the replay and the manifest fingerprint answer from the same
+    # rows even while a collector keeps inserting on this database.
+    known_start, known_end = read_from - offset, args.end - offset
     source = StoredFeatureSource(
         PostgresMacroObservationRepository(conn),
         PostgresEventRepository(conn),
@@ -135,8 +166,7 @@ def main() -> None:
             weights=config.intelligence.intervention_risk.weights,
         ),
         InMemoryFeatureStore(),
-    )
-    known_start, known_end = args.start - offset, args.end - offset
+    ).frozen(known_start, known_end)
     timeline = ReplayFeatureTimeline(
         source, source.change_instants(known_start, known_end)
     )
@@ -144,7 +174,6 @@ def main() -> None:
     seed = args.seed if args.seed is not None else config.simulator.seed
     scenario = args.scenario or config.simulator.scenario
     costs = replace(STRESS_SCENARIOS[scenario], latency_ms=config.simulator.latency_ms)
-    strategy_class = STRATEGIES[args.strategy]
 
     engine = BacktestEngine(
         risk_config=config.risk,
@@ -157,6 +186,9 @@ def main() -> None:
         strategy_config=strategy_config,
         event_risk=central_bank_calendar(config),
         features=timeline,
+        # The lead-in only builds bar/indicator/feature state; orders and
+        # metrics that matter start at the period's opening instant.
+        evaluate_from=args.start - offset,
     )
     result = engine.run(ticks)
 
@@ -174,6 +206,7 @@ def main() -> None:
         "tick_count": len(ticks),
         "period_from": args.start.isoformat(),
         "period_to": args.end.isoformat(),
+        "warmup_days": warmup / timedelta(days=1),
         "broker_utc_offset_hours": config.market.broker_utc_offset_hours,
         "dataset_hash": dataset_hash(ticks),
         # Ticks alone do not identify the dataset: the stored PIT rows decide

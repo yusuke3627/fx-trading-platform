@@ -109,3 +109,34 @@ def test_a_mid_period_score_stays_invisible_until_its_reconstructed_instant():
     assert len(readings) == 600
     assert set(readings[:300]) == {-1.0}
     assert set(readings[300:]) == {2.0}
+
+
+def test_warmup_ticks_build_state_but_are_never_evaluated():
+    # A research run reads lead-in ticks ahead of its period; the strategy
+    # must not be asked during them — the first evaluation is the period's
+    # opening instant, with bar state already populated.
+    real_start = BROKER_START - OFFSET
+    evaluate_from = real_start + timedelta(seconds=200)
+
+    readings: list[float | None] = []
+    engine = BacktestEngine(
+        risk_config=RiskConfig(
+            trading_enabled=False, event_mode_default=EventRiskMode.NORMAL
+        ),
+        spec=usdjpy_spec(),
+        costs=CostModel(),
+        seed=7,
+        strategy_factory=lambda: FeatureProbeStrategy(readings),
+        strategy_config=StrategyConfig(
+            strategy_id=FeatureProbeStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+        ),
+        evaluate_from=evaluate_from,
+    )
+
+    engine.run(reconstructed(archived_ticks(600), OFFSET))
+
+    # Ticks 0..199 are warm-up (known times before evaluate_from); the tick
+    # AT the boundary already evaluates.
+    assert len(readings) == 400

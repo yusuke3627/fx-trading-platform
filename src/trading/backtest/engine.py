@@ -261,6 +261,7 @@ class BacktestEngine:
         account_mode: AccountMode = AccountMode.HEDGING,
         event_risk: EventRiskCalendar | None = None,
         features: ReplayFeatureTimeline | None = None,
+        evaluate_from: datetime | None = None,
     ) -> None:
         if account_mode is not AccountMode.HEDGING:
             raise ValueError("the vertical slice runs on HEDGING only")
@@ -282,6 +283,10 @@ class BacktestEngine:
         # PIT rows to step through, and an empty store is the honest state
         # for it. A research run wires the same timeline live shadow polls.
         self._features = features
+        # Warm-up boundary: before this instant bars, indicators and features
+        # build state but the strategy is not asked, so a research period's
+        # first evaluation already sees its slowest window populated.
+        self._evaluate_from = evaluate_from
 
     def run(self, ticks: list[Tick]) -> BacktestResult:
         ordered = sorted(ticks, key=lambda t: t.known_time)
@@ -325,16 +330,17 @@ class BacktestEngine:
             self._apply_pending(state, w, item)
             self._apply_protection(state, w, item)
 
-            envelope = EventEnvelope(
-                event_id=uuid4(),
-                event_type="market.tick",
-                source="replay",
-                retrieved_at=item.known_time,
-                known_at=item.known_time,
-            )
-            signals = runner_loop.run(w.strategy.on_event(envelope, w.context))
-            for signal in signals:
-                self._process_signal(state, w, signal, tick=item)
+            if self._evaluate_from is None or w.clock.now() >= self._evaluate_from:
+                envelope = EventEnvelope(
+                    event_id=uuid4(),
+                    event_type="market.tick",
+                    source="replay",
+                    retrieved_at=item.known_time,
+                    known_at=item.known_time,
+                )
+                signals = runner_loop.run(w.strategy.on_event(envelope, w.context))
+                for signal in signals:
+                    self._process_signal(state, w, signal, tick=item)
             # Zero-latency commands created this tick fill on this tick;
             # anything slower stays queued for a later tick. A position born
             # here is under broker protection from the instant it exists, so

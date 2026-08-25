@@ -11,6 +11,7 @@ in ablation (models A/B/C), never baked in here.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from trading.domain.event import EventEnvelope
@@ -23,6 +24,8 @@ class FailedSpikeReversalStrategy(Strategy):
     strategy_id = "failed_spike_reversal"
     strategy_version = "0.1.0"
     horizon = StrategyHorizon.SCALP
+    # The slowest window is the entry-timeframe ATR (default 1m x 14).
+    warmup = timedelta(hours=6)
 
     async def on_event(
         self,

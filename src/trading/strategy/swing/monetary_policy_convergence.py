@@ -16,6 +16,7 @@ Short: fundamental gate + technical trigger on the trigger timeframe
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from trading.domain.event import EventEnvelope
@@ -33,6 +34,9 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
     # side of that change must not compare as one strategy.
     strategy_version = "0.2.0"
     horizon = StrategyHorizon.SWING
+    # The slowest window is the 1d EMA(50) of the trend gate: ~50 trading
+    # days, which weekends stretch past 70 calendar days.
+    warmup = timedelta(days=75)
 
     async def on_event(
         self,

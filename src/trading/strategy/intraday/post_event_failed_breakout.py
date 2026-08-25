@@ -20,6 +20,7 @@ Timeframes come from configuration (regime/setup/entry), not from code.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from trading.domain.event import EventEnvelope
@@ -37,6 +38,9 @@ class PostEventFailedBreakoutStrategy(Strategy):
     # signals from either side of that change must not compare as one strategy.
     strategy_version = "0.2.0"
     horizon = StrategyHorizon.INTRADAY
+    # The slowest window is the setup-timeframe resistance lookback
+    # (default 15m x 25); a day of lead-in covers it with margin.
+    warmup = timedelta(days=1)
 
     async def on_event(
         self,

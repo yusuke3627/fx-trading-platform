@@ -139,3 +139,35 @@ def test_dataset_fingerprint_changes_only_with_rows_a_replay_can_read():
 
     assert grown != base
     assert out_of_window == base
+
+
+def test_frozen_source_ignores_rows_arriving_after_the_load():
+    # The research run freezes the PIT rows once; a collector inserting on
+    # the same database afterwards must change neither the snapshots nor the
+    # fingerprint of the running replay.
+    events = FakeEventRepository(
+        [event("FED_POLICY_SHIFT_SCORE", START - timedelta(days=30))]
+    )
+    live = StoredFeatureSource(
+        FakeObservationRepository(),
+        events,
+        InterventionRiskConfig(version="test", weights={}),
+        InMemoryFeatureStore(),
+    )
+    frozen = live.frozen(START, END)
+    before = frozen.dataset_fingerprint(START, END)
+
+    events.events.append(event("INTERVENTION_REPORTED", START + timedelta(days=1)))
+
+    assert frozen.dataset_fingerprint(START, END) == before
+    assert frozen.change_instants(START, END) != live.change_instants(START, END)
+    assert live.dataset_fingerprint(START, END) != before
+
+
+def test_every_registered_strategy_declares_its_warmup():
+    # The research runner sizes its lead-in read from this; a zero warmup
+    # would start a real strategy against empty indicator windows.
+    from trading.strategy.registry import STRATEGIES
+
+    for strategy_class in STRATEGIES.values():
+        assert strategy_class.warmup > timedelta(0), strategy_class.strategy_id

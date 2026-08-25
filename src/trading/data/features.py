@@ -16,6 +16,8 @@ same refresh against the same rows gives a backtest exactly what live saw.
 """
 from __future__ import annotations
 
+from bisect import bisect_right
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from trading.data.intervention.features import (
@@ -60,6 +62,12 @@ class StoredFeatureSource:
         self._events = events
         self._intervention = intervention
         self._store = store
+
+    @property
+    def store(self) -> InMemoryFeatureStore:
+        """The store refresh() feeds — the one a StrategyContext must hold for
+        strategies to see what was refreshed."""
+        return self._store
 
     def refresh(self, now: datetime) -> None:
         self._store.replace(self.snapshot(now))
@@ -115,3 +123,55 @@ class StoredFeatureSource:
                 if event.payload.get("scoring_version") == SCORING_VERSION
             ]
         )
+
+
+class ReplayFeatureTimeline:
+    """Steps a StoredFeatureSource along a replay clock.
+
+    Live refreshes on a poll; a replay delivering a million ticks cannot ask
+    the repositories a million times, and does not need to — between changes
+    of the underlying rows the snapshot is constant. The caller supplies the
+    instants at which rows become known (it has them: a replay's dataset is
+    loaded up front), and advance() recomputes only when the clock crosses
+    one.
+
+    One class of change has no row behind it: intervention risk decays on
+    DATE arithmetic, so the snapshot moves at UTC midnights while an
+    intervention is inside its recency window. advance() therefore also
+    refreshes on the first tick of each new date. What this cadence cannot
+    see is a row leaving a query lookback window mid-day — that only matters
+    for a series stale enough to be aging out, and the midnight refresh
+    catches it within the day.
+    """
+
+    def __init__(self, source: StoredFeatureSource, changes: Sequence[datetime]) -> None:
+        self._source = source
+        self._changes = sorted(changes)
+        self._position = 0
+        self._refreshed_at: datetime | None = None
+
+    @property
+    def store(self) -> InMemoryFeatureStore:
+        return self._source.store
+
+    def reset(self, start: datetime) -> None:
+        """Position the timeline at the replay's opening instant.
+
+        Rows already known at `start` belong in the very first evaluation —
+        a backtest of August must see July's meeting scores from its first
+        tick — so this is a real refresh, not just a pointer rewind.
+        """
+        self._position = bisect_right(self._changes, start)
+        self._refresh(start)
+
+    def advance(self, now: datetime) -> None:
+        crossed = False
+        while self._position < len(self._changes) and self._changes[self._position] <= now:
+            self._position += 1
+            crossed = True
+        if crossed or self._refreshed_at is None or now.date() != self._refreshed_at.date():
+            self._refresh(now)
+
+    def _refresh(self, now: datetime) -> None:
+        self._source.refresh(now)
+        self._refreshed_at = now

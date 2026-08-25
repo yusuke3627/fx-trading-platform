@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support import FakeEventRepository, FakeObservationRepository
 from trading.data.features import StoredFeatureSource
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
 from trading.data.policy.scoring import SCORING_VERSION
@@ -20,32 +21,6 @@ WEIGHTS = InterventionRiskConfig(
     version="test",
     weights={"days_since_intervention": 0.6, "verification_state": 0.4},
 )
-
-
-class FakeObservations:
-    def __init__(self, observations=()):
-        self._observations = list(observations)
-
-    def known_before(self, series, t, since):
-        return [
-            o
-            for o in self._observations
-            if o.series == series and since < o.known_at <= t
-        ]
-
-
-class FakeEvents:
-    def __init__(self, events=()):
-        self._events = list(events)
-
-    def known_before(self, t, event_type=None, since=None):
-        return [
-            e
-            for e in self._events
-            if e.known_at <= t
-            and (event_type is None or e.event_type == event_type)
-            and (since is None or e.known_at > since)
-        ]
 
 
 def observation(day: date, value: str) -> EconomicObservation:
@@ -91,8 +66,8 @@ def intervention_event(action_date: date, known_at: datetime) -> EventEnvelope:
 
 def make_source(observations=(), events=(), store=None):
     return StoredFeatureSource(
-        FakeObservations(observations),
-        FakeEvents(events),
+        FakeObservationRepository(observations),
+        FakeEventRepository(events),
         WEIGHTS,
         store if store is not None else InMemoryFeatureStore(),
     )
@@ -179,14 +154,14 @@ def test_visibility_respects_the_reading_clock():
 
 def test_refresh_removes_what_is_no_longer_computable():
     store = InMemoryFeatureStore()
-    events = FakeEvents(
+    events = FakeEventRepository(
         [score_event("BOJ_POLICY_SHIFT_SCORE", 0.5, NOW - timedelta(days=1))]
     )
-    source = StoredFeatureSource(FakeObservations(), events, WEIGHTS, store)
+    source = StoredFeatureSource(FakeObservationRepository(), events, WEIGHTS, store)
 
     source.refresh(NOW)
     assert store.get(f.BOJ_POLICY_SHIFT_SCORE) == 0.5
 
-    events._events.clear()
+    events.events.clear()
     source.refresh(NOW)
     assert store.get(f.BOJ_POLICY_SHIFT_SCORE) is None

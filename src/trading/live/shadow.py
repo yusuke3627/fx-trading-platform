@@ -49,6 +49,7 @@ from trading.intelligence.intervention import InterventionRiskConfig
 from trading.live.clock import CycleClock
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
+from trading.risk.conversion import MarketQuoteConversionService
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 from trading.risk.event_risk import EventRiskCalendar
 from trading.runner import StrategyRunner
@@ -189,6 +190,7 @@ class ShadowRunner:
                 equity=account.equity,
                 max_risk_per_trade_pct=self._risk_config.max_risk_per_trade_pct,
                 pip_size=self._instrument.pip_size,
+                quote_currency=self._instrument.quote_currency,
                 volume_step=self._instrument.volume_step,
                 entry_price=entry_price,
             )
@@ -371,6 +373,11 @@ def main() -> None:
         {symbol: instrument},
     )
     ledger = VirtualPositionLedger(clock)
+    # 換算も市場と同じ stored series を読む: sizing の quote 鮮度制約と
+    # risk config の quote_max_age を一致させる。
+    conversion = MarketQuoteConversionService(
+        market, max_quote_age_seconds=config.risk.quote_max_age_seconds
+    )
     store = InMemoryFeatureStore()
     features = StoredFeatureSource(
         PostgresMacroObservationRepository(conn),
@@ -385,9 +392,9 @@ def main() -> None:
         runner=build_runner(
             config, market=market, clock=clock, ledger=ledger, features=store
         ),
-        portfolio=PortfolioManager(ledger, clock),
+        portfolio=PortfolioManager(ledger, clock, conversion),
         ledger=ledger,
-        risk=RiskEngine(config.risk, clock),
+        risk=RiskEngine(config.risk, clock, conversion),
         risk_config=config.risk,
         market=market,
         snapshots=PostgresAccountSnapshotRepository(conn),

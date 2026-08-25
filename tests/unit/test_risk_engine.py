@@ -1,9 +1,20 @@
 from decimal import Decimal
 
-from tests.support import T0, FixedClock, at, make_intent, make_snapshot, make_tick, usdjpy_spec
+from tests.support import (
+    T0,
+    FixedClock,
+    at,
+    eurusd_spec,
+    make_intent,
+    make_snapshot,
+    make_tick,
+    usdjpy_spec,
+)
+from trading.data.market import InMemoryMarketData
 from trading.domain.account import AccountMode
 from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
+from trading.risk.conversion import MarketQuoteConversionService
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 
 
@@ -38,8 +49,14 @@ def enabled_config(**overrides) -> RiskConfig:
     return RiskConfig(**values)
 
 
-def engine(config: RiskConfig) -> RiskEngine:
-    return RiskEngine(config, FixedClock())
+def engine(
+    config: RiskConfig, market: InMemoryMarketData | None = None
+) -> RiskEngine:
+    return RiskEngine(
+        config,
+        FixedClock(),
+        MarketQuoteConversionService(market or InMemoryMarketData()),
+    )
 
 
 def test_approves_within_risk_budget():
@@ -358,3 +375,72 @@ def test_future_dated_quote_rejected():
     )
     assert not decision.approved
     assert "QUOTE_FRESH" in decision.reject_codes
+
+
+def usdjpy_market(tick_time=T0) -> InMemoryMarketData:
+    market = InMemoryMarketData()
+    market.add_tick(make_tick("149.996", "150.000", time=tick_time))
+    return market
+
+
+def eurusd_context(**overrides) -> PreTradeContext:
+    values = {
+        "instrument": eurusd_spec(),
+        "quote": make_tick("1.08000", "1.08010", time=T0, symbol="EURUSD"),
+        "stop_distance_pips": Decimal(20),
+        "requested_quantity": Decimal(0),
+    }
+    values.update(overrides)
+    return make_context(**values)
+
+
+def test_usd_quote_loss_is_converted_before_the_size_check():
+    # EURUSD: budget 500 JPY; 20 pips × 0.0001 = 0.002 USD/unit。USDJPY ask
+    # 150 で 0.3 JPY/unit → 1,666 → 1,000 units。修正前は 0.002 をそのまま
+    # JPY budget と比較し 250,000 units を許した（約 150 倍の over-size）。
+    config = enabled_config(max_units_per_symbol={"EURUSD": 1_000_000})
+    decision = engine(config, usdjpy_market()).evaluate(
+        make_intent(symbol="EURUSD"), eurusd_context()
+    )
+    assert decision.approved, decision.reject_codes
+    assert decision.approved_quantity == Decimal(1000)
+    assert decision.approved_quantity != Decimal(250_000)
+
+
+def test_missing_conversion_quote_rejects_the_entry():
+    config = enabled_config(max_units_per_symbol={"EURUSD": 1_000_000})
+    decision = engine(config).evaluate(make_intent(symbol="EURUSD"), eurusd_context())
+    assert not decision.approved
+    assert "CONVERSION_RATE_UNAVAILABLE" in decision.reject_codes
+
+
+def test_stale_conversion_quote_rejects_the_entry():
+    # EURUSD 自体の quote は fresh でも、換算に使う USDJPY が stale なら
+    # risk-increasing は fail-close（ADR-009）。
+    config = enabled_config(max_units_per_symbol={"EURUSD": 1_000_000})
+    decision = engine(config, usdjpy_market(tick_time=T0)).evaluate(
+        make_intent(symbol="EURUSD"),
+        eurusd_context(
+            now=at(seconds=10),
+            quote=make_tick("1.08000", "1.08010", time=at(seconds=10), symbol="EURUSD"),
+        ),
+    )
+    assert not decision.approved
+    assert "CONVERSION_RATE_STALE" in decision.reject_codes
+
+
+def test_close_is_not_blocked_by_conversion_failure():
+    # exit は _size_check を通らない: USDJPY quote が完全に欠けていても
+    # EURUSD の CLOSE は承認される（ADR-010）。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(symbol="EURUSD", action=PositionAction.CLOSE),
+        eurusd_context(),
+    )
+    assert decision.approved, decision.reject_codes
+
+
+def test_jpy_quote_sizing_is_unchanged_by_the_conversion_wiring():
+    # USDJPY（quote=JPY）は恒等換算: 修正前と同じ数量が承認される回帰固定。
+    decision = engine(enabled_config()).evaluate(make_intent(), make_context())
+    assert decision.approved, decision.reject_codes
+    assert decision.approved_quantity == Decimal(2000)

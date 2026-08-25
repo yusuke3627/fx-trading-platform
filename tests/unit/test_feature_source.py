@@ -126,6 +126,19 @@ def test_missing_inputs_leave_the_feature_absent_not_zero():
     assert snapshot == {}
 
 
+def test_an_intervention_on_the_last_valid_date_still_scores():
+    # The recency check counts whole dates and keeps day 90 exactly; the
+    # query's timestamp window has to reach the morning of that date, which
+    # lies before now-minus-90-days on the clock.
+    last_valid_day = NOW.date() - timedelta(days=90)
+    known = datetime(
+        last_valid_day.year, last_valid_day.month, last_valid_day.day, 9, 0, tzinfo=UTC
+    )
+    source = make_source(events=[intervention_event(last_valid_day, known)])
+
+    assert f.INTERVENTION_RISK in source.snapshot(NOW)
+
+
 def test_no_recent_intervention_is_absence_of_evidence():
     # An intervention outside the recency window contributes nothing, and
     # "nothing" must read as missing — a 0.0 would tell strategies the risk is

@@ -84,11 +84,13 @@ class StoredFeatureSource:
         # that is absence of evidence, not evidence of calm — the feature goes
         # missing rather than scoring 0.
         #
-        # The known_at bound is exact, not a heuristic: nothing is known
-        # before it happens, so known_at >= action_date, and an event outside
-        # this window can only describe an action the recency window already
-        # ignores.
-        recency = now - timedelta(days=RECENCY_WINDOW_DAYS)
+        # The known_at bound cannot drop a relevant event: nothing is known
+        # before it happens, so known_at >= the action date's midnight. The
+        # extra day bridges the arithmetic mismatch — the recency check counts
+        # whole DATES and keeps an action exactly RECENCY_WINDOW_DAYS old,
+        # whose midnight lies up to a day before the same span measured back
+        # from this instant.
+        recency = now - timedelta(days=RECENCY_WINDOW_DAYS + 1)
         intervention_events = [
             event
             for kind in KIND_TO_STATUS

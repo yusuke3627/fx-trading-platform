@@ -10,7 +10,13 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from trading.data.policy.meetings import PolicyMeeting, load_coverage, load_meetings
+from trading.data.policy.meetings import (
+    PolicyMeeting,
+    ScheduledMeeting,
+    load_coverage,
+    load_meetings,
+    load_schedule,
+)
 from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 
 if TYPE_CHECKING:
@@ -40,13 +46,15 @@ def central_bank_calendar(config: AppConfig) -> EventRiskCalendar | None:
         return None
     coverage = load_coverage()
     return EventRiskCalendar(
-        central_bank_windows(load_meetings(), settings),
+        central_bank_windows(load_meetings(), load_schedule(), settings),
         (coverage.since, coverage.until) if coverage else None,
     )
 
 
 def central_bank_windows(
-    meetings: Sequence[PolicyMeeting], settings: EventRiskWindowSettings
+    meetings: Sequence[PolicyMeeting],
+    schedule: Sequence[ScheduledMeeting],
+    settings: EventRiskWindowSettings,
 ) -> list[EventRiskWindow]:
     """One window per cluster of meetings whose risk periods run together.
 
@@ -68,28 +76,50 @@ def central_bank_windows(
     meetings today; an emergency one needs its pre-window suppressed rather
     than simply being added.
     """
-    times = sorted(meeting.statement_published_at for meeting in meetings)
-    if not times:
+    # The announced interval is what the market positioned against, so it is
+    # the only thing the window hangs off — before AND after the results come
+    # in. The actual publication minute never reshapes the window in either
+    # direction: these windows are not gated by query time, so stretching one
+    # to a late actual publication would apply the stretch to a replay of the
+    # hours before the statement landed, on knowledge from later. A statement
+    # outside its recorded bounds means the bounds were curated wrong, which
+    # is a data correction, not something to infer here. Each meeting enters
+    # the clustering as one indivisible span, so the publication uncertainty
+    # widens its window rather than shifting it — and can never split it, no
+    # matter how the span compares to pre + post.
+    unscheduled = {(m.bank, m.decision_date): m for m in meetings}
+    spans: list[tuple[datetime, datetime]] = []
+    for entry in schedule:
+        unscheduled.pop((entry.bank, entry.decision_date), None)
+        spans.append((entry.earliest_published_at, entry.latest_published_at))
+    # Backfilled meetings predate the schedule section; their one recorded
+    # instant is all the file knows.
+    spans += [
+        (m.statement_published_at, m.statement_published_at) for m in unscheduled.values()
+    ]
+    spans.sort()
+    if not spans:
         return []
 
     pre = timedelta(hours=settings.pre_hours)
     post = timedelta(hours=settings.post_hours)
-    clusters: list[list[datetime]] = [[times[0]]]
-    for event_at in times[1:]:
-        if event_at - pre <= clusters[-1][-1] + post:
-            clusters[-1].append(event_at)
+    clusters: list[tuple[datetime, datetime]] = [spans[0]]
+    for start, end in spans[1:]:
+        first, last = clusters[-1]
+        if start - pre <= last + post:
+            clusters[-1] = (first, max(last, end))
         else:
-            clusters.append([event_at])
+            clusters.append((start, end))
 
     actions = settings.actions()
     return [
         EventRiskWindow(
             name=CENTRAL_BANK_CLUSTER,
-            first_event_at=cluster[0],
-            last_event_at=cluster[-1],
+            first_event_at=first,
+            last_event_at=last,
             pre_hours=settings.pre_hours,
             post_hours=settings.post_hours,
             actions=actions,
         )
-        for cluster in clusters
+        for first, last in clusters
     ]

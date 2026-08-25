@@ -18,7 +18,12 @@ import os
 from pathlib import Path
 
 from trading.backtest.clock import SystemClock
-from trading.data.policy.meetings import DEFAULT_MEETINGS_PATH, load_meetings
+from trading.data.policy.meetings import (
+    DEFAULT_MEETINGS_PATH,
+    load_meetings,
+    load_schedule,
+    untranscribed_overdue,
+)
 from trading.data.policy.scoring import event_from_meeting
 
 
@@ -31,12 +36,24 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.env)
+    clock = SystemClock()
+
+    meetings = load_meetings(args.meetings)
+    # Loading the schedule: section validates it too — results transcribed
+    # onto a schedule entry instead of added to meetings: fail this daily
+    # run loudly instead of leaving the meeting silently unscored forever.
+    schedule = load_schedule(args.meetings)
+    # The other way to lose a meeting is to never transcribe it at all: once
+    # its publication bound has passed, the results exist and belong in
+    # meetings:, so an overdue schedule entry is a failure, not a note.
+    stale = untranscribed_overdue(meetings, schedule, clock.now())
+    if stale:
+        overdue = ", ".join(f"{s.bank} {s.decision_date}" for s in stale)
+        raise SystemExit(f"schedule entries past publication, results not transcribed: {overdue}")
+
     dsn = os.environ.get(config.storage.dsn_env)
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")
-
-    meetings = load_meetings(args.meetings)
-    clock = SystemClock()
     events = [event_from_meeting(meeting, clock) for meeting in meetings]
 
     # Imported here so the module stays usable (and unit-testable) without the

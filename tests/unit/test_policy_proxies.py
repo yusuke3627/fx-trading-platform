@@ -16,8 +16,16 @@ from trading.data.macro.registry import (
     US_TREASURY_2Y_YIELD,
     period_from_date,
 )
+from trading.data.policy.collector import main as collector_main
 from trading.data.policy.features import latest_policy_score, us2y_features
-from trading.data.policy.meetings import PolicyMeeting, load_coverage, load_meetings
+from trading.data.policy.meetings import (
+    PolicyMeeting,
+    ScheduledMeeting,
+    load_coverage,
+    load_meetings,
+    load_schedule,
+    untranscribed_overdue,
+)
 from trading.data.policy.scoring import (
     SCORING_VERSION,
     event_from_meeting,
@@ -135,6 +143,155 @@ def test_committed_seed_file_loads():
     meetings = load_meetings("config/policy_meetings.yaml")
     assert meetings, "seed file must contain at least one meeting"
     assert all(m.source_uri.startswith("https://") for m in meetings)
+
+
+def test_schedule_entries_never_reach_scoring(tmp_path):
+    # 予定はリスク窓専用。load_meetings に混ざると日次 collector が 0 点の
+    # プレースホルダを決定的 id で永続化し、後から実結果を転記しても
+    # ON CONFLICT DO NOTHING で訂正されない。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+meetings:
+  - bank: BOJ
+    decision_date: 2026-07-31
+    statement_published_at: 2026-07-31T06:00:00+00:00
+    verified: false
+    source_uri: https://example.invalid
+schedule:
+  - bank: FED
+    decision_date: 2026-09-16
+    earliest_published_at: 2026-09-16T18:00:00+00:00
+    latest_published_at: 2026-09-16T18:00:00+00:00
+    source_uri: https://example.invalid
+"""
+    )
+
+    meetings = load_meetings(path)
+    schedule = load_schedule(path)
+
+    assert [m.bank for m in meetings] == ["BOJ"]
+    assert [s.bank for s in schedule] == ["FED"]
+
+
+def scheduled_boj(**overrides) -> ScheduledMeeting:
+    values = {
+        "bank": "BOJ",
+        "decision_date": date(2026, 7, 31),
+        "earliest_published_at": datetime(2026, 7, 31, 0, 0, tzinfo=UTC),
+        "latest_published_at": datetime(2026, 7, 31, 6, 0, tzinfo=UTC),
+        "source_uri": "https://example.invalid/calendar",
+    }
+    values.update(overrides)
+    return ScheduledMeeting(**values)
+
+
+def test_an_overdue_meeting_without_results_is_flagged():
+    # 公表期限を過ぎたのに meetings: に転記が無い会合は、放置すると採点
+    # イベントが永続的に欠けるので、日次実行を止める対象として返す。
+    entry = scheduled_boj()
+
+    assert untranscribed_overdue([], [entry], T0) == [entry]
+
+
+def test_a_transcribed_meeting_is_not_overdue():
+    # 転記後も schedule: に残るのが正しい状態（窓は予定区間に掛かり続ける）。
+    # meetings: に対応エントリがあれば期限超過でも失敗にしない。
+    entry = scheduled_boj()
+
+    assert untranscribed_overdue([meeting()], [entry], T0) == []
+
+
+def test_a_future_meeting_is_not_overdue():
+    entry = scheduled_boj(
+        decision_date=date(2026, 9, 18),
+        earliest_published_at=datetime(2026, 9, 18, 0, 0, tzinfo=UTC),
+        latest_published_at=datetime(2026, 9, 18, 6, 0, tzinfo=UTC),
+    )
+
+    assert untranscribed_overdue([], [entry], T0) == []
+
+
+def test_results_transcribed_onto_a_schedule_entry_fail_loudly(tmp_path):
+    # 結果を schedule: に書き足して meetings: へ移し忘れると、黙って採点から
+    # 漏れ続ける。未知フィールドは拒否して移行漏れをその場で検出する。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+schedule:
+  - bank: FED
+    decision_date: 2026-09-16
+    earliest_published_at: 2026-09-16T18:00:00+00:00
+    latest_published_at: 2026-09-16T18:00:00+00:00
+    rate_change_bp: 25
+    verified: true
+    source_uri: https://example.invalid
+"""
+    )
+    with pytest.raises(ValueError, match="rate_change_bp"):
+        load_schedule(path)
+
+
+def test_a_misspelled_section_name_is_rejected(tmp_path):
+    # scheudle: の誤記が空の schedule として通ると、covers の主張だけが残り、
+    # 登録したはずの会合期間が NORMAL と判定される。
+    path = tmp_path / "meetings.yaml"
+    path.write_text("meetings: []\nscheudle: []\n")
+
+    with pytest.raises(ValueError, match="scheudle"):
+        load_schedule(path)
+
+
+def test_the_collector_fails_when_a_past_meeting_was_never_transcribed(
+    tmp_path, monkeypatch
+):
+    # 公表期限を過ぎた会合が schedule: に残ったままだと、実結果は存在するのに
+    # 採点イベントが永続的に欠落する。日次実行はそこで止まって知らせる。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+schedule:
+  - bank: BOJ
+    decision_date: 2026-06-16
+    earliest_published_at: 2026-06-16T00:00:00+00:00
+    latest_published_at: 2026-06-16T06:00:00+00:00
+    source_uri: https://example.invalid
+"""
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["collector", "--env", "demo", "--meetings", str(path)]
+    )
+
+    with pytest.raises(SystemExit, match="results not transcribed"):
+        collector_main()
+
+
+def test_the_collector_validates_the_whole_file_before_scoring(tmp_path, monkeypatch):
+    # 日次 collector が meetings: しか読まないと、schedule: への書き足しは
+    # 本番で一度も検証されず、その会合は正常終了の裏で採点され続けない。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+schedule:
+  - bank: FED
+    decision_date: 2026-09-16
+    earliest_published_at: 2026-09-16T18:00:00+00:00
+    latest_published_at: 2026-09-16T18:00:00+00:00
+    rate_change_bp: 25
+    source_uri: https://example.invalid
+"""
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["collector", "--env", "demo", "--meetings", str(path)]
+    )
+
+    with pytest.raises(ValueError, match="rate_change_bp"):
+        collector_main()
+
+
+def test_committed_schedule_loads():
+    schedule = load_schedule("config/policy_meetings.yaml")
+    assert all(s.source_uri.startswith("https://") for s in schedule)
 
 
 def test_a_file_that_declares_no_coverage_claims_nothing(tmp_path):

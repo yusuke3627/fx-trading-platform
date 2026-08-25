@@ -14,7 +14,7 @@
 # 暦が痩せている間はサイズが絞られたままになる。
 covers:
   since: 2026-07-01T00:00:00+00:00
-  until: 2026-08-01T00:00:00+00:00
+  until: 2027-01-01T00:00:00+00:00
 
 meetings:
   - bank: FED
@@ -38,3 +38,71 @@ meetings:
     explicit_future_hike_language: false
     verified: false  # 8対1（1名が25bp利上げ提案）は research note 転記。公式と要照合
     source_uri: https://www.boj.or.jp/mopo/mpmdeci/index.htm
+
+
+
+
+# 公式カレンダーどおりの会合予定（恒久記録）。リスク窓はこのセクションだけ
+# から構築され、採点には乗らない（結果未公表の会合を meetings: に置くと、
+# 日次 collector が 0 点イベントを決定的 id で永続化し、後から訂正できない）。
+#
+# statement 公表後は実結果を meetings: へ「追加」する。ここのエントリは
+# 消さない — 事前に市場が知っていたのは予定区間であり、窓は転記後もそれに
+# 掛かり続ける（実公表時刻で窓を作り直すと replay が当時未知の情報を使う）。
+# 公表期限を過ぎて meetings: に対応エントリが無い場合、日次 collector は
+# 失敗して転記漏れを知らせる。結果フィールドをここに書き足しても拒否される。
+#
+# 公表時刻は点ではなく区間で持つ。窓は earliest 側から開き latest 側で閉じる。
+# FED は 14:00 ET 固定なので両者同値。BOJ は時刻非固定のため、早い境界に
+# 会合 2 日目の開始（9:00 JST。それより早い公表はあり得ない）、遅い境界に
+# 保守置きの 15:00 JST を置く。
+# 日程の一次資料: FED は FRB 公式カレンダー、BOJ は 2025-07-31 公表の
+# 「2026年の金融政策決定会合等の日程」PDF。8 月は両行とも会合なし。
+schedule:
+  - bank: FED
+    decision_date: 2026-07-29
+    earliest_published_at: 2026-07-29T18:00:00+00:00  # 14:00 EDT
+    latest_published_at: 2026-07-29T18:00:00+00:00
+    source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - bank: BOJ
+    decision_date: 2026-07-31
+    earliest_published_at: 2026-07-31T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-07-31T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: FED
+    decision_date: 2026-09-16
+    earliest_published_at: 2026-09-16T18:00:00+00:00  # 14:00 EDT
+    latest_published_at: 2026-09-16T18:00:00+00:00
+    source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - bank: BOJ
+    decision_date: 2026-09-18
+    earliest_published_at: 2026-09-18T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-09-18T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: FED
+    decision_date: 2026-10-28
+    earliest_published_at: 2026-10-28T18:00:00+00:00  # 14:00 EDT（米夏時間は 11/1 まで）
+    latest_published_at: 2026-10-28T18:00:00+00:00
+    source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - bank: BOJ
+    decision_date: 2026-10-30
+    earliest_published_at: 2026-10-30T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-10-30T06:00:00+00:00  # 15:00 JST（展望レポート回）
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: FED
+    decision_date: 2026-12-09
+    earliest_published_at: 2026-12-09T19:00:00+00:00  # 14:00 EST（冬時間）
+    latest_published_at: 2026-12-09T19:00:00+00:00
+    source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+  - bank: BOJ
+    decision_date: 2026-12-18
+    earliest_published_at: 2026-12-18T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-12-18T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf

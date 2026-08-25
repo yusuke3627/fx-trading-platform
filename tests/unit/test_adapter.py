@@ -36,6 +36,8 @@ class FakeMT5Positions:
     def symbol_info(self, symbol):
         return SimpleNamespace(
             name=symbol,
+            currency_base="USD",
+            currency_profit="JPY",
             digits=3,
             trade_contract_size=1000.0,
             volume_min=1.0,

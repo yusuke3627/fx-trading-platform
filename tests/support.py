@@ -11,6 +11,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.instrument import FillingMode, InstrumentSpec
 from trading.domain.intent import PositionIntent, ProtectionSpec
 from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
+from trading.domain.money import Currency
 from trading.domain.order import CommandState, ExecutionCommand, ExecutionSide
 from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import RiskDecision
@@ -37,6 +38,8 @@ class FixedClock:
 def usdjpy_spec(**overrides) -> InstrumentSpec:
     values = {
         "symbol": "USDJPY",
+        "base_currency": Currency.USD,
+        "quote_currency": Currency.JPY,
         "digits": 3,
         "pip_size": Decimal("0.01"),
         "contract_size": Decimal(1000),

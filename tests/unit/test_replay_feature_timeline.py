@@ -122,6 +122,48 @@ def test_stepping_matches_a_live_refresh_at_every_sampled_instant():
         instant += timedelta(minutes=37)
 
 
+def test_a_row_aging_out_of_the_lookback_expires_mid_day_like_live():
+    # A series that stopped updating: its last vintage leaves the 90-day
+    # lookback at known_at + 90d, which is a mid-day instant no new row and
+    # no midnight announces. Live would drop the value there, so the replay
+    # schedules the expiry itself.
+    from datetime import date
+    from decimal import Decimal
+    from uuid import uuid4 as _uuid4
+
+    from trading.data.features import US2Y_VINTAGE_LOOKBACK
+    from trading.data.macro.registry import US_TREASURY_2Y_YIELD
+    from trading.domain.economic import EconomicObservation
+
+    known = T0 + timedelta(hours=13)
+    observation = EconomicObservation(
+        observation_id=_uuid4(),
+        series=US_TREASURY_2Y_YIELD,
+        observation_period=date(2026, 7, 31).isoformat(),
+        value=Decimal("4.00"),
+        unit="percent",
+        source="TEST",
+        retrieved_at=known,
+        known_at=known,
+    )
+    source = StoredFeatureSource(
+        FakeObservationRepository([observation]),
+        FakeEventRepository(),
+        WEIGHTS,
+        InMemoryFeatureStore(),
+    )
+    timeline = ReplayFeatureTimeline(source, [known])
+    expiry = known + US2Y_VINTAGE_LOOKBACK
+    timeline.reset(expiry - timedelta(hours=2))
+    assert timeline.store.get(f.US2Y_LEVEL) == 4.0
+
+    timeline.advance(expiry - timedelta(seconds=1))
+    assert timeline.store.get(f.US2Y_LEVEL) == 4.0
+
+    timeline.advance(expiry)
+    assert timeline.store.get(f.US2Y_LEVEL) is None
+
+
 def test_reset_rewinds_a_used_timeline():
     change_at = T0 + timedelta(hours=6)
     timeline = timeline_over([score_event(2.0, change_at)], changes=[change_at])

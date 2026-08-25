@@ -135,18 +135,25 @@ class ReplayFeatureTimeline:
     loaded up front), and advance() recomputes only when the clock crosses
     one.
 
-    One class of change has no row behind it: intervention risk decays on
-    DATE arithmetic, so the snapshot moves at UTC midnights while an
-    intervention is inside its recency window. advance() therefore also
-    refreshes on the first tick of each new date. What this cadence cannot
-    see is a row leaving a query lookback window mid-day — that only matters
-    for a series stale enough to be aging out, and the midnight refresh
-    catches it within the day.
+    Two classes of change have no new row behind them. A row EXPIRES when the
+    US2Y lookback window slides past its known_at — visible only while a
+    series has stopped updating, but in exactly that regime live would drop
+    the value mid-day and a replay must not keep it until midnight. Every
+    change instant therefore schedules its own expiry alongside it; the
+    surplus instants this creates for rows other bounds govern cost one cheap
+    refresh each. And intervention risk decays on DATE arithmetic, so the
+    snapshot moves at UTC midnights while an intervention is inside its
+    recency window; advance() also refreshes on the first tick of each new
+    date. (The intervention query window's own slide needs no instant: its
+    date-based cutoff has always zeroed an event's contribution by the
+    midnight before the timestamp window drops the row.)
     """
 
     def __init__(self, source: StoredFeatureSource, changes: Sequence[datetime]) -> None:
         self._source = source
-        self._changes = sorted(changes)
+        self._changes = sorted(
+            [*changes, *(instant + US2Y_VINTAGE_LOOKBACK for instant in changes)]
+        )
         self._position = 0
         self._refreshed_at: datetime | None = None
 

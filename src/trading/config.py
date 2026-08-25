@@ -133,8 +133,14 @@ def load_config(environment: str, config_dir: Path | str = "config") -> AppConfi
         raise ValueError(f"unknown environment {environment!r}; expected one of {ENVIRONMENTS}")
     config_dir = Path(config_dir)
 
-    base = yaml.safe_load((config_dir / "base.yaml").read_text()) or {}
-    overlay = yaml.safe_load((config_dir / f"{environment}.yaml").read_text()) or {}
+    # Every file this system reads and writes is UTF-8, and saying so is not
+    # optional: Python falls back to the platform's locale encoding, which on
+    # the Japanese Windows trading host is cp932 and rejects the comments these
+    # files carry.
+    base = yaml.safe_load((config_dir / "base.yaml").read_text(encoding="utf-8")) or {}
+    overlay = (
+        yaml.safe_load((config_dir / f"{environment}.yaml").read_text(encoding="utf-8")) or {}
+    )
     raw = _deep_merge(base, overlay)
     raw["environment"] = environment
 

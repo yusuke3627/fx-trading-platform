@@ -9,6 +9,15 @@
 
 BEGIN;
 
+-- The shadow runner writes to these tables every few seconds and does not stop
+-- for this. DELETE only takes a row-level lock, so without this the runner can
+-- commit a fresh row between the DELETE and the ALTER — and the new NOT NULL
+-- column then fails on exactly that row. ALTER TABLE would take this lock
+-- anyway; taking it up front is what makes the whole transaction atomic
+-- against a running writer, which waits for it rather than racing it.
+LOCK TABLE strategy_signals, position_intents, risk_decisions
+    IN ACCESS EXCLUSIVE MODE;
+
 -- Rows written before this migration carry no account, and nothing in them
 -- can supply one: the runner knew which account it was evaluating, the row
 -- does not. Putting a guessed account on a record whose entire point is to say

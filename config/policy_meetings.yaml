@@ -40,40 +40,52 @@ meetings:
     source_uri: https://www.boj.or.jp/mopo/mpmdeci/index.htm
 
 
+
 # 予定のみの会合（結果未公表）。リスク窓の構築にだけ使われ、採点には乗らない
 # （プレースホルダを meetings: に置くと、日次 collector が 0 点イベントを決定的
 # id で永続化し、後から実結果を転記しても訂正されない）。statement 公表後は
-# 実結果を転記して meetings: へ移す。両セクションに同じ会合が残っていると
-# ローダーが duplicate として拒否する。
+# 実結果を転記して meetings: へ移す。両セクションに同じ会合が残っている、
+# または結果フィールドをここに書き足すと、ローダーが拒否する。
+#
+# 公表時刻は点ではなく区間で持つ。窓は earliest 側から開き latest 側で閉じる。
+# FED は 14:00 ET 固定なので両者同値。BOJ は時刻非固定のため、早い境界に
+# 会合 2 日目の開始（9:00 JST。それより早い公表はあり得ない）、遅い境界に
+# 従来の保守置き 15:00 JST を置く。
 # 日程の一次資料: FED は FRB 公式カレンダー、BOJ は 2025-07-31 公表の
 # 「2026年の金融政策決定会合等の日程」PDF。8 月は両行とも会合なし。
 schedule:
   - bank: FED
     decision_date: 2026-09-16
-    statement_published_at: 2026-09-16T18:00:00+00:00  # 14:00 EDT
+    earliest_published_at: 2026-09-16T18:00:00+00:00  # 14:00 EDT
+    latest_published_at: 2026-09-16T18:00:00+00:00
     source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 
   - bank: BOJ
     decision_date: 2026-09-18
-    statement_published_at: 2026-09-18T06:00:00+00:00  # 15:00 JST（保守置き）
+    earliest_published_at: 2026-09-18T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-09-18T06:00:00+00:00  # 15:00 JST
     source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
 
   - bank: FED
     decision_date: 2026-10-28
-    statement_published_at: 2026-10-28T18:00:00+00:00  # 14:00 EDT（米夏時間は 11/1 まで）
+    earliest_published_at: 2026-10-28T18:00:00+00:00  # 14:00 EDT（米夏時間は 11/1 まで）
+    latest_published_at: 2026-10-28T18:00:00+00:00
     source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 
   - bank: BOJ
     decision_date: 2026-10-30
-    statement_published_at: 2026-10-30T06:00:00+00:00  # 15:00 JST（保守置き・展望レポート回）
+    earliest_published_at: 2026-10-30T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-10-30T06:00:00+00:00  # 15:00 JST（展望レポート回）
     source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
 
   - bank: FED
     decision_date: 2026-12-09
-    statement_published_at: 2026-12-09T19:00:00+00:00  # 14:00 EST（冬時間）
+    earliest_published_at: 2026-12-09T19:00:00+00:00  # 14:00 EST（冬時間）
+    latest_published_at: 2026-12-09T19:00:00+00:00
     source_uri: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
 
   - bank: BOJ
     decision_date: 2026-12-18
-    statement_published_at: 2026-12-18T06:00:00+00:00  # 15:00 JST（保守置き）
+    earliest_published_at: 2026-12-18T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-12-18T06:00:00+00:00  # 15:00 JST
     source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf

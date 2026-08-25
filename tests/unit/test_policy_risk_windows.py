@@ -33,11 +33,14 @@ def meeting(bank: str, published_at: datetime) -> PolicyMeeting:
     )
 
 
-def scheduled(bank: str, published_at: datetime) -> ScheduledMeeting:
+def scheduled(
+    bank: str, earliest: datetime, latest: datetime | None = None
+) -> ScheduledMeeting:
     return ScheduledMeeting(
         bank=bank,
-        decision_date=published_at.date(),
-        statement_published_at=published_at,
+        decision_date=earliest.date(),
+        earliest_published_at=earliest,
+        latest_published_at=latest if latest is not None else earliest,
         source_uri="https://example.invalid/calendar",
     )
 
@@ -52,6 +55,19 @@ def test_an_announced_meeting_opens_a_window_before_its_results_exist():
     (window,) = central_bank_windows([scheduled("FED", T0)], SETTINGS)
 
     assert window.first_event_at == T0
+
+
+def test_an_uncertain_publication_time_widens_the_window_not_shifts_it():
+    # BOJ publishes with no fixed clock time. Hanging the window off the late
+    # bound alone would open the pre-window hours late; off the early bound
+    # alone it would close hours early. The interval covers both.
+    early = T0
+    late = T0 + timedelta(hours=6)
+
+    (window,) = central_bank_windows([scheduled("BOJ", early, late)], SETTINGS)
+
+    assert window.first_event_at == early
+    assert window.last_event_at == late
 
 
 def test_the_shipped_schedule_reaches_the_calendar():

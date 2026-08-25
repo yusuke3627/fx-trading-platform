@@ -24,7 +24,7 @@ DEFAULT_MEETINGS_PATH = Path("config/policy_meetings.yaml")
 
 
 class PolicyMeeting(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     bank: Literal["BOJ", "FED"]
     decision_date: date
@@ -62,7 +62,7 @@ class MeetingCoverage(BaseModel):
     telling the two apart is what this exists for.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     since: datetime
     until: datetime
@@ -113,21 +113,35 @@ class ScheduledMeeting(BaseModel):
     transcribed later would land on ON CONFLICT DO NOTHING — the wrong event
     would be permanent. Keeping the schedule structurally separate makes that
     path impossible instead of guarded.
+
+    Publication is a bounded interval, not an instant: BOJ announces "right
+    after the meeting" with no fixed clock time. The window opens off the
+    early bound and closes off the late one, so the uncertainty widens the
+    window instead of shifting it. A bank with a fixed time (FED) records the
+    same instant twice. extra is forbidden so results transcribed onto a
+    schedule entry by mistake fail loudly instead of silently never scoring.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     bank: Literal["BOJ", "FED"]
     decision_date: date
-    statement_published_at: datetime
+    earliest_published_at: datetime
+    latest_published_at: datetime
     source_uri: str
 
-    @field_validator("statement_published_at")
+    @field_validator("earliest_published_at", "latest_published_at")
     @classmethod
     def _aware(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
-            raise ValueError("statement_published_at must be timezone-aware")
+            raise ValueError("publication bounds must be timezone-aware")
         return value
+
+    @model_validator(mode="after")
+    def _ordered(self) -> ScheduledMeeting:
+        if self.latest_published_at < self.earliest_published_at:
+            raise ValueError("latest_published_at must not precede earliest_published_at")
+        return self
 
 
 def load_schedule(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[ScheduledMeeting]:

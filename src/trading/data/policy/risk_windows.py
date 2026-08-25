@@ -78,7 +78,19 @@ def central_bank_windows(
     meetings today; an emergency one needs its pre-window suppressed rather
     than simply being added.
     """
-    times = sorted(meeting.statement_published_at for meeting in meetings)
+    # A transcribed meeting published at one known instant; a scheduled one
+    # only bounds it. Both bounds join the clustering, so the window opens off
+    # the earliest a statement could land and closes off the latest — the
+    # uncertainty widens the window rather than shifting it.
+    times = sorted(
+        instant
+        for meeting in meetings
+        for instant in (
+            (meeting.statement_published_at,)
+            if isinstance(meeting, PolicyMeeting)
+            else (meeting.earliest_published_at, meeting.latest_published_at)
+        )
+    )
     if not times:
         return []
 

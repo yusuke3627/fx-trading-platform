@@ -158,7 +158,8 @@ meetings:
 schedule:
   - bank: FED
     decision_date: 2026-09-16
-    statement_published_at: 2026-09-16T18:00:00+00:00
+    earliest_published_at: 2026-09-16T18:00:00+00:00
+    latest_published_at: 2026-09-16T18:00:00+00:00
     source_uri: https://example.invalid
 """
     )
@@ -184,11 +185,32 @@ meetings:
 schedule:
   - bank: FED
     decision_date: 2026-09-16
-    statement_published_at: 2026-09-16T18:00:00+00:00
+    earliest_published_at: 2026-09-16T18:00:00+00:00
+    latest_published_at: 2026-09-16T18:00:00+00:00
     source_uri: https://example.invalid
 """
     )
     with pytest.raises(ValueError, match="duplicate"):
+        load_schedule(path)
+
+
+def test_results_transcribed_onto_a_schedule_entry_fail_loudly(tmp_path):
+    # 結果を schedule: に書き足して meetings: へ移し忘れると、黙って採点から
+    # 漏れ続ける。未知フィールドは拒否して移行漏れをその場で検出する。
+    path = tmp_path / "meetings.yaml"
+    path.write_text(
+        """
+schedule:
+  - bank: FED
+    decision_date: 2026-09-16
+    earliest_published_at: 2026-09-16T18:00:00+00:00
+    latest_published_at: 2026-09-16T18:00:00+00:00
+    rate_change_bp: 25
+    verified: true
+    source_uri: https://example.invalid
+"""
+    )
+    with pytest.raises(ValueError, match="rate_change_bp"):
         load_schedule(path)
 
 

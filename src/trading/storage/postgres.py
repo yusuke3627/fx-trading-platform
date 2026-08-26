@@ -457,57 +457,64 @@ class PostgresMarketTickRepository:
         # and would surface to a later batch nondeterministically. So the
         # start also waits until every transaction in flight at the ceiling
         # read has ended — from then on, id <= ceiling names one fixed set.
-        # The marker forces an xid onto this read transaction: every write
-        # in flight at the ceiling read was assigned an EARLIER xid, and a
-        # snapshot's xmin only passes the marker once all of them (and the
-        # marker itself, committed right here) have finished. Comparing
-        # against the snapshot's own xmax instead would not wait at all —
-        # xids at or above xmax are implicitly in progress and never listed.
+        # A writer that inserted rows before the ceiling read may still be
+        # uncommitted while holding ids below the ceiling; streaming anyway
+        # would let those rows surface to a later batch nondeterministically.
+        # The wait is scoped to transactions actually WRITING this table
+        # (RowExclusiveLock) that began before the pin — a global snapshot
+        # bound would let any unrelated long transaction starve the start.
+        # A writer that begins earlier but only inserts after the pin cannot
+        # matter: its ids are allocated at insert time, above the ceiling.
         ceiling_row = self._conn.execute(
-            """
-            SELECT max(id) AS ceiling,
-                   pg_current_xact_id() AS marker
-            FROM market_ticks
-            """
+            "SELECT max(id) AS ceiling, now() AS pinned_at FROM market_ticks"
         ).fetchone()
         self._conn.commit()
         ceiling = ceiling_row["ceiling"]
         if ceiling is None:
             return
-        marker = int(ceiling_row["marker"])
         deadline = time.monotonic() + _STREAM_SETTLE_TIMEOUT_SECONDS
         while True:
-            xmin_row = self._conn.execute(
-                "SELECT pg_snapshot_xmin(pg_current_snapshot()) AS xmin"
+            writers_row = self._conn.execute(
+                """
+                SELECT count(*) AS writers
+                FROM pg_locks locks
+                JOIN pg_stat_activity activity ON activity.pid = locks.pid
+                WHERE locks.relation = 'market_ticks'::regclass
+                  AND locks.mode = 'RowExclusiveLock'
+                  AND activity.xact_start <= %s
+                """,
+                (ceiling_row["pinned_at"],),
             ).fetchone()
             self._conn.commit()
-            if int(xmin_row["xmin"]) > marker:
+            if writers_row["writers"] == 0:
                 break
             if time.monotonic() > deadline:
-                # An idle-in-transaction session would hold this forever;
+                # An idle-in-transaction writer would hold this forever;
                 # failing names the cause instead of streaming an unpinned
                 # set or hanging silently.
                 raise RuntimeError(
                     "stream_between could not pin its dataset: a transaction "
-                    "open since before the ceiling read has not finished "
-                    f"within {_STREAM_SETTLE_TIMEOUT_SECONDS}s"
+                    "writing market_ticks since before the ceiling read has "
+                    f"not finished within {_STREAM_SETTLE_TIMEOUT_SECONDS}s"
                 )
             time.sleep(0.1)
         # Deletes cannot be prevented without holding one snapshot for the
         # whole replay — the vacuum-pinning trade this method rejects — but
         # they must never pass silently: the settled set's size is fixed
-        # here, and the stream refuses to end quietly short of it.
-        expected_row = self._conn.execute(
-            """
-            SELECT count(*) AS expected
+        # here and re-counted at the end, so a delete of a fetched OR
+        # unfetched row turns the run into a loud failure instead of a
+        # replay whose manifest describes a vanished dataset.
+        count_sql = """
+            SELECT count(*) AS remaining
             FROM market_ticks
             WHERE symbol = %s AND event_time >= %s AND event_time < %s
               AND id <= %s
-            """,
-            (symbol, start, end, ceiling),
+            """
+        expected_row = self._conn.execute(
+            count_sql, (symbol, start, end, ceiling)
         ).fetchone()
         self._conn.commit()
-        expected = expected_row["expected"]
+        expected = expected_row["remaining"]
         streamed = 0
         last: tuple[datetime, int] | None = None
         while True:
@@ -537,10 +544,15 @@ class PostgresMarketTickRepository:
                 ).fetchall()
             self._conn.commit()
             if not rows:
-                if streamed != expected:
+                final_row = self._conn.execute(
+                    count_sql, (symbol, start, end, ceiling)
+                ).fetchone()
+                self._conn.commit()
+                if streamed != expected or final_row["remaining"] != expected:
                     raise RuntimeError(
                         f"pinned dataset changed mid-stream: {expected} rows "
-                        f"at stream start, {streamed} streamed — rows were "
+                        f"at stream start, {streamed} streamed, "
+                        f"{final_row['remaining']} remaining — rows were "
                         "deleted during the replay"
                     )
                 return

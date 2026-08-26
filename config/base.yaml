@@ -44,6 +44,10 @@ risk:
     USDJPY: 1000
 
   max_risk_per_trade_pct: 0.05
+  # portfolio 全体の open stop-risk 予算と通貨別 net exposure 上限（equity 比
+  # %）。どちらも Monte Carlo / demo で校正するまでの保守的な仮置き。
+  portfolio_stop_risk_budget_pct: 0.10
+  max_currency_net_exposure_pct: 300
 
   daily_loss_halt_pct: 0.75
   rolling_24h_loss_halt_pct: 1.00

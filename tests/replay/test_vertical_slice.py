@@ -30,6 +30,8 @@ def slice_risk_config() -> RiskConfig:
         trading_enabled=True,
         max_units_per_symbol={"USDJPY": 10000},
         max_risk_per_trade_pct=Decimal("1.0"),
+        portfolio_stop_risk_budget_pct=Decimal(10),
+        max_currency_net_exposure_pct=Decimal(1000),
         daily_loss_halt_pct=Decimal(50),
         rolling_24h_loss_halt_pct=Decimal(50),
         high_water_mark_drawdown_halt_pct=Decimal(50),

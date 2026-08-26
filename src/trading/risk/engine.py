@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from trading.backtest.clock import Clock
 from trading.domain.account import AccountMode, AccountSnapshot
+from trading.domain.exposure import PortfolioRiskSnapshot
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.market import Tick
@@ -29,6 +30,7 @@ from trading.risk.conversion import (
     AccountCurrencyConversionService,
     ConversionError,
     ConversionPurpose,
+    ConversionStress,
 )
 from trading.risk.limits import daily_loss_pct, hwm_drawdown_pct, rolling_24h_loss_pct
 
@@ -46,6 +48,19 @@ class RiskConfig(BaseModel):
     max_units_per_symbol: dict[str, int] = Field(default_factory=dict)
 
     max_risk_per_trade_pct: Decimal = Decimal("0.05")
+    # portfolio 全体の open stop-risk 予算（equity 比 %）。trade 上限 0.05% の
+    # 2 本分 = 保守的な pilot 値で、4 本 × 0.05% を自動許可しない（設計書
+    # §21 Layer 2）。数値は Monte Carlo / demo で校正するまでの仮置き。
+    portfolio_stop_risk_budget_pct: Decimal = Decimal("0.10")
+    # 通貨別 net exposure の上限（equity 比 %、口座通貨 mark）。共通 USD leg
+    # の積み上がり等を pair 横断で検出する（§21 Layer 3）。リスクベース
+    # sizing の 1 position は notional で equity の 0.5〜3 倍になり得るため、
+    # これは leverage 上限ではなく「同方向 factor の積み上げ」を止める水準。
+    # 校正対象。
+    max_currency_net_exposure_pct: Decimal = Decimal(300)
+    # 非 JPY quote の sizing に足す adverse conversion stress（%）。0 で無効。
+    # direction 条件付き分布からの推定に置き換わるまでの決定論的 floor。
+    conversion_stress_adverse_pct: Decimal = Decimal(0)
 
     daily_loss_halt_pct: Decimal = Decimal("0.75")
     rolling_24h_loss_halt_pct: Decimal = Decimal("1.00")
@@ -102,6 +117,11 @@ class PreTradeContext:
     # 既定 False = instruments 設定に無い symbol は発注不可（fail-close）。
     # backtest は live 昇格前の pair も検証対象のため、配線側が常に True を渡す。
     instrument_trading_enabled: bool = False
+
+    # 既存 book の通貨分解と open stop-risk 合計。None は「保有なし」を意味する
+    # （provider は空 book でも snapshot を渡せるが、単一銘柄運用の既存経路を
+    # 壊さないための既定値）。
+    portfolio_risk: PortfolioRiskSnapshot | None = None
 
     stop_distance_pips: Decimal | None = None
     requested_quantity: Decimal = field(default=Decimal(0))
@@ -281,6 +301,11 @@ class RiskEngine:
         # currency. Sizing this check runs on is risk-increasing, so a missing
         # or stale conversion rate rejects instead of guessing (ADR-009).
         # Exits never reach here — _size_check is entry/increase only.
+        stress = (
+            ConversionStress(adverse_pct=cfg.conversion_stress_adverse_pct)
+            if cfg.conversion_stress_adverse_pct > 0
+            else None
+        )
         try:
             loss_per_unit = self._conversion.convert(
                 Money(
@@ -290,6 +315,7 @@ class RiskEngine:
                 self._account_currency,
                 now=ctx.now,
                 purpose=ConversionPurpose.RISK_INCREASING,
+                stress=stress,
             ).money.amount
         except ConversionError as exc:
             check(exc.code, False, str(exc))
@@ -344,4 +370,66 @@ class RiskEngine:
         )
         if spec.volume_min > quantity:
             return None
+
+        self._portfolio_checks(intent, ctx, check, quantity, loss_per_unit)
         return quantity
+
+    def _portfolio_checks(
+        self,
+        intent,
+        ctx: PreTradeContext,
+        check,
+        quantity: Decimal,
+        loss_per_unit: Decimal,
+    ) -> None:
+        """既存 book に候補を加えた場合の portfolio 制約（設計書 §21 L2/L3）。
+
+        既存 book が無い（snapshot None）ときは候補単体の値で評価する。
+        candidate の通貨 leg mark は保守側（RISK_INCREASING と同じ換算）。
+        """
+        cfg = self._config
+        spec = ctx.instrument
+        equity = ctx.account.equity
+        snapshot = ctx.portfolio_risk
+
+        open_stop_risk = snapshot.open_stop_risk.amount if snapshot else Decimal(0)
+        candidate_stop_risk = loss_per_unit * quantity
+        budget = equity * cfg.portfolio_stop_risk_budget_pct / Decimal(100)
+        check(
+            "PORTFOLIO_RISK_LIMIT",
+            open_stop_risk + candidate_stop_risk <= budget,
+            f"open={open_stop_risk} candidate={candidate_stop_risk} budget={budget}",
+        )
+
+        # 候補の通貨 leg: BASE += ±qty、QUOTE -= ±qty×price。mark は entry 側
+        # の価格（LONG=ask / SHORT=bid）。口座通貨換算が成立しない場合は
+        # 直前の sizing 換算で既に reject されているため、ここには来ない
+        # （quote 通貨は同一）。
+        if ctx.quote is None:
+            return
+        signed = (
+            quantity if intent.direction is PositionDirection.LONG else -quantity
+        )
+        price = ctx.quote.ask if signed > 0 else ctx.quote.bid
+        try:
+            leg_value = self._conversion.convert(
+                Money(amount=signed * price, currency=spec.quote_currency),
+                self._account_currency,
+                now=ctx.now,
+                purpose=ConversionPurpose.RISK_INCREASING,
+            ).money.amount
+        except ConversionError as exc:
+            check(exc.code, False, str(exc))
+            return
+        cap = equity * cfg.max_currency_net_exposure_pct / Decimal(100)
+        existing_base = snapshot.net_value(spec.base_currency) if snapshot else Decimal(0)
+        existing_quote = (
+            snapshot.net_value(spec.quote_currency) if snapshot else Decimal(0)
+        )
+        check(
+            "CURRENCY_EXPOSURE_LIMIT",
+            abs(existing_base + leg_value) <= cap
+            and abs(existing_quote - leg_value) <= cap,
+            f"base({spec.base_currency})={existing_base + leg_value} "
+            f"quote({spec.quote_currency})={existing_quote - leg_value} cap={cap}",
+        )

@@ -26,10 +26,20 @@ from trading.domain.market import Bar, Tick
 # long replay holds in the window store on top of the engine's own dataset.
 TICK_HORIZON_SECONDS = 3600.0
 
+# Bars retained per (symbol, timeframe): a week of 1m bars, decades of 1d —
+# orders of magnitude above any indicator window, while a months-long 1m
+# replay stays bounded instead of accumulating the whole period.
+BAR_CAPACITY = 10_000
+
 
 class ReplayMarketData:
-    def __init__(self, tick_horizon_seconds: float = TICK_HORIZON_SECONDS) -> None:
+    def __init__(
+        self,
+        tick_horizon_seconds: float = TICK_HORIZON_SECONDS,
+        bar_capacity: int = BAR_CAPACITY,
+    ) -> None:
         self._horizon = timedelta(seconds=tick_horizon_seconds)
+        self._bar_capacity = bar_capacity
         self._ticks: dict[str, deque[Tick]] = {}
         self._bars: dict[tuple[str, str], list[Bar]] = {}
         self._instruments: dict[str, InstrumentSpec] = {}
@@ -55,12 +65,24 @@ class ReplayMarketData:
             window.popleft()
 
     def add_bar(self, bar: Bar) -> None:
-        self._bars.setdefault((bar.symbol, bar.timeframe), []).append(bar)
+        window = self._bars.setdefault((bar.symbol, bar.timeframe), [])
+        window.append(bar)
+        # Trimmed in blocks so the append stays amortized O(1) and the tail
+        # slice below stays a plain list slice.
+        if len(window) > 2 * self._bar_capacity:
+            del window[: len(window) - self._bar_capacity]
 
     def set_instrument(self, spec: InstrumentSpec) -> None:
         self._instruments[spec.symbol] = spec
 
     def bars(self, symbol: str, timeframe: str, count: int) -> Sequence[Bar]:
+        if count > self._bar_capacity:
+            # Silent truncation would hand an indicator less history than it
+            # asked for and let it compute on a starved window.
+            raise ValueError(
+                f"bar window {count} exceeds the retained capacity "
+                f"{self._bar_capacity}"
+            )
         return self._bars.get((symbol, timeframe), [])[-count:]
 
     def ticks(self, symbol: str, window_seconds: float) -> Sequence[Tick]:

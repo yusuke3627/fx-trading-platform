@@ -590,29 +590,33 @@ class PostgresMarketTickRepository:
     def bounds_between(
         self, symbol: str, start: datetime, end: datetime
     ) -> tuple[Tick, Tick] | None:
-        first = self._conn.execute(
+        # One statement, one snapshot: two separate edge reads could straddle
+        # a concurrent delete and see a first row whose last row is gone.
+        rows = self._conn.execute(
             """
-            SELECT symbol, bid, ask, event_time, received_at
-            FROM market_ticks
-            WHERE symbol = %s AND event_time >= %s AND event_time < %s
-            ORDER BY event_time, id
-            LIMIT 1
+            SELECT * FROM (
+                SELECT symbol, bid, ask, event_time, received_at
+                FROM market_ticks
+                WHERE symbol = %(symbol)s
+                  AND event_time >= %(start)s AND event_time < %(end)s
+                ORDER BY event_time, id
+                LIMIT 1
+            ) AS first_row
+            UNION ALL
+            SELECT * FROM (
+                SELECT symbol, bid, ask, event_time, received_at
+                FROM market_ticks
+                WHERE symbol = %(symbol)s
+                  AND event_time >= %(start)s AND event_time < %(end)s
+                ORDER BY event_time DESC, id DESC
+                LIMIT 1
+            ) AS last_row
             """,
-            (symbol, start, end),
-        ).fetchone()
-        if first is None:
+            {"symbol": symbol, "start": start, "end": end},
+        ).fetchall()
+        if not rows:
             return None
-        last = self._conn.execute(
-            """
-            SELECT symbol, bid, ask, event_time, received_at
-            FROM market_ticks
-            WHERE symbol = %s AND event_time >= %s AND event_time < %s
-            ORDER BY event_time DESC, id DESC
-            LIMIT 1
-            """,
-            (symbol, start, end),
-        ).fetchone()
-        return _row_to_tick(first), _row_to_tick(last)
+        return _row_to_tick(rows[0]), _row_to_tick(rows[-1])
 
     def latest_known_before(self, symbol: str, t: datetime) -> Tick | None:
         # Ordered the same way known_before is, reversed: the tie-break decides

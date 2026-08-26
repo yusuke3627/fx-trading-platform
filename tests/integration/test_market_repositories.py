@@ -231,6 +231,9 @@ def test_stream_and_bounds_agree_with_between(repos):
         window[-1],
     )
     assert ticks.bounds_between(symbol, at(minutes=20), at(minutes=30)) is None
+    # A single-row range answers with that row as both edges.
+    single = ticks.bounds_between(symbol, at(minutes=5), at(minutes=6))
+    assert single is not None and single[0] == single[1]
 
 
 def test_stream_is_pinned_to_the_rows_present_at_its_start(repos, monkeypatch):

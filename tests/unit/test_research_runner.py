@@ -139,6 +139,21 @@ def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
         )
 
 
+def test_bar_window_follows_the_evaluated_configuration():
+    from trading.strategy.base import StrategyConfig
+    from trading.strategy.registry import STRATEGIES
+
+    intraday = STRATEGIES["post_event_failed_breakout"]
+    base_config = StrategyConfig(strategy_id=intraday.strategy_id, instruments=["USDJPY"])
+    widened = base_config.model_copy(
+        update={"parameters": {"resistance_lookback": 15000}}
+    )
+    # A lookback past the default retention must widen the declared window,
+    # so the engine retains it instead of refusing the read mid-replay.
+    assert intraday.bar_window(widened) >= 15005
+    assert intraday.bar_window(base_config) < intraday.bar_window(widened)
+
+
 def test_covered_stream_judges_the_ticks_it_actually_delivers():
     from trading.backtest.data import TickDigest
     from trading.backtest.research import covered_reconstructed_stream

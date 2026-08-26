@@ -18,6 +18,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection
 from trading.domain.signal import StrategySignal
+from trading.indicators import DEFAULT_BAR_COUNT
 from trading.strategy.base import (
     Strategy,
     StrategyConfig,
@@ -41,6 +42,13 @@ class FailedSpikeReversalStrategy(Strategy):
         window_seconds = float(config.param("spike_window_seconds", 60))
         span = (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf] + window_seconds * 3
         return market_span_to_calendar(span)
+
+    @classmethod
+    def bar_window(cls, config: StrategyConfig) -> int:
+        # Only the entry-timeframe ATR reads bars, through IndicatorService's
+        # max(default window, period + 1) fetch.
+        atr_period = int(config.param("atr_period", 14))
+        return max(DEFAULT_BAR_COUNT, atr_period + 1)
 
     @classmethod
     def tick_window_seconds(cls, config: StrategyConfig) -> float:

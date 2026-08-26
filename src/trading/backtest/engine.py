@@ -33,7 +33,11 @@ from uuid import uuid4
 
 from trading.backtest.clock import Clock, ReplayClock
 from trading.backtest.costs import CostModel
-from trading.backtest.market import TICK_HORIZON_SECONDS, ReplayMarketData
+from trading.backtest.market import (
+    BAR_CAPACITY,
+    TICK_HORIZON_SECONDS,
+    ReplayMarketData,
+)
 from trading.backtest.simulator import ExecutionSimulator
 from trading.data.features import ReplayFeatureTimeline
 from trading.data.market.bars import BarBuilder
@@ -461,7 +465,10 @@ class BacktestEngine:
             tick_horizon_seconds=max(
                 TICK_HORIZON_SECONDS,
                 type(strategy).tick_window_seconds(self._strategy_config),
-            )
+            ),
+            bar_capacity=max(
+                BAR_CAPACITY, type(strategy).bar_window(self._strategy_config)
+            ),
         )
         market.set_instrument(self._spec)
         # Replay-visible quotes only: the conversion service reads the same

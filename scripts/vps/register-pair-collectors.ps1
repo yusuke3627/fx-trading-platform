@@ -40,23 +40,38 @@ foreach ($Symbol in $Symbols) {
     $vbsPath = Join-Path $Generated "$taskName.vbs"
     $logPath = Join-Path $Logs "$taskName.log"
 
-    # self-loop: collector が例外や切断で終了しても 10 秒後に再起動する
+    # self-loop: collector が例外や切断で終了しても 10 秒後に再起動する。
+    # Task Scheduler の既定作業ディレクトリは %windir%\system32 で、
+    # load_config() は相対パスの config/ を読むため、先にリポジトリへ移る。
     @"
 @echo off
+cd /d "$RepoRoot"
 :loop
 "$Python" -u -m trading.data.market.collector --env $TradingEnv --symbol $Symbol >> "$logPath" 2>&1
 timeout /t 10 /nobreak >nul
 goto loop
 "@ | Set-Content -Path $cmdPath -Encoding ascii
 
-    # コンソール窓を出さずに cmd を起動する
-    "CreateObject(""WScript.Shell"").Run """"""$cmdPath"""""", 0, False" |
+    # コンソール窓を出さずに cmd を起動し、終了を「待つ」（第3引数 True）。
+    # 待たないとタスクのアクションが即完了扱いになり、多重起動制御と
+    # ExecutionTimeLimit が self-loop 本体に効かず、再実行のたびに collector
+    # が重複起動する。
+    "CreateObject(""WScript.Shell"").Run """"""$cmdPath"""""", 0, True" |
         Set-Content -Path $vbsPath -Encoding ascii
+
+    # 再登録時は走行中インスタンス（プロセスツリーごと）を先に止める。
+    # 止めずに -Force で上書きすると旧 self-loop が追跡外で残り続ける。
+    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    }
 
     $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument """$vbsPath"""
     $trigger = New-ScheduledTaskTrigger -AtStartup
-    # 既定の 72h 実行上限で常駐タスクが殺されないよう上限を無効化する
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+    # 既定の 72h 実行上限で常駐タスクが殺されないよう上限を無効化し、
+    # 走行中の再 Start は無視させる（重複 self-loop の防止）
+    $settings = New-ScheduledTaskSettingsSet `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+        -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
         -Settings $settings -RunLevel Highest -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName

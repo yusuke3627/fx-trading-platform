@@ -114,3 +114,13 @@ def test_no_hardcoded_instruments_in_strategy_config():
     config = load_config("demo", CONFIG_DIR)
     for strategy in config.strategies.values():
         assert strategy.instruments, "instruments must come from configuration"
+
+
+def test_every_platform_instrument_has_a_unit_cap():
+    # trading_enabled の昇格だけで取引可能になるよう、platform 対応ペアには
+    # 必ず unit cap を定義しておく（欠けると SYMBOL_LIMIT_CONFIGURED で
+    # 全 reject になり、昇格手順が config 2 箇所の同時変更になってしまう）。
+    config = load_config("production", CONFIG_DIR)
+    for symbol, policy in config.instruments.items():
+        if policy.platform_enabled:
+            assert symbol in config.risk.max_units_per_symbol, symbol

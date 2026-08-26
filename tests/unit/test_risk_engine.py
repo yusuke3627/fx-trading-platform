@@ -12,6 +12,8 @@ from tests.support import (
 )
 from trading.data.market import InMemoryMarketData
 from trading.domain.account import AccountMode
+from trading.domain.exposure import CurrencyExposure, PortfolioRiskSnapshot
+from trading.domain.money import Currency, Money
 from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.risk.conversion import MarketQuoteConversionService
@@ -483,3 +485,114 @@ def test_instrument_policy_does_not_block_exits():
         make_context(instrument_trading_enabled=False),
     )
     assert decision.approved, decision.reject_codes
+
+
+def portfolio_snapshot(
+    open_stop_risk="0", usd_net="0", eur_net="0"
+) -> PortfolioRiskSnapshot:
+    exposures = {}
+    for currency, net in ((Currency.USD, usd_net), (Currency.EUR, eur_net)):
+        if net == "0":
+            continue
+        exposures[currency] = CurrencyExposure(
+            currency=currency,
+            net_units=Decimal(0),
+            net_value_account=Money(amount=Decimal(net), currency=Currency.JPY),
+            gross_value_account=Money(amount=abs(Decimal(net)), currency=Currency.JPY),
+        )
+    return PortfolioRiskSnapshot(
+        open_stop_risk=Money(amount=Decimal(open_stop_risk), currency=Currency.JPY),
+        currency_exposures=exposures,
+        known_at=T0,
+    )
+
+
+def test_portfolio_stop_risk_budget_counts_the_existing_book():
+    # equity 1,000,000 × 0.10% = 1,000 JPY 予算。既存 900 + 候補 200（0.1
+    # JPY/unit × 2,000）で超過。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(portfolio_risk=portfolio_snapshot(open_stop_risk="900")),
+    )
+    assert not decision.approved
+    assert "PORTFOLIO_RISK_LIMIT" in decision.reject_codes
+
+
+def test_portfolio_stop_risk_budget_boundary_passes():
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(portfolio_risk=portfolio_snapshot(open_stop_risk="800")),
+    )
+    assert decision.approved, decision.reject_codes
+
+
+def test_currency_exposure_cap_blocks_stacking_the_same_side():
+    # 既存 USD +2,800,000 JPY 相当に USDJPY LONG 2,000（+317,688）を足すと
+    # cap 3,000,000（equity の 300%）を超える。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(portfolio_risk=portfolio_snapshot(usd_net="2800000")),
+    )
+    assert not decision.approved
+    assert "CURRENCY_EXPOSURE_LIMIT" in decision.reject_codes
+
+
+def test_eurusd_short_adds_usd_long_toward_the_cap():
+    # EURUSD SHORT の quote leg は +USD: pair が違っても同じ USD factor に
+    # 合算されて cap に当たる（設計書 §20 の要点）。
+    config = enabled_config(max_units_per_symbol={"EURUSD": 1_000_000})
+    decision = engine(config, usdjpy_market()).evaluate(
+        make_intent(symbol="EURUSD"),
+        eurusd_context(portfolio_risk=portfolio_snapshot(usd_net="2900000")),
+    )
+    assert not decision.approved
+    assert "CURRENCY_EXPOSURE_LIMIT" in decision.reject_codes
+
+
+def test_conversion_stress_shrinks_the_allowed_size():
+    config = enabled_config(max_units_per_symbol={"EURUSD": 1_000_000})
+    stressed = enabled_config(
+        max_units_per_symbol={"EURUSD": 1_000_000},
+        conversion_stress_adverse_pct=Decimal(25),
+    )
+    fine_step = eurusd_spec(volume_step=Decimal(100), volume_min=Decimal(100))
+
+    without = engine(config, usdjpy_market()).evaluate(
+        make_intent(symbol="EURUSD"), eurusd_context(instrument=fine_step)
+    )
+    with_stress = engine(stressed, usdjpy_market()).evaluate(
+        make_intent(symbol="EURUSD"), eurusd_context(instrument=fine_step)
+    )
+    assert without.approved and with_stress.approved
+    # 500 / 0.3 = 1,666 → 1,600。stress 25% で 500 / 0.375 = 1,333 → 1,300。
+    assert without.approved_quantity == Decimal(1600)
+    assert with_stress.approved_quantity == Decimal(1300)
+
+
+def test_third_currency_breach_blocks_unrelated_entries():
+    # EUR が既に cap 超過している book では、EUR に触れない USDJPY の新規も
+    # 止まる: 超過中の portfolio に新しいリスクを重ねず、reduce/exit で解消
+    # させる（fail-close）。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(portfolio_risk=portfolio_snapshot(eur_net="3100000")),
+    )
+    assert not decision.approved
+    assert "CURRENCY_EXPOSURE_LIMIT" in decision.reject_codes
+
+
+def test_netting_increase_reprices_the_whole_position():
+    # NETTING の増し玉は既存全量の SL が新 SL に置換される: 候補リスクは
+    # 増分 2,000 × 0.1 = 200 ではなく、増し玉後 10,000 × 0.1 = 1,000 で
+    # 見積もる。既存 800 と合わせて予算 1,000 を超過。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(action=PositionAction.INCREASE, direction=PositionDirection.SHORT),
+        make_context(
+            account_mode=AccountMode.NETTING,
+            symbol_exposure_units=Decimal(-8000),
+            requested_quantity=Decimal(2000),
+            portfolio_risk=portfolio_snapshot(open_stop_risk="800"),
+        ),
+    )
+    assert not decision.approved
+    assert "PORTFOLIO_RISK_LIMIT" in decision.reject_codes

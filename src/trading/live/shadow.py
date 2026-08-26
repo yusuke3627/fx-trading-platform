@@ -37,6 +37,7 @@ from trading.data.features import StoredFeatureSource
 from trading.data.market import MarketDataService
 from trading.domain.account import AccountMode
 from trading.domain.event import EventEnvelope
+from trading.domain.exposure import OpenPositionExposure
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.position import PositionDirection
@@ -47,6 +48,7 @@ from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
 from trading.live.clock import CycleClock
+from trading.portfolio.exposure import CurrencyExposureService
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.conversion import MarketQuoteConversionService
@@ -111,6 +113,7 @@ class ShadowRunner:
         account_mode: AccountMode,
         instrument: InstrumentSpec,
         instrument_trading_enabled: bool,
+        exposure: CurrencyExposureService,
         features: StoredFeatureSource | None = None,
     ) -> None:
         self._runner = runner
@@ -127,6 +130,7 @@ class ShadowRunner:
         self._account_mode = account_mode
         self._instrument = instrument
         self._instrument_trading_enabled = instrument_trading_enabled
+        self._exposure = exposure
         self._features = features
 
     def evaluate_once(self) -> ShadowCycle:
@@ -277,6 +281,19 @@ class ShadowRunner:
             unknown_commands=0,
             account_mode=self._account_mode,
             instrument_trading_enabled=self._instrument_trading_enabled,
+            # 仮想 book（fill は届かないため通常空）の通貨分解。stop は
+            # VirtualPosition に無いので stop-risk は 0 として評価される。
+            portfolio_risk=self._exposure.snapshot(
+                [
+                    OpenPositionExposure(
+                        spec=self._instrument,
+                        signed_units=p.signed_quantity,
+                        mark_price=quote.mid,
+                    )
+                    for p in self._ledger.open_positions()
+                ],
+                now,
+            ),
             stop_distance_pips=signal.stop_distance_pips,
             requested_quantity=intent.target_quantity or Decimal(0),
         )
@@ -423,6 +440,7 @@ def main() -> None:
         instrument=instrument,
         instrument_trading_enabled=instrument_policy is not None
         and instrument_policy.trading_enabled,
+        exposure=CurrencyExposureService(conversion),
         features=features,
     )
 

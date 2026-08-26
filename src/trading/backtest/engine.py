@@ -39,6 +39,7 @@ from trading.data.features import ReplayFeatureTimeline
 from trading.data.market.bars import BarBuilder
 from trading.domain.account import AccountMode, AccountSnapshot
 from trading.domain.event import EventEnvelope
+from trading.domain.exposure import OpenPositionExposure
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.market import Bar, Tick
@@ -50,6 +51,7 @@ from trading.indicators import IndicatorService
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.regime import RuleBasedRegimeService
 from trading.oms.service import OMSService
+from trading.portfolio.exposure import CurrencyExposureService
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.conversion import MarketQuoteConversionService
@@ -244,6 +246,7 @@ class _Wiring:
     ledger: VirtualPositionLedger
     portfolio: PortfolioManager
     risk: RiskEngine
+    exposure: CurrencyExposureService
     strategy: Strategy
     context: StrategyContext
 
@@ -450,6 +453,7 @@ class BacktestEngine:
             ledger=ledger,
             portfolio=PortfolioManager(ledger, clock, conversion),
             risk=RiskEngine(self._risk_config, clock, conversion),
+            exposure=CurrencyExposureService(conversion),
             strategy=strategy,
             context=StrategyContext(
                 clock=clock,
@@ -783,9 +787,33 @@ class BacktestEngine:
             # backtest は live 昇格前の pair の検証こそが目的なので、
             # per-instrument の trading 許可では gate しない（設計書 §30）。
             instrument_trading_enabled=True,
+            portfolio_risk=self._portfolio_risk(state, w),
             stop_distance_pips=signal.stop_distance_pips,
             requested_quantity=intent.target_quantity or Decimal(0),
         )
+
+    def _portfolio_risk(self, state: _RunState, w: _Wiring):
+        """既存 book の通貨分解。mark は最新の marking tick の mid。
+
+        in-flight（pending）の entry はまだ book に無く、その stop-risk は
+        合計に含まれない — 逐次処理の近似で、同時 signal の裁定は Portfolio
+        Arbitrator（#64）が引き取る。
+        """
+        mark = state.marking_tick
+        if mark is None:
+            return None
+        positions = [
+            OpenPositionExposure(
+                spec=self._spec,
+                signed_units=p.quantity
+                if p.direction is PositionDirection.LONG
+                else -p.quantity,
+                mark_price=mark.mid,
+                stop_loss_price=p.stop_loss,
+            )
+            for p in w.simulator.open_positions()
+        ]
+        return w.exposure.snapshot(positions, w.clock.now())
 
     def _event_mode(self, w: _Wiring, now: datetime) -> EventRiskMode:
         """The configured default wherever the schedule is unknown: no

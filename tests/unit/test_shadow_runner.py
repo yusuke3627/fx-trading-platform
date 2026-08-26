@@ -27,6 +27,7 @@ from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.regime import RuleBasedRegimeService
 from trading.live.clock import CycleClock
 from trading.live.shadow import ShadowRunner, broker_identity, describe
+from trading.portfolio.exposure import CurrencyExposureService
 from trading.portfolio.manager import PortfolioManager
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.conversion import MarketQuoteConversionService
@@ -125,6 +126,9 @@ def build(
         account_mode=AccountMode.HEDGING,
         instrument=usdjpy_spec(),
         instrument_trading_enabled=True,
+        exposure=CurrencyExposureService(
+            MarketQuoteConversionService(market, [usdjpy_spec()])
+        ),
         features=features,
     )
 

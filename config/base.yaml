@@ -40,10 +40,20 @@ risk:
 
   max_open_positions_per_symbol: 1
   max_open_positions_portfolio: 3
+  # platform 対応の全ペアに定義する（欠けた symbol は SYMBOL_LIMIT_CONFIGURED
+  # で発注不可のため、trading_enabled の昇格だけでは取引できない）。値は
+  # USDJPY と同じ最小構成で置き、各ペアの昇格 Gate で見直す。
   max_units_per_symbol:
     USDJPY: 1000
+    EURUSD: 1000
+    GBPUSD: 1000
+    GBPJPY: 1000
 
   max_risk_per_trade_pct: 0.05
+  # portfolio 全体の open stop-risk 予算と通貨別 net exposure 上限（equity 比
+  # %）。どちらも Monte Carlo / demo で校正するまでの保守的な仮置き。
+  portfolio_stop_risk_budget_pct: 0.10
+  max_currency_net_exposure_pct: 300
 
   daily_loss_halt_pct: 0.75
   rolling_24h_loss_halt_pct: 1.00

@@ -153,6 +153,25 @@ def open_market_seconds(start: datetime, end: datetime) -> float:
     return total
 
 
+def _ensure_head_covered(first: Tick, read_from: datetime) -> None:
+    if open_market_seconds(read_from, first.time) > EDGE_GAP_TOLERANCE_SECONDS:
+        raise SystemExit(
+            f"stored history begins at {first.time}, market-open time "
+            f"after the requested warm-up start {read_from}; the opening "
+            "evaluations would run on starved indicator state — backfill "
+            "earlier history or move --from later"
+        )
+
+
+def _ensure_tail_covered(last: Tick, end: datetime) -> None:
+    if open_market_seconds(last.time, end) > EDGE_GAP_TOLERANCE_SECONDS:
+        raise SystemExit(
+            f"stored history ends at {last.time}, market-open time "
+            f"before the requested period end {end}; the report would claim "
+            "the full period — backfill the tail or move --to earlier"
+        )
+
+
 def ensure_period_covered(
     bounds: tuple[Tick, Tick] | None,
     read_from: datetime,
@@ -182,19 +201,41 @@ def ensure_period_covered(
             f"no stored ticks inside the evaluation period [{start}, {end}); "
             "only warm-up ticks were found"
         )
-    if open_market_seconds(read_from, first.time) > EDGE_GAP_TOLERANCE_SECONDS:
-        raise SystemExit(
-            f"stored history begins at {first.time}, market-open time "
-            f"after the requested warm-up start {read_from}; the opening "
-            "evaluations would run on starved indicator state — backfill "
-            "earlier history or move --from later"
-        )
-    if open_market_seconds(last.time, end) > EDGE_GAP_TOLERANCE_SECONDS:
-        raise SystemExit(
-            f"stored history ends at {last.time}, market-open time "
-            f"before the requested period end {end}; the report would claim "
-            "the full period — backfill the tail or move --to earlier"
-        )
+    _ensure_head_covered(first, read_from)
+    _ensure_tail_covered(last, end)
+
+
+def covered_reconstructed_stream(
+    ticks: Iterator[Tick],
+    read_from: datetime,
+    start: datetime,
+    end: datetime,
+    anchor: timedelta,
+    digest: TickDigest,
+) -> Iterator[Tick]:
+    """The replay input: reconstruction, digest and coverage in one pass.
+
+    The pre-flight bounds check reads a different snapshot than the pinned
+    stream, so the authoritative coverage verdict is rendered on what was
+    actually streamed: the head gap fails on the first tick (before hours
+    are spent), the tail and emptiness at exhaustion.
+    """
+    first: Tick | None = None
+    last: Tick | None = None
+    for tick in ticks:
+        if first is None:
+            first = tick
+            _ensure_head_covered(first, read_from)
+        last = tick
+        rewritten = reconstructed_tick(tick, anchor)
+        digest.update(rewritten)
+        yield rewritten
+    ensure_period_covered(
+        (first, last) if first is not None and last is not None else None,
+        read_from,
+        start,
+        end,
+    )
 
 
 def warmup_days(value: str) -> float:
@@ -286,6 +327,8 @@ def main() -> None:
 
     conn = connect(dsn)
     repository = PostgresMarketTickRepository(conn)
+    # Fast feedback only: this reads its own snapshot, so the authoritative
+    # coverage verdict is rendered inside the stream on the pinned set.
     ensure_period_covered(
         repository.bounds_between(symbol, read_from, args.end),
         read_from,
@@ -295,15 +338,6 @@ def main() -> None:
 
     anchor = timedelta(hours=config.market.broker_server_ahead_of_ny_hours)
     digest = TickDigest()
-
-    def replay_ticks() -> Iterator[Tick]:
-        # One pass over the period: reconstruction, the manifest digest and
-        # the engine all ride the same stream, so the dataset never sits in
-        # this process as a list.
-        for tick in repository.stream_between(symbol, read_from, args.end):
-            rewritten = reconstructed_tick(tick, anchor)
-            digest.update(rewritten)
-            yield rewritten
 
     # One consistent load of the PIT rows: change schedule, every snapshot
     # during the replay and the manifest fingerprint answer from the same
@@ -346,7 +380,16 @@ def main() -> None:
     # record the code state it started under, not whatever the worktree
     # holds hours later when the manifest is written.
     repro = git_state()
-    result = engine.run_stream(replay_ticks())
+    result = engine.run_stream(
+        covered_reconstructed_stream(
+            repository.stream_between(symbol, read_from, args.end),
+            read_from,
+            args.start,
+            args.end,
+            anchor,
+            digest,
+        )
+    )
 
     manifest = {
         "run_id": str(uuid4()),

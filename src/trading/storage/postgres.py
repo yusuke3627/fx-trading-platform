@@ -465,8 +465,15 @@ class PostgresMarketTickRepository:
         # bound would let any unrelated long transaction starve the start.
         # A writer that begins earlier but only inserts after the pin cannot
         # matter: its ids are allocated at insert time, above the ceiling.
+        # clock_timestamp(), not now(): now() is frozen at transaction start,
+        # and a caller that read other tables on this connection first would
+        # pin at that earlier instant — writers starting in between would
+        # escape the wait below while their ids sit under the ceiling.
         ceiling_row = self._conn.execute(
-            "SELECT max(id) AS ceiling, now() AS pinned_at FROM market_ticks"
+            """
+            SELECT max(id) AS ceiling, clock_timestamp() AS pinned_at
+            FROM market_ticks
+            """
         ).fetchone()
         self._conn.commit()
         ceiling = ceiling_row["ceiling"]

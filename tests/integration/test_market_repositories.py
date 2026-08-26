@@ -318,6 +318,32 @@ def test_stream_fails_loudly_when_fetched_rows_are_deleted(repos, monkeypatch):
     assert len(seen) == 2
 
 
+def test_pin_instant_is_the_ceiling_read_not_the_transaction_start(repos, monkeypatch):
+    # The reader connection often has an open transaction from earlier PIT
+    # reads. now() would freeze the pin at that transaction's start, letting
+    # a writer that began in between escape the settle wait.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_SETTLE_TIMEOUT_SECONDS", 0.5)
+    ticks, _, symbol = repos
+    store(ticks, [make_tick("158.840", "158.844", time=at(minutes=0), symbol=symbol)])
+    # Open a transaction on the reader connection well before the writer.
+    ticks.latest_known_before(symbol, at(minutes=10))
+
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            """
+            INSERT INTO market_ticks (
+                symbol, bid, ask, event_time, received_at, source, ingestion_run
+            ) VALUES (%s, %s, %s, %s, %s, 'TEST', %s)
+            """,
+            (symbol, "158.860", "158.864", at(minutes=2), at(minutes=2), uuid4()),
+        )
+        with pytest.raises(RuntimeError):
+            next(ticks.stream_between(symbol, at(minutes=0), at(minutes=60)))
+        writer.rollback()
+
+
 def test_stream_refuses_to_start_over_an_unsettled_write(repos, monkeypatch):
     # An insert can hold an id below the ceiling while uncommitted; streaming
     # anyway would let it surface to a later batch nondeterministically. The

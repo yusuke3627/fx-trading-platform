@@ -139,6 +139,53 @@ def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
         )
 
 
+def test_covered_stream_judges_the_ticks_it_actually_delivers():
+    from trading.backtest.data import TickDigest
+    from trading.backtest.research import covered_reconstructed_stream
+
+    read_from = START - timedelta(days=10)
+    anchor = timedelta(hours=7)
+
+    # Happy path: reconstruction and digest ride the pass; exhaustion passes
+    # the coverage verdict.
+    good = [
+        tick(read_from + timedelta(minutes=30), START),
+        tick(START + timedelta(hours=1), START),
+        tick(END - timedelta(minutes=30), START),
+    ]
+    digest = TickDigest()
+    delivered = list(
+        covered_reconstructed_stream(iter(good), read_from, START, END, anchor, digest)
+    )
+    assert digest.count == 3
+    assert [t.time for t in delivered] == [t.time for t in good]
+    assert delivered[0].known_time != good[0].known_time
+
+    # A head gap fails on the FIRST tick — before hours of replay are spent.
+    late_head = [tick(START - timedelta(days=2), START)]
+    stream = covered_reconstructed_stream(
+        iter(late_head), read_from, START, END, anchor, TickDigest()
+    )
+    with pytest.raises(SystemExit):
+        next(stream)
+
+    # Only warm-up ticks fail at exhaustion, not silently.
+    warmup_only = [tick(read_from + timedelta(minutes=30), START)]
+    stream = covered_reconstructed_stream(
+        iter(warmup_only), read_from, START, END, anchor, TickDigest()
+    )
+    with pytest.raises(SystemExit):
+        list(stream)
+
+    # An empty stream fails with the coverage message, not a bare engine error.
+    with pytest.raises(SystemExit):
+        list(
+            covered_reconstructed_stream(
+                iter([]), read_from, START, END, anchor, TickDigest()
+            )
+        )
+
+
 def test_period_bounds_accept_only_utc_stamped_labels():
     # A +03:00 input meant as "the broker's summer midnight" would be
     # normalized to 21:00Z and silently read a different label range.

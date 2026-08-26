@@ -26,6 +26,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+# 生成する cmd / vbs は ASCII で書き出すため、非 ASCII を含むパスは文字が
+# '?' に置換されて起動不能になる。黙って壊れるより構築時に拒否する。
+if ($RepoRoot -match '[^ -~]') {
+    throw "repo path contains non-ASCII characters; move the repo to an ASCII-only path: $RepoRoot"
+}
 $Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $Python)) {
     throw "venv python not found: $Python (run: python -m venv .venv; .venv\Scripts\pip install -e '.[dev,db,mt5]')"

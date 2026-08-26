@@ -203,6 +203,36 @@ def test_between_reads_the_period_regardless_of_reception(repos):
     assert [t.time for t in window] == [at(minutes=0), at(minutes=5)]
 
 
+def test_stream_and_bounds_agree_with_between(repos):
+    # The streaming read and the edge read are the same query in other
+    # shapes; disagreement would let a replay see rows its coverage check
+    # (or its materialized twin) does not.
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick(
+                "158.840",
+                "158.844",
+                time=at(minutes=minute),
+                received_at=at(days=100),
+                symbol=symbol,
+            )
+            for minute in (0, 5, 9)
+        ],
+    )
+
+    window = ticks.between(symbol, at(minutes=0), at(minutes=10))
+    assert list(ticks.stream_between(symbol, at(minutes=0), at(minutes=10))) == list(
+        window
+    )
+    assert ticks.bounds_between(symbol, at(minutes=0), at(minutes=10)) == (
+        window[0],
+        window[-1],
+    )
+    assert ticks.bounds_between(symbol, at(minutes=20), at(minutes=30)) is None
+
+
 def test_a_bar_round_trips_through_the_database(repos):
     _, bars, symbol = repos
     # ADR-005: the candle sits on the broker's clock, known_at on ours, so

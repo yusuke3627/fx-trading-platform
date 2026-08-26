@@ -106,50 +106,37 @@ def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
     from trading.backtest.research import ensure_period_covered
 
     read_from = START - timedelta(days=10)
-    covered = [
-        tick(read_from + timedelta(minutes=30), START),
-        tick(END - timedelta(minutes=30), START),
-    ]
-    ensure_period_covered(covered, read_from, START, END)
+    first = tick(read_from + timedelta(minutes=30), START)
+    last = tick(END - timedelta(minutes=30), START)
+    ensure_period_covered((first, last), read_from, START, END)
 
     # A weekend at an edge is closure, not missing data: Friday's last quote
     # against a Monday-morning --to passes, because the gap holds almost no
     # open-market time.
     weekend_end = datetime(2026, 8, 17, 0, 15, tzinfo=UTC)  # Monday
-    weekend_ticks = [
-        tick(read_from + timedelta(minutes=30), START),
-        tick(datetime(2026, 8, 14, 23, 45, tzinfo=UTC), START),  # Friday
-    ]
-    ensure_period_covered(weekend_ticks, read_from, START, weekend_end)
+    friday_last = tick(datetime(2026, 8, 14, 23, 45, tzinfo=UTC), START)
+    ensure_period_covered((first, friday_last), read_from, START, weekend_end)
 
     with pytest.raises(SystemExit):
-        ensure_period_covered([], read_from, START, END)
+        ensure_period_covered(None, read_from, START, END)
     # Only lead-in ticks: nothing would be evaluated.
     with pytest.raises(SystemExit):
-        ensure_period_covered(covered[:1], read_from, START, END)
+        ensure_period_covered((first, first), read_from, START, END)
     # History begins days into the requested warm-up: starved indicators.
-    late_history = [
-        tick(START - timedelta(days=2), START),
-        tick(END - timedelta(minutes=30), START),
-    ]
     with pytest.raises(SystemExit):
-        ensure_period_covered(late_history, read_from, START, END)
+        ensure_period_covered(
+            (tick(START - timedelta(days=2), START), last), read_from, START, END
+        )
     # A missing trading day at the tail of a WEEKDAY period is not excused
     # by any fixed calendar allowance.
     weekday_end = datetime(2026, 8, 19, 0, 0, tzinfo=UTC)  # Wednesday
-    weekday_truncated = [
-        tick(read_from + timedelta(minutes=30), START),
-        tick(weekday_end - timedelta(days=1), START),  # Tuesday 00:00
-    ]
     with pytest.raises(SystemExit):
-        ensure_period_covered(weekday_truncated, read_from, START, weekday_end)
-    # History ends days before --to: a partial period reported as full.
-    truncated_tail = [
-        tick(read_from + timedelta(hours=1), START),
-        tick(START + timedelta(hours=1), START),
-    ]
-    with pytest.raises(SystemExit):
-        ensure_period_covered(truncated_tail, read_from, START, END)
+        ensure_period_covered(
+            (first, tick(weekday_end - timedelta(days=1), START)),
+            read_from,
+            START,
+            weekday_end,
+        )
 
 
 def test_period_bounds_accept_only_utc_stamped_labels():

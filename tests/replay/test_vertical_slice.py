@@ -170,11 +170,16 @@ def test_fills_never_apply_ahead_of_the_replay_clock():
     # With 150ms latency and 1s ticks the OPEN signalled at ordinal 300
     # fills on tick 301 — and equity must not move before that tick: a fill
     # applied at signal time would leak the future into snapshots and sizing.
+    # The curve is decimated to minute points plus fill instants, so the
+    # first moved point IS the fill instant, and everything before it holds
+    # the initial equity.
     result = run_slice(STRESS_SCENARIOS["normal"])
     initial = Decimal(result.metrics["initial_equity"])
-    assert result.fills[0].at == DATASET_START + timedelta(seconds=301)
-    assert all(equity == initial for _, equity in result.equity_curve[:301])
-    assert result.equity_curve[301][1] != initial
+    fill_at = DATASET_START + timedelta(seconds=301)
+    assert result.fills[0].at == fill_at
+    assert all(equity == initial for at, equity in result.equity_curve if at < fill_at)
+    moved = [at for at, equity in result.equity_curve if equity != initial]
+    assert moved and moved[0] == fill_at
 
 
 def test_dataset_hash_is_stable_and_seed_sensitive():
@@ -455,3 +460,27 @@ def test_protection_fill_closes_position_and_is_tracked():
     assert protection, "expected the tight SL to fire within the dataset"
     assert protection[0].action == "PROTECTION_CLOSE"
     assert result.metrics["open_positions_at_end"] == "0"
+
+
+def test_run_stream_reproduces_run_exactly():
+    # The streaming path must be the same replay, not a sibling: identical
+    # fills, metrics and curve for the same dataset, config and seed.
+    ticks = synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=2000, seed=7)
+    materialized = build_engine(STRESS_SCENARIOS["normal"]).run(ticks)
+    streamed = build_engine(STRESS_SCENARIOS["normal"]).run_stream(iter(ticks))
+
+    assert streamed.fills == materialized.fills
+    assert streamed.metrics == materialized.metrics
+    assert streamed.equity_curve == materialized.equity_curve
+    assert streamed.risk_rejections == materialized.risk_rejections
+
+
+def test_equity_curve_holds_minutes_and_fill_instants_not_every_tick():
+    # 2000 one-second ticks span ~33 minutes; a per-tick curve would hold
+    # 2000 points and a months-long replay millions. Every fill instant
+    # still appears, so the curve never hides where equity actually moved.
+    result = run_slice(STRESS_SCENARIOS["normal"])
+
+    assert len(result.equity_curve) < 100
+    curve_times = {at for at, _ in result.equity_curve}
+    assert {fill.at for fill in result.fills} <= curve_times

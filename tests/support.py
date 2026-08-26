@@ -227,6 +227,15 @@ class FakeTickRepository:
             key=lambda tick: tick.time,
         )
 
+    def stream_between(self, symbol: str, start: datetime, end: datetime):
+        yield from self.between(symbol, start, end)
+
+    def bounds_between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> tuple[Tick, Tick] | None:
+        window = self.between(symbol, start, end)
+        return (window[0], window[-1]) if window else None
+
 
 class FakeBarRepository:
     """MarketBarRepository in memory, mirroring the unique key: a bar already

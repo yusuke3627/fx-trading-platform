@@ -5,7 +5,7 @@ the queue-like execution_commands table without lock contention.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -24,6 +24,10 @@ from trading.domain.order import CommandState, ExecutionCommand
 from trading.domain.risk import RiskCheck, RiskDecision
 from trading.domain.signal import StrategySignal
 from trading.storage.repository import StaleCommandStateError
+
+# One keyset batch of the research stream: large enough that 99M rows cost
+# ~2000 round trips, small enough that a batch is a snap to fetch and free.
+_STREAM_BATCH_ROWS = 50_000
 
 
 def connect(dsn: str) -> psycopg.Connection:
@@ -428,6 +432,73 @@ class PostgresMarketTickRepository:
             (symbol, start, end),
         ).fetchall()
         return [_row_to_tick(r) for r in rows]
+
+    def stream_between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> Iterator[Tick]:
+        # Keyset pagination rather than one server-side cursor: a months-long
+        # replay would hold a single read transaction open for hours, pinning
+        # vacuum on a database the collectors keep writing to. Each batch is
+        # its own short read resuming after the last (event_time, id) seen,
+        # committed away between batches.
+        last: tuple[datetime, int] | None = None
+        while True:
+            if last is None:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, symbol, bid, ask, event_time, received_at
+                    FROM market_ticks
+                    WHERE symbol = %s AND event_time >= %s AND event_time < %s
+                    ORDER BY event_time, id
+                    LIMIT %s
+                    """,
+                    (symbol, start, end, _STREAM_BATCH_ROWS),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, symbol, bid, ask, event_time, received_at
+                    FROM market_ticks
+                    WHERE symbol = %s AND (event_time, id) > (%s, %s)
+                      AND event_time < %s
+                    ORDER BY event_time, id
+                    LIMIT %s
+                    """,
+                    (symbol, last[0], last[1], end, _STREAM_BATCH_ROWS),
+                ).fetchall()
+            self._conn.commit()
+            if not rows:
+                return
+            for row in rows:
+                yield _row_to_tick(row)
+            last = (rows[-1]["event_time"], rows[-1]["id"])
+
+    def bounds_between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> tuple[Tick, Tick] | None:
+        first = self._conn.execute(
+            """
+            SELECT symbol, bid, ask, event_time, received_at
+            FROM market_ticks
+            WHERE symbol = %s AND event_time >= %s AND event_time < %s
+            ORDER BY event_time, id
+            LIMIT 1
+            """,
+            (symbol, start, end),
+        ).fetchone()
+        if first is None:
+            return None
+        last = self._conn.execute(
+            """
+            SELECT symbol, bid, ask, event_time, received_at
+            FROM market_ticks
+            WHERE symbol = %s AND event_time >= %s AND event_time < %s
+            ORDER BY event_time DESC, id DESC
+            LIMIT 1
+            """,
+            (symbol, start, end),
+        ).fetchone()
+        return _row_to_tick(first), _row_to_tick(last)
 
     def latest_known_before(self, symbol: str, t: datetime) -> Tick | None:
         # Ordered the same way known_before is, reversed: the tie-break decides

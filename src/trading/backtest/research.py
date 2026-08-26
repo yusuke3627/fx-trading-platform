@@ -324,12 +324,16 @@ def main() -> None:
         # metrics that matter start at the period's opening instant.
         evaluate_from=broker_label_to_known(args.start, anchor),
     )
+    # Reproduction inputs are captured before the replay: a long run must
+    # record the code state it started under, not whatever the worktree
+    # holds hours later when the manifest is written.
+    repro = git_state()
     result = engine.run(ticks)
 
     manifest = {
         "run_id": str(uuid4()),
         "created_at": datetime.now(UTC).isoformat(),
-        **git_state(),
+        **repro,
         "environment": args.env,
         "symbol": symbol,
         "strategy_id": strategy_class.strategy_id,

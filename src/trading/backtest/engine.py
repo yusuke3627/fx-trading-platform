@@ -735,7 +735,10 @@ class BacktestEngine:
             instrument=self._spec,
             account=self._snapshot(state, w.simulator, w.clock.now()),
             snapshots=state.snapshots,
-            open_positions_count=len(w.simulator.open_positions(symbol))
+            symbol_open_positions_count=len(w.simulator.open_positions(symbol))
+            + pending_count,
+            # 単一銘柄 timeline の現行 engine では portfolio 全体 = この銘柄。
+            portfolio_open_positions_count=len(w.simulator.open_positions())
             + pending_count,
             symbol_exposure_units=w.broker.net_exposure(symbol) + pending_signed,
             # Graded per horizon against the same calendar live uses. A run
@@ -747,6 +750,9 @@ class BacktestEngine:
             account_mode=self._mode,
             symbol_gross_exposure_units=w.broker.gross_exposure(symbol)
             + pending_gross,
+            # backtest は live 昇格前の pair の検証こそが目的なので、
+            # per-instrument の trading 許可では gate しない（設計書 §30）。
+            instrument_trading_enabled=True,
             stop_distance_pips=signal.stop_distance_pips,
             requested_quantity=intent.target_quantity or Decimal(0),
         )

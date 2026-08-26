@@ -246,7 +246,7 @@ def test_opposite_signal_during_entry_latency_becomes_a_flip():
     # CLOSE -> reversal OPEN after the entry fills — never as a parallel
     # opposite OPEN that leaves LONG and SHORT on the book together.
     costs = CostModel(latency_ms=2500.0, slippage_sigma_pips=0.0)
-    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    config = slice_risk_config().model_copy(update={"max_open_positions_per_symbol": 2, "max_open_positions_portfolio": 2})
     result = run_slice(
         costs,
         plan={300: PositionDirection.LONG, 301: PositionDirection.SHORT},
@@ -265,7 +265,7 @@ def test_repeated_opposite_signal_during_exit_latency_does_not_duplicate_flip():
     # resolves as an INCREASE afterwards — never a second CLOSE + barrier
     # stacking two same-direction OPENs.
     costs = CostModel(latency_ms=2500.0, slippage_sigma_pips=0.0)
-    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    config = slice_risk_config().model_copy(update={"max_open_positions_per_symbol": 2, "max_open_positions_portfolio": 2})
     result = run_slice(
         costs,
         plan={
@@ -355,14 +355,14 @@ def test_pending_entries_reserve_the_position_cap():
     )
     opens = [f for f in result.fills if f.action == "OPEN"]
     assert len(opens) == 1
-    assert any("MAX_OPEN_POSITIONS" in codes for _, codes in result.risk_rejections)
+    assert any("MAX_OPEN_POSITIONS_PER_SYMBOL" in codes for _, codes in result.risk_rejections)
 
 
 def test_flip_closes_every_held_ticket():
     # With the cap raised, a second same-direction signal INCREASEs via a
     # second hedging ticket; the flip must close BOTH tickets before the
     # reversal opens, not just the latest one.
-    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    config = slice_risk_config().model_copy(update={"max_open_positions_per_symbol": 2, "max_open_positions_portfolio": 2})
     result = run_slice(
         STRESS_SCENARIOS["normal"],
         plan={
@@ -388,7 +388,7 @@ def test_multi_ticket_exit_batch_does_not_release_deferred_early():
     # one, it would target the still-open second ticket with a duplicate
     # CLOSE and stack a second reversal OPEN on top of the real one.
     costs = CostModel(latency_ms=2500.0, slippage_sigma_pips=0.0)
-    config = slice_risk_config().model_copy(update={"max_open_positions": 2})
+    config = slice_risk_config().model_copy(update={"max_open_positions_per_symbol": 2, "max_open_positions_portfolio": 2})
     result = run_slice(
         costs,
         plan={

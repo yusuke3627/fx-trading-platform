@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trading.domain.risk import EventRiskMode
 from trading.risk.engine import RiskConfig
@@ -40,6 +40,28 @@ class MarketConfig(BaseModel):
     # negative value only fails once time.sleep() is reached — after the
     # collector has already started, so the host just restarts it in a loop.
     tick_poll_interval_seconds: float = Field(default=0.2, gt=0, allow_inf_nan=False)
+
+
+class InstrumentPolicy(BaseModel):
+    """platform 対応と live 発注許可の分離（設計書 v2.1 §30）。
+
+    platform_enabled: 収集・feature・shadow 評価の対象にするか。
+    trading_enabled: 実際の発注を許すか（risk config の global switch と AND）。
+    どちらも既定 False — instruments に載っていない symbol は fail-close。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    platform_enabled: bool = False
+    trading_enabled: bool = False
+
+    @model_validator(mode="after")
+    def _trading_requires_platform(self) -> InstrumentPolicy:
+        # platform 外の symbol へ発注を許す設定は矛盾（収集も評価もしない
+        # pair を取引することになる）。設定境界で拒否する。
+        if self.trading_enabled and not self.platform_enabled:
+            raise ValueError("trading_enabled requires platform_enabled")
+        return self
 
 
 class StorageConfig(BaseModel):
@@ -113,6 +135,7 @@ class AppConfig(BaseModel):
     environment: str
     broker: BrokerConfig = BrokerConfig()
     market: MarketConfig = MarketConfig()
+    instruments: dict[str, InstrumentPolicy] = Field(default_factory=dict)
     storage: StorageConfig = StorageConfig()
     macro_data: MacroDataConfig = MacroDataConfig()
     risk: RiskConfig = RiskConfig()

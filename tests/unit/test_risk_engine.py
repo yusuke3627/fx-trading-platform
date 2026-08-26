@@ -28,7 +28,9 @@ def make_context(**overrides) -> PreTradeContext:
         "instrument": usdjpy_spec(),
         "account": make_snapshot("1000000"),
         "snapshots": [make_snapshot("1000000", observed_at=at(hours=-25))],
-        "open_positions_count": 0,
+        "symbol_open_positions_count": 0,
+        "portfolio_open_positions_count": 0,
+        "instrument_trading_enabled": True,
         "symbol_exposure_units": Decimal(0),
         "event_mode": EventRiskMode.NORMAL,
         "kill_switch": KillSwitchLevel.NONE,
@@ -172,7 +174,8 @@ def test_netting_net_reducing_open_not_blocked_by_position_cap():
     decision = engine(enabled_config()).evaluate(
         make_intent(direction=PositionDirection.LONG),
         make_context(
-            open_positions_count=1,
+            symbol_open_positions_count=1,
+            portfolio_open_positions_count=1,
             symbol_exposure_units=Decimal(-10000),
             requested_quantity=Decimal(2000),
             account_mode=AccountMode.NETTING,
@@ -187,13 +190,14 @@ def test_hedging_opposite_direction_still_counts_against_cap():
     decision = engine(enabled_config()).evaluate(
         make_intent(direction=PositionDirection.LONG),
         make_context(
-            open_positions_count=1,
+            symbol_open_positions_count=1,
+            portfolio_open_positions_count=1,
             symbol_exposure_units=Decimal(-10000),
             requested_quantity=Decimal(2000),
         ),
     )
     assert not decision.approved
-    assert "MAX_OPEN_POSITIONS" in decision.reject_codes
+    assert "MAX_OPEN_POSITIONS_PER_SYMBOL" in decision.reject_codes
 
 
 def test_hedging_increase_counts_against_position_cap():
@@ -202,14 +206,15 @@ def test_hedging_increase_counts_against_position_cap():
     decision = engine(enabled_config()).evaluate(
         make_intent(action=PositionAction.INCREASE, direction=PositionDirection.SHORT),
         make_context(
-            open_positions_count=1,
+            symbol_open_positions_count=1,
+            portfolio_open_positions_count=1,
             symbol_exposure_units=Decimal(-2000),
             symbol_gross_exposure_units=Decimal(2000),
             requested_quantity=Decimal(1000),
         ),
     )
     assert not decision.approved
-    assert "MAX_OPEN_POSITIONS" in decision.reject_codes
+    assert "MAX_OPEN_POSITIONS_PER_SYMBOL" in decision.reject_codes
 
 
 def test_netting_increase_not_blocked_by_position_cap():
@@ -218,7 +223,8 @@ def test_netting_increase_not_blocked_by_position_cap():
     decision = engine(enabled_config()).evaluate(
         make_intent(action=PositionAction.INCREASE, direction=PositionDirection.SHORT),
         make_context(
-            open_positions_count=1,
+            symbol_open_positions_count=1,
+            portfolio_open_positions_count=1,
             symbol_exposure_units=Decimal(-2000),
             requested_quantity=Decimal(1000),
             account_mode=AccountMode.NETTING,
@@ -444,3 +450,36 @@ def test_jpy_quote_sizing_is_unchanged_by_the_conversion_wiring():
     decision = engine(enabled_config()).evaluate(make_intent(), make_context())
     assert decision.approved, decision.reject_codes
     assert decision.approved_quantity == Decimal(2000)
+
+
+def test_portfolio_cap_blocks_even_when_the_symbol_is_free():
+    # 他 symbol で portfolio 上限（既定 3）まで埋まっていれば、この symbol が
+    # 初エントリでも新しい broker position は増やせない。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(),
+        make_context(
+            symbol_open_positions_count=0,
+            portfolio_open_positions_count=3,
+        ),
+    )
+    assert not decision.approved
+    assert "MAX_OPEN_POSITIONS_PORTFOLIO" in decision.reject_codes
+
+
+def test_instrument_policy_gates_new_entries_fail_close():
+    # instruments 設定に無い（= 許可されていない）symbol の新規は reject。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(), make_context(instrument_trading_enabled=False)
+    )
+    assert not decision.approved
+    assert "INSTRUMENT_TRADING_ENABLED" in decision.reject_codes
+
+
+def test_instrument_policy_does_not_block_exits():
+    # trading_enabled=false の pair でも既存 position の CLOSE は承認される
+    # （platform-enabled / trading-enabled 分離は新規リスクだけを止める）。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(action=PositionAction.CLOSE),
+        make_context(instrument_trading_enabled=False),
+    )
+    assert decision.approved, decision.reject_codes

@@ -6,10 +6,12 @@ from trading.domain.position import PositionDirection, VirtualPosition
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 
 
-def snapshot(quantity: str, as_of=T0, strategy_id="strategy_a") -> VirtualPosition:
+def snapshot(
+    quantity: str, as_of=T0, strategy_id="strategy_a", symbol="USDJPY"
+) -> VirtualPosition:
     return VirtualPosition(
         strategy_id=strategy_id,
-        symbol="USDJPY",
+        symbol=symbol,
         direction=PositionDirection.LONG,
         quantity=Decimal(quantity),
         as_of=as_of,
@@ -86,3 +88,15 @@ def test_net_exposure_sums_latest_per_strategy():
         )
     )
     assert ledger.net_exposure("USDJPY") == Decimal(1500)
+
+
+def test_open_positions_spans_symbols_and_drops_flat_books():
+    ledger = VirtualPositionLedger(FixedClock())
+    ledger.record(snapshot("1000", symbol="USDJPY"))
+    ledger.record(snapshot("2000", symbol="EURUSD"))
+    # 同じ (strategy, symbol) の新しい snapshot が最新として勝つ。
+    ledger.record(snapshot("0", as_of=at(minutes=1), symbol="EURUSD"))
+    ledger.record(snapshot("3000", symbol="GBPUSD", strategy_id="strategy_b"))
+
+    held = {(p.strategy_id, p.symbol) for p in ledger.open_positions()}
+    assert held == {("strategy_a", "USDJPY"), ("strategy_b", "GBPUSD")}

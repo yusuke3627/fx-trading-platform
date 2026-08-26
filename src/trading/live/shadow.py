@@ -110,6 +110,7 @@ class ShadowRunner:
         account_id: str,
         account_mode: AccountMode,
         instrument: InstrumentSpec,
+        instrument_trading_enabled: bool,
         features: StoredFeatureSource | None = None,
     ) -> None:
         self._runner = runner
@@ -125,6 +126,7 @@ class ShadowRunner:
         self._account_id = account_id
         self._account_mode = account_mode
         self._instrument = instrument
+        self._instrument_trading_enabled = instrument_trading_enabled
         self._features = features
 
     def evaluate_once(self) -> ShadowCycle:
@@ -265,12 +267,16 @@ class ShadowRunner:
             # fill ever reaches it, so both of these stay at zero. They are
             # read from the ledger rather than written as constants so that
             # the day a fill does arrive, they follow it.
-            open_positions_count=len(self._ledger.positions_for_symbol(symbol)),
+            symbol_open_positions_count=len(
+                self._ledger.positions_for_symbol(symbol)
+            ),
+            portfolio_open_positions_count=len(self._ledger.open_positions()),
             symbol_exposure_units=self._ledger.net_exposure(symbol),
             event_mode=self._event_mode(horizon, now),
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,
             account_mode=self._account_mode,
+            instrument_trading_enabled=self._instrument_trading_enabled,
             stop_distance_pips=signal.stop_distance_pips,
             requested_quantity=intent.target_quantity or Decimal(0),
         )
@@ -352,6 +358,8 @@ def main() -> None:
         raise SystemExit(f"{config.storage.dsn_env} is not set")
 
     account_id, instrument = broker_identity(symbol)
+    # instruments 設定に無い symbol は発注不可として評価する（fail-close）。
+    instrument_policy = config.instruments.get(symbol)
 
     # Imported here so the module stays unit-testable without the db extra.
     from trading.storage.postgres import (
@@ -413,6 +421,8 @@ def main() -> None:
         account_id=account_id,
         account_mode=AccountMode(config.broker.expected_account_mode),
         instrument=instrument,
+        instrument_trading_enabled=instrument_policy is not None
+        and instrument_policy.trading_enabled,
         features=features,
     )
 

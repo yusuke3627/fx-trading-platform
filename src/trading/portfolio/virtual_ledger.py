@@ -42,6 +42,16 @@ class VirtualPositionLedger:
                 latest[s.strategy_id] = s
         return [p for p in latest.values() if p.quantity != 0]
 
+    def open_positions(self) -> list[VirtualPosition]:
+        """All symbols' current holdings — the portfolio-wide position count."""
+        latest: dict[tuple[str, str], VirtualPosition] = {}
+        for s in self._snapshots:
+            key = (s.strategy_id, s.symbol)
+            held = latest.get(key)
+            if held is None or s.as_of >= held.as_of:
+                latest[key] = s
+        return [p for p in latest.values() if p.quantity != 0]
+
     def net_exposure(self, symbol: str) -> Decimal:
         return sum(
             (p.signed_quantity for p in self.positions_for_symbol(symbol)), Decimal(0)

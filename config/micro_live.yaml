@@ -2,7 +2,9 @@
 # of the Production Gate checklist (docs/SYSTEM_SPEC.md) verified first.
 risk:
   trading_enabled: true
-  max_open_positions: 1
+  max_open_positions_per_symbol: 1
+  # 多ペア live を明示的に判断するまで、portfolio 全体でも従来どおり 1 本。
+  max_open_positions_portfolio: 1
   max_units_per_symbol:
     USDJPY: 1000
   require_broker_stop_loss: true

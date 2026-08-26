@@ -124,6 +124,7 @@ def build(
         account_id=ACCOUNT,
         account_mode=AccountMode.HEDGING,
         instrument=usdjpy_spec(),
+        instrument_trading_enabled=True,
         features=features,
     )
 

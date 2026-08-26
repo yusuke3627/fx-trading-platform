@@ -465,6 +465,11 @@ class PostgresMarketTickRepository:
         # bound would let any unrelated long transaction starve the start.
         # A writer that begins earlier but only inserts after the pin cannot
         # matter: its ids are allocated at insert time, above the ceiling.
+        # It is NOT scoped further: an uncommitted row's symbol and period
+        # are invisible, so a writer of another pair or range cannot be told
+        # apart and is deliberately waited on — refusing loudly after the
+        # timeout beats streaming a set that cannot be pinned, and a large
+        # backfill simply should not overlap a research start.
         # clock_timestamp(), not now(): now() is frozen at transaction start,
         # and a caller that read other tables on this connection first would
         # pin at that earlier instant — writers starting in between would
@@ -505,14 +510,17 @@ class PostgresMarketTickRepository:
                     f"not finished within {_STREAM_SETTLE_TIMEOUT_SECONDS}s"
                 )
             time.sleep(0.1)
-        # Deletes cannot be prevented without holding one snapshot for the
+        # Mutations cannot be prevented without holding one snapshot for the
         # whole replay — the vacuum-pinning trade this method rejects — but
-        # they must never pass silently: the settled set's size is fixed
-        # here and re-counted at the end, so a delete of a fetched OR
-        # unfetched row turns the run into a loud failure instead of a
-        # replay whose manifest describes a vanished dataset.
+        # they must never pass silently: the settled set's size AND a
+        # whole-row content fingerprint are fixed here and re-taken at the
+        # end, so a delete or an update of any column, fetched or unfetched,
+        # turns the run into a loud failure instead of a replay whose
+        # manifest describes a dataset that no longer exists.
         count_sql = """
-            SELECT count(*) AS remaining
+            SELECT count(*) AS remaining,
+                   coalesce(sum(hashtext(market_ticks::text)::bigint), 0)
+                       AS fingerprint
             FROM market_ticks
             WHERE symbol = %s AND event_time >= %s AND event_time < %s
               AND id <= %s
@@ -555,12 +563,23 @@ class PostgresMarketTickRepository:
                     count_sql, (symbol, start, end, ceiling)
                 ).fetchone()
                 self._conn.commit()
-                if streamed != expected or final_row["remaining"] != expected:
+                if (
+                    streamed != expected
+                    or final_row["remaining"] != expected
+                    or final_row["fingerprint"] != expected_row["fingerprint"]
+                ):
                     raise RuntimeError(
                         f"pinned dataset changed mid-stream: {expected} rows "
                         f"at stream start, {streamed} streamed, "
-                        f"{final_row['remaining']} remaining — rows were "
-                        "deleted during the replay"
+                        f"{final_row['remaining']} remaining, content "
+                        "fingerprint "
+                        + (
+                            "unchanged"
+                            if final_row["fingerprint"]
+                            == expected_row["fingerprint"]
+                            else "changed"
+                        )
+                        + " — rows were deleted or updated during the replay"
                     )
                 return
             for row in rows:

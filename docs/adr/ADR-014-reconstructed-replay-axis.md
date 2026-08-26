@@ -1,4 +1,4 @@
-# ADR-007: Research replays reconstruct a tick's known time from its broker timestamp
+# ADR-014: Research replays reconstruct a tick's known time from its broker timestamp
 
 **Status:** Accepted (2026-08-26)
 

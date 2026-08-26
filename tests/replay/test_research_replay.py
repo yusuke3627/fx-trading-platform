@@ -3,7 +3,7 @@
 Every tick of the dataset carries one shared ingestion instant — the shape a
 backfill run produces — so a replay ordered on stored received_at would see
 the whole period at once, with every score already visible. The runner's
-rewrite (ADR-007) has to restore the intra-period structure: a score whose
+rewrite (ADR-014) has to restore the intra-period structure: a score whose
 known_at falls mid-period is invisible to evaluations before its instant.
 """
 from datetime import UTC, datetime, timedelta

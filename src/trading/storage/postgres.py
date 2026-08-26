@@ -5,6 +5,7 @@ the queue-like execution_commands table without lock contention.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -28,6 +29,11 @@ from trading.storage.repository import StaleCommandStateError
 # One keyset batch of the research stream: large enough that 99M rows cost
 # ~2000 round trips, small enough that a batch is a snap to fetch and free.
 _STREAM_BATCH_ROWS = 50_000
+
+# How long stream_between waits for transactions in flight at its ceiling
+# read to finish before giving up on pinning the dataset. Collector commits
+# are sub-second; only a stuck session should ever reach this.
+_STREAM_SETTLE_TIMEOUT_SECONDS = 60.0
 
 
 def connect(dsn: str) -> psycopg.Connection:
@@ -445,16 +451,48 @@ class PostgresMarketTickRepository:
         # The set is pinned at stream start: without the id ceiling, each
         # batch would see a fresh snapshot and a concurrent backfill could
         # add rows to the period mid-replay — the manifest digest would then
-        # describe a dataset no later run can reproduce. Rows from inserts
-        # still in flight at the ceiling read can be missed; that window is
-        # the instant of one statement, not the hours of the replay.
+        # describe a dataset no later run can reproduce. The ceiling alone
+        # does not close the pin: an insert may hold an id BELOW it while
+        # still uncommitted (ids are allocated at insert, commits reorder),
+        # and would surface to a later batch nondeterministically. So the
+        # start also waits until every transaction in flight at the ceiling
+        # read has ended — from then on, id <= ceiling names one fixed set.
+        # The marker forces an xid onto this read transaction: every write
+        # in flight at the ceiling read was assigned an EARLIER xid, and a
+        # snapshot's xmin only passes the marker once all of them (and the
+        # marker itself, committed right here) have finished. Comparing
+        # against the snapshot's own xmax instead would not wait at all —
+        # xids at or above xmax are implicitly in progress and never listed.
         ceiling_row = self._conn.execute(
-            "SELECT max(id) AS ceiling FROM market_ticks"
+            """
+            SELECT max(id) AS ceiling,
+                   pg_current_xact_id() AS marker
+            FROM market_ticks
+            """
         ).fetchone()
         self._conn.commit()
         ceiling = ceiling_row["ceiling"]
         if ceiling is None:
             return
+        marker = int(ceiling_row["marker"])
+        deadline = time.monotonic() + _STREAM_SETTLE_TIMEOUT_SECONDS
+        while True:
+            xmin_row = self._conn.execute(
+                "SELECT pg_snapshot_xmin(pg_current_snapshot()) AS xmin"
+            ).fetchone()
+            self._conn.commit()
+            if int(xmin_row["xmin"]) > marker:
+                break
+            if time.monotonic() > deadline:
+                # An idle-in-transaction session would hold this forever;
+                # failing names the cause instead of streaming an unpinned
+                # set or hanging silently.
+                raise RuntimeError(
+                    "stream_between could not pin its dataset: a transaction "
+                    "open since before the ceiling read has not finished "
+                    f"within {_STREAM_SETTLE_TIMEOUT_SECONDS}s"
+                )
+            time.sleep(0.1)
         last: tuple[datetime, int] | None = None
         while True:
             if last is None:

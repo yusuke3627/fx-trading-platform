@@ -260,6 +260,31 @@ def test_stream_is_pinned_to_the_rows_present_at_its_start(repos, monkeypatch):
     assert [t.time for t in seen] == [at(minutes=m) for m in (0, 2, 4)]
 
 
+def test_stream_refuses_to_start_over_an_unsettled_write(repos, monkeypatch):
+    # An insert can hold an id below the ceiling while uncommitted; streaming
+    # anyway would let it surface to a later batch nondeterministically. The
+    # start waits for such writers and fails loudly when one never finishes.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_SETTLE_TIMEOUT_SECONDS", 0.5)
+    ticks, _, symbol = repos
+    store(ticks, [make_tick("158.840", "158.844", time=at(minutes=0), symbol=symbol)])
+
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            """
+            INSERT INTO market_ticks (
+                symbol, bid, ask, event_time, received_at, source, ingestion_run
+            ) VALUES (%s, %s, %s, %s, %s, 'TEST', %s)
+            """,
+            (symbol, "158.850", "158.854", at(minutes=1), at(minutes=1), uuid4()),
+        )
+        # Deliberately no commit: the writer is mid-transaction.
+        with pytest.raises(RuntimeError):
+            next(ticks.stream_between(symbol, at(minutes=0), at(minutes=60)))
+        writer.rollback()
+
+
 def test_a_bar_round_trips_through_the_database(repos):
     _, bars, symbol = repos
     # ADR-005: the candle sits on the broker's clock, known_at on ours, so

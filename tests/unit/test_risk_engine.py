@@ -487,16 +487,18 @@ def test_instrument_policy_does_not_block_exits():
     assert decision.approved, decision.reject_codes
 
 
-def portfolio_snapshot(open_stop_risk="0", usd_net="0") -> PortfolioRiskSnapshot:
+def portfolio_snapshot(
+    open_stop_risk="0", usd_net="0", eur_net="0"
+) -> PortfolioRiskSnapshot:
     exposures = {}
-    if usd_net != "0":
-        exposures[Currency.USD] = CurrencyExposure(
-            currency=Currency.USD,
+    for currency, net in ((Currency.USD, usd_net), (Currency.EUR, eur_net)):
+        if net == "0":
+            continue
+        exposures[currency] = CurrencyExposure(
+            currency=currency,
             net_units=Decimal(0),
-            net_value_account=Money(amount=Decimal(usd_net), currency=Currency.JPY),
-            gross_value_account=Money(
-                amount=abs(Decimal(usd_net)), currency=Currency.JPY
-            ),
+            net_value_account=Money(amount=Decimal(net), currency=Currency.JPY),
+            gross_value_account=Money(amount=abs(Decimal(net)), currency=Currency.JPY),
         )
     return PortfolioRiskSnapshot(
         open_stop_risk=Money(amount=Decimal(open_stop_risk), currency=Currency.JPY),
@@ -565,3 +567,32 @@ def test_conversion_stress_shrinks_the_allowed_size():
     # 500 / 0.3 = 1,666 → 1,600。stress 25% で 500 / 0.375 = 1,333 → 1,300。
     assert without.approved_quantity == Decimal(1600)
     assert with_stress.approved_quantity == Decimal(1300)
+
+
+def test_third_currency_breach_blocks_unrelated_entries():
+    # EUR が既に cap 超過している book では、EUR に触れない USDJPY の新規も
+    # 止まる: 超過中の portfolio に新しいリスクを重ねず、reduce/exit で解消
+    # させる（fail-close）。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(direction=PositionDirection.LONG),
+        make_context(portfolio_risk=portfolio_snapshot(eur_net="3100000")),
+    )
+    assert not decision.approved
+    assert "CURRENCY_EXPOSURE_LIMIT" in decision.reject_codes
+
+
+def test_netting_increase_reprices_the_whole_position():
+    # NETTING の増し玉は既存全量の SL が新 SL に置換される: 候補リスクは
+    # 増分 2,000 × 0.1 = 200 ではなく、増し玉後 10,000 × 0.1 = 1,000 で
+    # 見積もる。既存 800 と合わせて予算 1,000 を超過。
+    decision = engine(enabled_config()).evaluate(
+        make_intent(action=PositionAction.INCREASE, direction=PositionDirection.SHORT),
+        make_context(
+            account_mode=AccountMode.NETTING,
+            symbol_exposure_units=Decimal(-8000),
+            requested_quantity=Decimal(2000),
+            portfolio_risk=portfolio_snapshot(open_stop_risk="800"),
+        ),
+    )
+    assert not decision.approved
+    assert "PORTFOLIO_RISK_LIMIT" in decision.reject_codes

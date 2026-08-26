@@ -393,7 +393,20 @@ class RiskEngine:
         snapshot = ctx.portfolio_risk
 
         open_stop_risk = snapshot.open_stop_risk.amount if snapshot else Decimal(0)
-        candidate_stop_risk = loss_per_unit * quantity
+        if (
+            intent.action is PositionAction.INCREASE
+            and ctx.account_mode is AccountMode.NETTING
+        ):
+            # NETTING の増し玉は既存全量の SL が新しい command の SL に置換
+            # される: 増分だけを足すと、新 SL が旧 SL より遠い場合に既存数量分
+            # のリスク増が欠落する。増し玉後の全数量を新 stop 距離で見積もる。
+            # 既存分は snapshot の旧 SL 評価と二重計上になり得るが、過大評価
+            # 側（fail-close）に倒す。
+            candidate_stop_risk = (
+                abs(ctx.symbol_exposure_units) + quantity
+            ) * loss_per_unit
+        else:
+            candidate_stop_risk = loss_per_unit * quantity
         budget = equity * cfg.portfolio_stop_risk_budget_pct / Decimal(100)
         check(
             "PORTFOLIO_RISK_LIMIT",
@@ -422,14 +435,25 @@ class RiskEngine:
             check(exc.code, False, str(exc))
             return
         cap = equity * cfg.max_currency_net_exposure_pct / Decimal(100)
-        existing_base = snapshot.net_value(spec.base_currency) if snapshot else Decimal(0)
-        existing_quote = (
-            snapshot.net_value(spec.quote_currency) if snapshot else Decimal(0)
-        )
+        # 候補の delta は base/quote に載るが、判定は snapshot にある全通貨。
+        # 第三通貨が（相場変動や equity 低下で）既に cap を超えている book に
+        # 新しいリスクを重ねない — 超過中の portfolio では新規を止め、reduce /
+        # exit で解消させる。
+        deltas = {
+            spec.base_currency: leg_value,
+            spec.quote_currency: -leg_value,
+        }
+        currencies = set(deltas)
+        if snapshot is not None:
+            currencies |= set(snapshot.currency_exposures)
+        over = {
+            currency: (snapshot.net_value(currency) if snapshot else Decimal(0))
+            + deltas.get(currency, Decimal(0))
+            for currency in currencies
+        }
+        breaches = {c: v for c, v in over.items() if abs(v) > cap}
         check(
             "CURRENCY_EXPOSURE_LIMIT",
-            abs(existing_base + leg_value) <= cap
-            and abs(existing_quote - leg_value) <= cap,
-            f"base({spec.base_currency})={existing_base + leg_value} "
-            f"quote({spec.quote_currency})={existing_quote - leg_value} cap={cap}",
+            not breaches,
+            f"over={breaches} cap={cap}" if breaches else f"cap={cap}",
         )

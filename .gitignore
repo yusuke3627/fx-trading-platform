@@ -12,6 +12,7 @@ build/
 *.local.yaml
 reports/
 logs/
+scripts/vps/generated/
 .DS_Store
 .claude/worktrees/
 .claude/plans/

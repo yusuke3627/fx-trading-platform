@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import ClassVar, Protocol
@@ -117,10 +118,40 @@ class StrategyContext:
     config: StrategyConfig
 
 
+# The stretch a closed market adds to a calendar span: a lead-in landing on
+# a weekend (or a holiday joining one) still has to reach real ticks.
+CLOSED_MARKET_ALLOWANCE = timedelta(days=2)
+
+
+def market_span_to_calendar(seconds: float) -> timedelta:
+    """Calendar time holding `seconds` of market time in recorded history.
+
+    Weekends quote nothing (7/5), plus the closed-market allowance for a
+    span whose calendar start falls inside a closure."""
+    return timedelta(seconds=seconds * 7 / 5) + CLOSED_MARKET_ALLOWANCE
+
+
 class Strategy(ABC):
     strategy_id: ClassVar[str]
     strategy_version: ClassVar[str]
     horizon: ClassVar[StrategyHorizon]
+
+    @classmethod
+    def warmup(cls, config: StrategyConfig) -> timedelta:
+        """Recorded history the slowest indicator window needs before the
+        first evaluation sees it populated, computed from the configuration
+        the run actually evaluates with. A research replay reads this much
+        lead-in ahead of its period and starts asking the strategy at the
+        period's opening instant."""
+        return timedelta(0)
+
+    @classmethod
+    def tick_window_seconds(cls, config: StrategyConfig) -> float:
+        """The widest raw-tick window on_event may request from
+        market.ticks() under this configuration. The replay engine sizes its
+        tick retention from it, so a re-tuned window is retained instead of
+        refused mid-replay."""
+        return 0.0
 
     @abstractmethod
     async def on_event(

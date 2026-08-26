@@ -1,8 +1,24 @@
-"""Argument types shared by the collector entry points."""
+"""Argument types shared by the collector and research entry points."""
 from __future__ import annotations
 
 import argparse
 import math
+from datetime import UTC, datetime
+
+
+def aware_utc(value: str) -> datetime:
+    """An ISO timestamp with an explicit timezone, normalized to UTC.
+
+    A naive input is rejected rather than assumed: MT5 reads a naive datetime
+    as local time, which would silently shift a requested range.
+    """
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} has no timezone; a naive timestamp would be read as "
+            "local time and shift the requested range"
+        )
+    return parsed.astimezone(UTC)
 
 
 def poll_interval(value: str) -> float:

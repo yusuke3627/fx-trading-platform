@@ -16,9 +16,11 @@ same refresh against the same rows gives a backtest exactly what live saw.
 """
 from __future__ import annotations
 
+import json
 from bisect import bisect_right
 from collections.abc import Sequence
 from datetime import datetime, timedelta
+from hashlib import sha256
 
 from trading.data.intervention.features import (
     KIND_TO_STATUS,
@@ -28,6 +30,8 @@ from trading.data.intervention.features import (
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
 from trading.data.policy.features import latest_policy_score, us2y_features
 from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
+from trading.domain.economic import EconomicObservation
+from trading.domain.event import EventEnvelope
 from trading.intelligence import features as f
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig, intervention_risk_score
@@ -110,6 +114,83 @@ class StoredFeatureSource:
 
         return {name: value for name, value in values.items() if value is not None}
 
+    def change_instants(self, start: datetime, end: datetime) -> list[datetime]:
+        """Every known_at at which a row snapshot() reads arrives, for replays
+        of [start, end] — the schedule a ReplayFeatureTimeline steps on.
+
+        Each read mirrors the corresponding snapshot() bound taken at
+        now=start, so a row that no snapshot in the range can see is not an
+        instant. Rows already known at `start` are still included: their
+        arrival is folded into the timeline's opening refresh, but their
+        lookback EXPIRY can fall inside the replay, and the timeline derives
+        expiries from these instants.
+        """
+        observations, events = self._replay_rows(start, end)
+        return sorted(
+            [row.known_at for row in observations]
+            + [event.known_at for event in events]
+        )
+
+    def dataset_fingerprint(self, start: datetime, end: datetime) -> str:
+        """Content hash of every stored row a replay of [start, end] can read.
+
+        Ticks alone do not identify a research dataset: the macro, policy and
+        intervention rows decide what the strategy gates saw, and a
+        re-collected vintage or a re-scored meeting changes results under the
+        same commit, config and ticks. Row identities (UUIDs) are excluded so
+        the same content re-ingested hashes the same.
+        """
+        observations, events = self._replay_rows(start, end)
+        lines = [
+            f"obs|{row.series}|{row.observation_period}|{row.value}"
+            f"|{row.known_at.isoformat()}"
+            for row in observations
+        ] + [
+            f"event|{event.event_type}|{event.known_at.isoformat()}"
+            f"|{json.dumps(event.payload, sort_keys=True, default=str)}"
+            for event in events
+        ]
+        digest = sha256()
+        for line in sorted(lines):
+            digest.update(line.encode())
+            digest.update(b"\n")
+        return digest.hexdigest()
+
+    def frozen(self, start: datetime, end: datetime) -> StoredFeatureSource:
+        """A source answering every read of a [start, end] replay from one
+        consistent load of the stored rows.
+
+        The reads behind change_instants(), each snapshot() and
+        dataset_fingerprint() are separate queries on the live connection; a
+        collector inserting history between them could put rows in the
+        fingerprint the replay never saw, or surface a row at an instant the
+        change schedule does not contain. Freezing pins all three to the same
+        rows.
+        """
+        observations, events = self._replay_rows(start, end)
+        return StoredFeatureSource(
+            _FrozenObservations(observations),
+            _FrozenEvents(events),
+            self._intervention,
+            self._store,
+        )
+
+    def _replay_rows(self, start: datetime, end: datetime):
+        """The rows any snapshot inside [start, end] can read, window by
+        window: US2Y inside its lookback, policy unbounded, intervention
+        inside the recency bound taken at `start` (a superset of every later
+        instant's bound)."""
+        observations = self._observations.known_before(
+            US_TREASURY_2Y_YIELD, end, start - US2Y_VINTAGE_LOOKBACK
+        )
+        events: list = []
+        for event_type in (EVENT_TYPES["BOJ"], EVENT_TYPES["FED"]):
+            events.extend(self._events.known_before(end, event_type))
+        recency = start - timedelta(days=RECENCY_WINDOW_DAYS + 1)
+        for kind in KIND_TO_STATUS:
+            events.extend(self._events.known_before(end, kind, since=recency))
+        return observations, events
+
     def _policy_score(self, now: datetime, event_type: str) -> float | None:
         # A re-tuned scoring algorithm re-ingests past meetings as NEW events
         # (scoring.py versions them instead of rewriting history), so the same
@@ -123,6 +204,44 @@ class StoredFeatureSource:
                 if event.payload.get("scoring_version") == SCORING_VERSION
             ]
         )
+
+
+class _FrozenObservations:
+    """One load of observation rows, answering known_before the way the
+    stored repository does: series match, since-exclusive known_at window."""
+
+    def __init__(self, observations: Sequence[EconomicObservation]) -> None:
+        self._observations = list(observations)
+
+    def known_before(
+        self, series: str, t: datetime, since: datetime
+    ) -> list[EconomicObservation]:
+        return [
+            o
+            for o in self._observations
+            if o.series == series and since < o.known_at <= t
+        ]
+
+
+class _FrozenEvents:
+    """One load of event rows, mirroring the stored repository's filters."""
+
+    def __init__(self, events: Sequence[EventEnvelope]) -> None:
+        self._events = list(events)
+
+    def known_before(
+        self,
+        t: datetime,
+        event_type: str | None = None,
+        since: datetime | None = None,
+    ) -> list[EventEnvelope]:
+        return [
+            e
+            for e in self._events
+            if e.known_at <= t
+            and (event_type is None or e.event_type == event_type)
+            and (since is None or e.known_at > since)
+        ]
 
 
 class ReplayFeatureTimeline:

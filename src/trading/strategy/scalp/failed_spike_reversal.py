@@ -11,18 +11,42 @@ in ablation (models A/B/C), never baked in here.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from trading.domain.event import EventEnvelope
+from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection
 from trading.domain.signal import StrategySignal
-from trading.strategy.base import Strategy, StrategyContext, StrategyHorizon
+from trading.strategy.base import (
+    Strategy,
+    StrategyConfig,
+    StrategyContext,
+    StrategyHorizon,
+    market_span_to_calendar,
+)
 
 
 class FailedSpikeReversalStrategy(Strategy):
     strategy_id = "failed_spike_reversal"
     strategy_version = "0.1.0"
     horizon = StrategyHorizon.SCALP
+
+    @classmethod
+    def warmup(cls, config: StrategyConfig) -> timedelta:
+        # The slowest window is the entry-timeframe ATR; the tick window the
+        # spike detection reads (window_seconds x 3) is added on top.
+        entry_tf = config.timeframes.role("entry", "1m")
+        atr_period = int(config.param("atr_period", 14))
+        window_seconds = float(config.param("spike_window_seconds", 60))
+        span = (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf] + window_seconds * 3
+        return market_span_to_calendar(span)
+
+    @classmethod
+    def tick_window_seconds(cls, config: StrategyConfig) -> float:
+        # _evaluate reads spike_window x 3 of raw ticks; the momentum window
+        # (spike_window / 2) sits inside it.
+        return float(config.param("spike_window_seconds", 60)) * 3
 
     async def on_event(
         self,

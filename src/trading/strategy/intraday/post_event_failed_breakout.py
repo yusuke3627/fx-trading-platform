@@ -20,14 +20,22 @@ Timeframes come from configuration (regime/setup/entry), not from code.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from trading.domain.event import EventEnvelope
+from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection
 from trading.domain.signal import StrategySignal
 from trading.indicators.market_structure import detect_failed_breakout, rolling_high
 from trading.intelligence import features as f
-from trading.strategy.base import Strategy, StrategyContext, StrategyHorizon
+from trading.strategy.base import (
+    Strategy,
+    StrategyConfig,
+    StrategyContext,
+    StrategyHorizon,
+    market_span_to_calendar,
+)
 
 
 class PostEventFailedBreakoutStrategy(Strategy):
@@ -37,6 +45,21 @@ class PostEventFailedBreakoutStrategy(Strategy):
     # signals from either side of that change must not compare as one strategy.
     strategy_version = "0.2.0"
     horizon = StrategyHorizon.INTRADAY
+
+    @classmethod
+    def warmup(cls, config: StrategyConfig) -> timedelta:
+        # The slowest window is the setup-timeframe resistance lookback (the
+        # +5 mirrors what _evaluate reads); the entry-timeframe ATR rides
+        # inside it under any sane configuration but is kept in the max.
+        setup_tf = config.timeframes.role("setup", "15m")
+        entry_tf = config.timeframes.role("entry", "5m")
+        lookback = int(config.param("resistance_lookback", 20))
+        atr_period = int(config.param("atr_period", 14))
+        span = max(
+            (lookback + 5) * TIMEFRAME_SECONDS[setup_tf],
+            (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf],
+        )
+        return market_span_to_calendar(span)
 
     async def on_event(
         self,

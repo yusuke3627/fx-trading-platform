@@ -53,7 +53,6 @@ from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
-from trading.strategy.base import CLOSED_MARKET_ALLOWANCE
 from trading.strategy.registry import STRATEGIES
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -123,6 +122,33 @@ def broker_label(value: str) -> datetime:
     return parsed
 
 
+# The open-market time an edge gap may hold before it counts as missing
+# data: quiet feed edges around the weekly open/close, not a trading day.
+EDGE_GAP_TOLERANCE_SECONDS = 3600.0
+
+
+def open_market_seconds(start: datetime, end: datetime) -> float:
+    """Label-axis open-market time inside [start, end).
+
+    Under the New York-close anchor the label weekend — Saturday and Sunday
+    dates on the broker's wall clock — is exactly the FX closure, so weekday
+    label time is the time the market was quoting. Holidays are not
+    modelled: a gap over a closed weekday counts as missing data and is
+    refused, which errs on the honest side.
+    """
+    total = 0.0
+    cursor = start
+    while cursor < end:
+        next_midnight = (cursor + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        day_end = min(end, next_midnight)
+        if cursor.weekday() < 5:
+            total += (day_end - cursor).total_seconds()
+        cursor = day_end
+    return total
+
+
 def ensure_period_covered(
     ticks: list[Tick], read_from: datetime, start: datetime, end: datetime
 ) -> None:
@@ -130,13 +156,13 @@ def ensure_period_covered(
 
     Each failure shape would otherwise finish and write a plausible-looking
     report: an empty read; a read holding only lead-in ticks (nothing
-    evaluated); a history beginning well after the requested warm-up start
+    evaluated); a history beginning after the requested warm-up start
     (opening evaluations on starved indicator state); and a history ending
-    well before --to (a partial period reported as the full one). The
-    closed-market allowance keeps weekends at either edge from tripping the
-    bounds. A gap in the MIDDLE of the period is not detected here — the
-    stored series is taken as the market record, and known server-side holes
-    are the operator's period-selection concern.
+    before --to (a partial period reported as the full one). Edge gaps are
+    measured in open-market time, so a weekend at either edge passes while
+    a missing trading day does not. A gap in the MIDDLE of the period is
+    not detected here — the stored series is taken as the market record,
+    and known server-side holes are the operator's period-selection concern.
     """
     if not ticks:
         raise SystemExit(
@@ -148,18 +174,18 @@ def ensure_period_covered(
             f"no stored ticks inside the evaluation period [{start}, {end}); "
             "only warm-up ticks were found"
         )
-    if ticks[0].time > read_from + CLOSED_MARKET_ALLOWANCE:
+    if open_market_seconds(read_from, ticks[0].time) > EDGE_GAP_TOLERANCE_SECONDS:
         raise SystemExit(
-            f"stored history begins at {ticks[0].time}, after the requested "
-            f"warm-up start {read_from}; the opening evaluations would run "
-            "on starved indicator state — backfill earlier history or move "
-            "--from later"
+            f"stored history begins at {ticks[0].time}, market-open time "
+            f"after the requested warm-up start {read_from}; the opening "
+            "evaluations would run on starved indicator state — backfill "
+            "earlier history or move --from later"
         )
-    if ticks[-1].time < end - CLOSED_MARKET_ALLOWANCE:
+    if open_market_seconds(ticks[-1].time, end) > EDGE_GAP_TOLERANCE_SECONDS:
         raise SystemExit(
-            f"stored history ends at {ticks[-1].time}, well before the "
-            f"requested period end {end}; the report would claim the full "
-            "period — backfill the tail or move --to earlier"
+            f"stored history ends at {ticks[-1].time}, market-open time "
+            f"before the requested period end {end}; the report would claim "
+            "the full period — backfill the tail or move --to earlier"
         )
 
 

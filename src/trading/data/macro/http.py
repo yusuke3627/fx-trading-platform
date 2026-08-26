@@ -13,6 +13,10 @@ import urllib.request
 from typing import Any
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
+# BOE and ONS answer 403 to urllib's default agent string (observed live
+# 2026-08-26); a named non-browser agent passes and tells the agencies who
+# is calling.
+USER_AGENT = "fx-trading-platform-collector/1.0"
 
 
 def _parse_json(raw: bytes, url: str) -> Any:
@@ -29,26 +33,31 @@ class HttpTransport:
     def __init__(self, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self._timeout = timeout_seconds
 
-    def get_bytes(self, url: str) -> bytes:
-        """Raw fetch for non-JSON sources (MOF publishes Shift_JIS CSV and
-        HTML); the caller owns decoding."""
-        with urllib.request.urlopen(url, timeout=self._timeout) as response:
+    def _fetch(self, request: urllib.request.Request) -> bytes:
+        with urllib.request.urlopen(request, timeout=self._timeout) as response:
             return response.read()
 
-    def get_json(self, url: str, params: dict[str, str]) -> Any:
-        query = urllib.parse.urlencode(params)
-        with urllib.request.urlopen(
-            f"{url}?{query}", timeout=self._timeout
-        ) as response:
-            return _parse_json(response.read(), url)
+    def get_bytes(self, url: str) -> bytes:
+        """Raw fetch for non-JSON sources (MOF publishes Shift_JIS CSV and
+        HTML, the BOE database plain CSV); the caller owns decoding."""
+        return self._fetch(
+            urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        )
+
+    def get_json(self, url: str, params: dict[str, str | list[str]]) -> Any:
+        # doseq expands list values into repeated parameters (Eurostat's
+        # geo=EA21&geo=EA20).
+        query = urllib.parse.urlencode(params, doseq=True)
+        target = f"{url}?{query}" if query else url
+        raw = self._fetch(
+            urllib.request.Request(target, headers={"User-Agent": USER_AGENT})
+        )
+        return _parse_json(raw, url)
 
     def post_json(self, url: str, body: dict[str, Any]) -> Any:
         request = urllib.request.Request(
             url,
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
         )
-        with urllib.request.urlopen(
-            request, timeout=self._timeout
-        ) as response:
-            return _parse_json(response.read(), url)
+        return _parse_json(self._fetch(request), url)

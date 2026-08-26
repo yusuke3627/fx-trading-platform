@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from tests.support import FixedClock
+from tests.support import FakeTransport, FixedClock
 from trading.data.macro.alfred import AlfredCollector
 from trading.data.macro.base import payload_hash
 from trading.data.macro.bea import BEACollector
@@ -26,21 +26,6 @@ from trading.data.macro.registry import (
 from trading.domain.economic import EconomicObservation
 
 RETRIEVED = datetime(2026, 8, 15, 3, 0, tzinfo=UTC)
-
-
-class FakeTransport:
-    def __init__(self, responses: list) -> None:
-        self._responses = list(responses)
-        self.get_calls: list[tuple[str, dict]] = []
-        self.post_calls: list[tuple[str, dict]] = []
-
-    def get_json(self, url: str, params: dict) -> object:
-        self.get_calls.append((url, dict(params)))
-        return self._responses.pop(0)
-
-    def post_json(self, url: str, body: dict) -> object:
-        self.post_calls.append((url, dict(body)))
-        return self._responses.pop(0)
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ failed=0
 
 echo "=== collect_daily $(date -u '+%Y-%m-%dT%H:%M:%SZ') env=$ENV_NAME ==="
 
-for source_name in alfred bls bea census; do
+for source_name in alfred bls bea census boe ons ecb eurostat; do
   if ! "$PY" -m trading.data.macro.collector --env "$ENV_NAME" --source "$source_name"; then
     echo "FAILED: $source_name"
     failed=1

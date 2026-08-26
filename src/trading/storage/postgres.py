@@ -493,6 +493,22 @@ class PostgresMarketTickRepository:
                     f"within {_STREAM_SETTLE_TIMEOUT_SECONDS}s"
                 )
             time.sleep(0.1)
+        # Deletes cannot be prevented without holding one snapshot for the
+        # whole replay — the vacuum-pinning trade this method rejects — but
+        # they must never pass silently: the settled set's size is fixed
+        # here, and the stream refuses to end quietly short of it.
+        expected_row = self._conn.execute(
+            """
+            SELECT count(*) AS expected
+            FROM market_ticks
+            WHERE symbol = %s AND event_time >= %s AND event_time < %s
+              AND id <= %s
+            """,
+            (symbol, start, end, ceiling),
+        ).fetchone()
+        self._conn.commit()
+        expected = expected_row["expected"]
+        streamed = 0
         last: tuple[datetime, int] | None = None
         while True:
             if last is None:
@@ -521,8 +537,15 @@ class PostgresMarketTickRepository:
                 ).fetchall()
             self._conn.commit()
             if not rows:
+                if streamed != expected:
+                    raise RuntimeError(
+                        f"pinned dataset changed mid-stream: {expected} rows "
+                        f"at stream start, {streamed} streamed — rows were "
+                        "deleted during the replay"
+                    )
                 return
             for row in rows:
+                streamed += 1
                 yield _row_to_tick(row)
             last = (rows[-1]["event_time"], rows[-1]["id"])
 

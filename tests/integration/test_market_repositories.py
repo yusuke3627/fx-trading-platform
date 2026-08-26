@@ -260,6 +260,35 @@ def test_stream_is_pinned_to_the_rows_present_at_its_start(repos, monkeypatch):
     assert [t.time for t in seen] == [at(minutes=m) for m in (0, 2, 4)]
 
 
+def test_stream_fails_loudly_when_unfetched_rows_are_deleted(repos, monkeypatch):
+    # A delete in the not-yet-fetched range would otherwise just shrink the
+    # replay: later batches see the post-delete snapshot and the run ends
+    # looking complete. The settled count turns that into a hard failure.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_BATCH_ROWS", 2)
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick("158.840", "158.844", time=at(minutes=minute), symbol=symbol)
+            for minute in (0, 2, 4)
+        ],
+    )
+
+    stream = ticks.stream_between(symbol, at(minutes=0), at(minutes=60))
+    seen = [next(stream)]
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            "DELETE FROM market_ticks WHERE symbol = %s AND event_time = %s",
+            (symbol, at(minutes=4)),
+        )
+        writer.commit()
+    with pytest.raises(RuntimeError):
+        seen.extend(stream)
+    assert len(seen) == 2
+
+
 def test_stream_refuses_to_start_over_an_unsettled_write(repos, monkeypatch):
     # An insert can hold an id below the ceiling while uncommitted; streaming
     # anyway would let it surface to a later batch nondeterministically. The

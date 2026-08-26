@@ -179,7 +179,7 @@ def test_a_different_price_at_the_same_instant_is_kept(repos):
 
 
 def test_between_reads_the_period_regardless_of_reception(repos):
-    # The research read (ADR-007): a backfilled row's received_at lies far in
+    # The research read (ADR-014): a backfilled row's received_at lies far in
     # the tick's future and must not hide it; the bounds are event_time only,
     # end-exclusive, in the same (event_time, id) order the visibility reads
     # use.

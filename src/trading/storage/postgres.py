@@ -416,7 +416,7 @@ class PostgresMarketTickRepository:
         return _row_to_tick(row) if row else None
 
     def between(self, symbol: str, start: datetime, end: datetime) -> Sequence[Tick]:
-        # The research replay's full-period read (ADR-007): no received_at
+        # The research replay's full-period read (ADR-014): no received_at
         # filter, same (event_time, id) order and tie-break as known_before.
         rows = self._conn.execute(
             """

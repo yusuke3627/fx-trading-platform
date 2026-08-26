@@ -16,7 +16,7 @@ ticks inside the engine (ADR-006), so the run needs no market_bars rows.
 --from/--to are BROKER-clock bounds — the axis event_time is stored on
 (ADR-005), the same one the collector's backfill takes. Each tick's known
 time is reconstructed from its broker label through the server's New York
-anchor (ADR-007): the stored received_at is the INGESTION instant, which
+anchor (ADR-014): the stored received_at is the INGESTION instant, which
 for a backfilled archive lies far in the tick's future and would collapse
 the whole period onto one replay instant.
 
@@ -87,7 +87,7 @@ def broker_label_to_known(label: datetime, server_ahead_of_ny: timedelta) -> dat
 
 
 def reconstructed(ticks: Sequence[Tick], server_ahead_of_ny: timedelta) -> list[Tick]:
-    """Rewrite each tick's known time from its broker label (ADR-007).
+    """Rewrite each tick's known time from its broker label (ADR-014).
 
     received_at records when the row was INGESTED — for the polling collector
     that is the tick's real arrival, but for a backfilled archive it is the

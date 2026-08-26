@@ -1,22 +1,26 @@
 from decimal import Decimal
 from uuid import uuid4
 
-from tests.support import T0, FixedClock
+from tests.support import T0, FixedClock, make_tick, usdjpy_spec
+from trading.data.market import InMemoryMarketData
+from trading.domain.money import Currency
 from trading.domain.position import PositionAction, PositionDirection, VirtualPosition
 from trading.domain.signal import StrategySignal
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
+from trading.risk.conversion import MarketQuoteConversionService
 
 
 def make_signal(
     direction: PositionDirection = PositionDirection.SHORT,
     stop_pips: str = "10",
+    symbol: str = "USDJPY",
 ) -> StrategySignal:
     return StrategySignal(
         signal_id=uuid4(),
         strategy_id="test_strategy",
         strategy_version="0.0.1",
-        symbol="USDJPY",
+        symbol=symbol,
         desired_direction=direction,
         conviction=0.5,
         expected_horizon_seconds=3600,
@@ -26,21 +30,30 @@ def make_signal(
     )
 
 
-def sizing() -> SizingInput:
-    return SizingInput(
-        equity=Decimal(1_000_000),
-        max_risk_per_trade_pct=Decimal("0.05"),
-        pip_size=Decimal("0.01"),
-        volume_step=Decimal(1000),
-        entry_price=Decimal("158.840"),
-    )
+def sizing(**overrides) -> SizingInput:
+    values = {
+        "equity": Decimal(1_000_000),
+        "max_risk_per_trade_pct": Decimal("0.05"),
+        "pip_size": Decimal("0.01"),
+        "quote_currency": Currency.JPY,
+        "volume_step": Decimal(1000),
+        "entry_price": Decimal("158.840"),
+    }
+    values.update(overrides)
+    return SizingInput(**values)
 
 
-def manager_with(*positions: VirtualPosition) -> PortfolioManager:
+def manager_with(
+    *positions: VirtualPosition, market: InMemoryMarketData | None = None
+) -> PortfolioManager:
     ledger = VirtualPositionLedger(FixedClock())
     for p in positions:
         ledger.record(p)
-    return PortfolioManager(ledger, FixedClock())
+    return PortfolioManager(
+        ledger,
+        FixedClock(),
+        MarketQuoteConversionService(market or InMemoryMarketData(), [usdjpy_spec()]),
+    )
 
 
 def held(direction: PositionDirection) -> VirtualPosition:
@@ -70,6 +83,61 @@ def test_long_stop_sits_below_entry():
         make_signal(direction=PositionDirection.LONG), sizing()
     )
     assert intents[0].protection.stop_loss_price == Decimal("158.740")
+
+
+def eurusd_sizing() -> SizingInput:
+    return SizingInput(
+        equity=Decimal(1_000_000),
+        max_risk_per_trade_pct=Decimal("0.05"),
+        pip_size=Decimal("0.0001"),
+        quote_currency=Currency.USD,
+        volume_step=Decimal(1000),
+        entry_price=Decimal("1.08000"),
+    )
+
+
+def test_usd_quote_loss_is_converted_before_sizing():
+    # EURUSD: budget 500 JPY; 20 pips × 0.0001 = 0.002 USD/unit。USDJPY ask
+    # 150 で 0.3 JPY/unit → 1,666 → 1,000 units。修正前は USD の 0.002 を
+    # そのまま JPY budget と比較して 250,000 units（150 倍超の over-size）
+    # を許していた。
+    market = InMemoryMarketData()
+    market.add_tick(make_tick("149.996", "150.000", time=T0))
+    intents = manager_with(market=market).intents_from_signal(
+        make_signal(symbol="EURUSD", stop_pips="20"), eurusd_sizing()
+    )
+    assert len(intents) == 1
+    assert intents[0].target_quantity == Decimal(1000)
+    assert intents[0].target_quantity != Decimal(250_000)
+
+
+def test_no_conversion_quote_emits_an_unsized_intent_for_risk_to_reject():
+    # USDJPY quote が無ければ size できないが、intent は消さない: size 未定の
+    # まま RiskEngine へ届き、CONVERSION_RATE_* が決定記録に残る（ADR-009）。
+    intents = manager_with().intents_from_signal(
+        make_signal(symbol="EURUSD", stop_pips="20"), eurusd_sizing()
+    )
+    assert len(intents) == 1
+    assert intents[0].action is PositionAction.OPEN
+    assert intents[0].target_quantity is None
+
+
+def test_conversion_failure_keeps_the_reversal_close():
+    # 反転シグナル時に換算が失敗しても、既存 position の CLOSE は生成される
+    # （ADR-010: リスク削減は換算欠損で止めない）。抑止されるのは新規 OPEN の
+    # size だけで、それも size 未定 intent として RiskEngine の判定に委ねる。
+    held_long = VirtualPosition(
+        strategy_id="test_strategy",
+        symbol="EURUSD",
+        direction=PositionDirection.LONG,
+        quantity=Decimal(1000),
+        as_of=T0,
+    )
+    intents = manager_with(held_long).intents_from_signal(
+        make_signal(symbol="EURUSD", stop_pips="20"), eurusd_sizing()
+    )
+    assert [i.action for i in intents] == [PositionAction.CLOSE, PositionAction.OPEN]
+    assert intents[1].target_quantity is None
 
 
 def test_same_direction_becomes_increase():

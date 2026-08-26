@@ -8,6 +8,8 @@ broker:
 
 market:
   primary_instruments: [USDJPY]
+  # 口座通貨(JPY)換算に使う broker symbol（取引銘柄と独立に spec を解決する）
+  conversion_instruments: [USDJPY]
   quote_max_age_seconds: 5
   tick_poll_interval_seconds: 0.2
   broker_server_ahead_of_ny_hours: 7

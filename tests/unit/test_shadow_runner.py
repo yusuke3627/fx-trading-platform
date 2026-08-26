@@ -29,6 +29,7 @@ from trading.live.clock import CycleClock
 from trading.live.shadow import ShadowRunner, broker_identity, describe
 from trading.portfolio.manager import PortfolioManager
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
+from trading.risk.conversion import MarketQuoteConversionService
 from trading.risk.engine import RiskConfig, RiskEngine
 from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 from trading.runner import StrategyBinding, StrategyRunner
@@ -107,9 +108,13 @@ def build(
     )
     return ShadowRunner(
         runner=StrategyRunner([binding]),
-        portfolio=PortfolioManager(ledger, clock),
+        portfolio=PortfolioManager(
+            ledger, clock, MarketQuoteConversionService(market, [usdjpy_spec()])
+        ),
         ledger=ledger,
-        risk=RiskEngine(risk_config, clock),
+        risk=RiskEngine(
+            risk_config, clock, MarketQuoteConversionService(market, [usdjpy_spec()])
+        ),
         risk_config=risk_config,
         market=market,
         snapshots=snapshot_store,
@@ -528,6 +533,8 @@ class FakeMt5:
     def symbol_info(self, symbol):
         return SimpleNamespace(
             name=symbol,
+            currency_base="USD",
+            currency_profit="JPY",
             digits=3,
             trade_contract_size=100000.0,
             volume_min=0.01,

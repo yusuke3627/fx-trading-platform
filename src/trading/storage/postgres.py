@@ -594,7 +594,7 @@ class PostgresMarketTickRepository:
         # a concurrent delete and see a first row whose last row is gone.
         rows = self._conn.execute(
             """
-            SELECT * FROM (
+            SELECT *, 1 AS edge FROM (
                 SELECT symbol, bid, ask, event_time, received_at
                 FROM market_ticks
                 WHERE symbol = %(symbol)s
@@ -603,7 +603,7 @@ class PostgresMarketTickRepository:
                 LIMIT 1
             ) AS first_row
             UNION ALL
-            SELECT * FROM (
+            SELECT *, 2 AS edge FROM (
                 SELECT symbol, bid, ask, event_time, received_at
                 FROM market_ticks
                 WHERE symbol = %(symbol)s
@@ -611,6 +611,7 @@ class PostgresMarketTickRepository:
                 ORDER BY event_time DESC, id DESC
                 LIMIT 1
             ) AS last_row
+            ORDER BY edge
             """,
             {"symbol": symbol, "start": start, "end": end},
         ).fetchall()

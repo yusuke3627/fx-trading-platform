@@ -44,8 +44,12 @@ class MarketConfig(BaseModel):
     # year-round — the MT5 New York-close convention that puts the server at
     # UTC+3 during US DST and UTC+2 outside it. Used ONLY to reconstruct a
     # recorded tick's known time for research replays (ADR-007); verify
-    # against measured received_at once winter rows exist.
-    broker_server_ahead_of_ny_hours: float = Field(default=7.0, allow_inf_nan=False)
+    # against measured received_at once winter rows exist. Bounded to one
+    # day ahead: zero/negative or a multi-day value would silently shift
+    # every reconstructed instant rather than fail anywhere.
+    broker_server_ahead_of_ny_hours: float = Field(
+        default=7.0, gt=0, le=24, allow_inf_nan=False
+    )
 
 
 class StorageConfig(BaseModel):

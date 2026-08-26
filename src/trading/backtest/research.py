@@ -36,6 +36,7 @@ import json
 import math
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -85,7 +86,7 @@ def broker_label_to_known(label: datetime, server_ahead_of_ny: timedelta) -> dat
     return first.astimezone(UTC)
 
 
-def reconstructed(ticks: list[Tick], server_ahead_of_ny: timedelta) -> list[Tick]:
+def reconstructed(ticks: Sequence[Tick], server_ahead_of_ny: timedelta) -> list[Tick]:
     """Rewrite each tick's known time from its broker label (ADR-007).
 
     received_at records when the row was INGESTED — for the polling collector
@@ -150,7 +151,7 @@ def open_market_seconds(start: datetime, end: datetime) -> float:
 
 
 def ensure_period_covered(
-    ticks: list[Tick], read_from: datetime, start: datetime, end: datetime
+    ticks: Sequence[Tick], read_from: datetime, start: datetime, end: datetime
 ) -> None:
     """SystemExit unless the stored series can honestly serve the run.
 
@@ -278,10 +279,13 @@ def main() -> None:
 
     conn = connect(dsn)
     stored = PostgresMarketTickRepository(conn).between(symbol, read_from, args.end)
-    ensure_period_covered(list(stored), read_from, args.start, args.end)
+    ensure_period_covered(stored, read_from, args.start, args.end)
 
     anchor = timedelta(hours=config.market.broker_server_ahead_of_ny_hours)
-    ticks = reconstructed(list(stored), anchor)
+    ticks = reconstructed(stored, anchor)
+    # A multi-week period does not fit in memory twice: the stored originals
+    # are dead once their known times are rewritten.
+    del stored
 
     # One consistent load of the PIT rows: change schedule, every snapshot
     # during the replay and the manifest fingerprint answer from the same

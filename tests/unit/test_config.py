@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from trading.config import EventRiskWindowSettings, MarketConfig, load_config
+from trading.config import (
+    EventRiskWindowSettings,
+    InstrumentPolicy,
+    MarketConfig,
+    load_config,
+)
 from trading.strategy.base import StrategyStatus
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
@@ -14,6 +19,29 @@ def test_demo_config_keeps_trading_disabled():
     assert config.environment == "demo"
     assert config.risk.trading_enabled is False
     assert config.broker.expected_account_mode == "HEDGING"
+
+
+def test_instrument_policies_separate_platform_from_trading():
+    # 設計書 §30: 4 ペアとも platform 対応、live 発注は USDJPY のみ。
+    config = load_config("production", CONFIG_DIR)
+    assert config.instruments["USDJPY"].trading_enabled is True
+    for symbol in ("EURUSD", "GBPUSD", "GBPJPY"):
+        assert config.instruments[symbol].platform_enabled is True
+        assert config.instruments[symbol].trading_enabled is False
+
+
+def test_trading_without_platform_is_a_config_error():
+    with pytest.raises(ValidationError):
+        InstrumentPolicy(platform_enabled=False, trading_enabled=True)
+
+
+def test_position_caps_stay_single_in_live_overlays():
+    # 多ペア live を明示的に判断するまで、live 系 overlay は portfolio 全体
+    # でも従来どおり 1 本に固定する。
+    for env in ("production", "micro_live"):
+        config = load_config(env, CONFIG_DIR)
+        assert config.risk.max_open_positions_per_symbol == 1
+        assert config.risk.max_open_positions_portfolio == 1
 
 
 def test_strategy_ids_and_timeframes_come_from_configuration():

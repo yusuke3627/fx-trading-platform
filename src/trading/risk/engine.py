@@ -38,7 +38,11 @@ class RiskConfig(BaseModel):
 
     trading_enabled: bool = False
 
-    max_open_positions: int = 1
+    # per-symbol と portfolio 全体の二層 cap（設計書 v2.1 §24）。portfolio 側の
+    # 既定 3 は 4 ペア platform への保守的な初期値で、検証結果で更新可能。
+    # per-symbol が 1 である限り、単一ペア運用の実効挙動は従来と同じ。
+    max_open_positions_per_symbol: int = 1
+    max_open_positions_portfolio: int = 3
     max_units_per_symbol: dict[str, int] = Field(default_factory=dict)
 
     max_risk_per_trade_pct: Decimal = Decimal("0.05")
@@ -74,7 +78,9 @@ class PreTradeContext:
     account: AccountSnapshot
     snapshots: Sequence[AccountSnapshot]
 
-    open_positions_count: int
+    # この symbol の open position 数と、全 symbol 合計。cap は両方に掛かる。
+    symbol_open_positions_count: int
+    portfolio_open_positions_count: int
     # SIGNED net exposure in units (+long / -short); the netting cap and the
     # position-cap exemption both depend on the sign.
     symbol_exposure_units: Decimal
@@ -91,6 +97,11 @@ class PreTradeContext:
     position_mismatch: bool = False
     untracked_fills: int = 0
     duplicate: bool = False
+
+    # per-instrument の trading 許可（設計書 §30 platform/trading 分離）。
+    # 既定 False = instruments 設定に無い symbol は発注不可（fail-close）。
+    # backtest は live 昇格前の pair も検証対象のため、配線側が常に True を渡す。
+    instrument_trading_enabled: bool = False
 
     stop_distance_pips: Decimal | None = None
     requested_quantity: Decimal = field(default=Decimal(0))
@@ -135,6 +146,11 @@ class RiskEngine:
 
         if opening:
             check("TRADING_ENABLED", cfg.trading_enabled)
+            check(
+                "INSTRUMENT_TRADING_ENABLED",
+                ctx.instrument_trading_enabled,
+                f"instrument policy does not allow trading {intent.symbol}",
+            )
             check("EVENT_MODE_ALLOWS_ENTRY", ctx.event_mode is not EventRiskMode.HALT)
 
             # These halts stop NEW risk only. Blocking exits as well would
@@ -204,9 +220,18 @@ class RiskEngine:
                 adds_broker_position = ctx.account_mode is AccountMode.HEDGING
             if adds_broker_position:
                 check(
-                    "MAX_OPEN_POSITIONS",
-                    ctx.open_positions_count < cfg.max_open_positions,
-                    f"open={ctx.open_positions_count} max={cfg.max_open_positions}",
+                    "MAX_OPEN_POSITIONS_PER_SYMBOL",
+                    ctx.symbol_open_positions_count
+                    < cfg.max_open_positions_per_symbol,
+                    f"open={ctx.symbol_open_positions_count} "
+                    f"max={cfg.max_open_positions_per_symbol}",
+                )
+                check(
+                    "MAX_OPEN_POSITIONS_PORTFOLIO",
+                    ctx.portfolio_open_positions_count
+                    < cfg.max_open_positions_portfolio,
+                    f"open={ctx.portfolio_open_positions_count} "
+                    f"max={cfg.max_open_positions_portfolio}",
                 )
 
             check(

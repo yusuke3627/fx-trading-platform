@@ -19,10 +19,27 @@ storage:
 
 # Beginner upper bounds for entering micro live; never a backtest
 # optimization target. Percentages are in percent (0.05 = 0.05%).
+# platform 対応（収集・shadow 評価の対象）と live 発注許可の分離（ADR-012）。
+# ここに載っていない symbol は発注不可（fail-close）。
+instruments:
+  USDJPY:
+    platform_enabled: true
+    trading_enabled: true
+  EURUSD:
+    platform_enabled: true
+    trading_enabled: false
+  GBPUSD:
+    platform_enabled: true
+    trading_enabled: false
+  GBPJPY:
+    platform_enabled: true
+    trading_enabled: false
+
 risk:
   trading_enabled: false
 
-  max_open_positions: 1
+  max_open_positions_per_symbol: 1
+  max_open_positions_portfolio: 3
   max_units_per_symbol:
     USDJPY: 1000
 

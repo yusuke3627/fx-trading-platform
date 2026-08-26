@@ -71,13 +71,21 @@ goto loop
     }
 
     $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument """$vbsPath"""
-    $trigger = New-ScheduledTaskTrigger -AtStartup
+    # principal 未指定の登録は対話トークンで動くため、AtStartup 単独では
+    # 無人再起動後（ログオン前）に唯一のトリガーが空振りして以後発火しない。
+    # AtLogOn を主トリガーにし（MT5 に到達できるセッションが出来た時点で
+    # 起動）、StartWhenAvailable で missed start を拾わせる。
+    $triggers = @(
+        (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME),
+        (New-ScheduledTaskTrigger -AtStartup)
+    )
     # 既定の 72h 実行上限で常駐タスクが殺されないよう上限を無効化し、
     # 走行中の再 Start は無視させる（重複 self-loop の防止）
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
-        -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+        -MultipleInstances IgnoreNew `
+        -StartWhenAvailable
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
         -Settings $settings -RunLevel Highest -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName
     Write-Host "registered + started $taskName ($Symbol, env=$TradingEnv, log=$logPath)"

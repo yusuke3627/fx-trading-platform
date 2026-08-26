@@ -410,11 +410,17 @@ class BacktestEngine:
                 handle(item)
 
         # The decimated curve still ends on the replay's closing equity: a
-        # reader of the series must see where the run actually finished.
-        if state.equity_curve and state.equity_curve[-1][0] != w.clock.now():
-            state.equity_curve.append(
-                (w.clock.now(), self._equity(state, w.simulator))
-            )
+        # reader of the series must see where the run actually finished. When
+        # the last appended point shares the closing instant (a fill on one
+        # of several final ticks with one known time), it is REPLACED — a
+        # timestamp-only comparison would leave the curve ending on the
+        # pre-final equity of that instant.
+        if state.equity_curve:
+            closing = (w.clock.now(), self._equity(state, w.simulator))
+            if state.equity_curve[-1][0] == closing[0]:
+                state.equity_curve[-1] = closing
+            else:
+                state.equity_curve.append(closing)
 
         return self._result(state, w.simulator)
 

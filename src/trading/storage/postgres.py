@@ -441,6 +441,20 @@ class PostgresMarketTickRepository:
         # vacuum on a database the collectors keep writing to. Each batch is
         # its own short read resuming after the last (event_time, id) seen,
         # committed away between batches.
+        #
+        # The set is pinned at stream start: without the id ceiling, each
+        # batch would see a fresh snapshot and a concurrent backfill could
+        # add rows to the period mid-replay — the manifest digest would then
+        # describe a dataset no later run can reproduce. Rows from inserts
+        # still in flight at the ceiling read can be missed; that window is
+        # the instant of one statement, not the hours of the replay.
+        ceiling_row = self._conn.execute(
+            "SELECT max(id) AS ceiling FROM market_ticks"
+        ).fetchone()
+        self._conn.commit()
+        ceiling = ceiling_row["ceiling"]
+        if ceiling is None:
+            return
         last: tuple[datetime, int] | None = None
         while True:
             if last is None:
@@ -449,10 +463,11 @@ class PostgresMarketTickRepository:
                     SELECT id, symbol, bid, ask, event_time, received_at
                     FROM market_ticks
                     WHERE symbol = %s AND event_time >= %s AND event_time < %s
+                      AND id <= %s
                     ORDER BY event_time, id
                     LIMIT %s
                     """,
-                    (symbol, start, end, _STREAM_BATCH_ROWS),
+                    (symbol, start, end, ceiling, _STREAM_BATCH_ROWS),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
@@ -460,11 +475,11 @@ class PostgresMarketTickRepository:
                     SELECT id, symbol, bid, ask, event_time, received_at
                     FROM market_ticks
                     WHERE symbol = %s AND (event_time, id) > (%s, %s)
-                      AND event_time < %s
+                      AND event_time < %s AND id <= %s
                     ORDER BY event_time, id
                     LIMIT %s
                     """,
-                    (symbol, last[0], last[1], end, _STREAM_BATCH_ROWS),
+                    (symbol, last[0], last[1], end, ceiling, _STREAM_BATCH_ROWS),
                 ).fetchall()
             self._conn.commit()
             if not rows:

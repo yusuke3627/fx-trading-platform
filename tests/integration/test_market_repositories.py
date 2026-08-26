@@ -233,6 +233,33 @@ def test_stream_and_bounds_agree_with_between(repos):
     assert ticks.bounds_between(symbol, at(minutes=20), at(minutes=30)) is None
 
 
+def test_stream_is_pinned_to_the_rows_present_at_its_start(repos, monkeypatch):
+    # A concurrent backfill must not add rows to a replay already streaming:
+    # the manifest digest describes the dataset, and a mid-run insert would
+    # make it one no later run can reproduce.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_BATCH_ROWS", 2)
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick("158.840", "158.844", time=at(minutes=minute), symbol=symbol)
+            for minute in (0, 2, 4)
+        ],
+    )
+
+    stream = ticks.stream_between(symbol, at(minutes=0), at(minutes=60))
+    seen = [next(stream)]
+    store(
+        ticks,
+        [make_tick("158.850", "158.854", time=at(minutes=6), symbol=symbol)],
+    )
+    seen.extend(stream)
+
+    assert [t.time for t in seen] == [at(minutes=m) for m in (0, 2, 4)]
+
+
 def test_a_bar_round_trips_through_the_database(repos):
     _, bars, symbol = repos
     # ADR-005: the candle sits on the broker's clock, known_at on ours, so

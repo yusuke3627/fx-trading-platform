@@ -484,3 +484,23 @@ def test_equity_curve_holds_minutes_and_fill_instants_not_every_tick():
     assert len(result.equity_curve) < 100
     curve_times = {at for at, _ in result.equity_curve}
     assert {fill.at for fill in result.fills} <= curve_times
+
+
+def test_curve_ends_on_the_closing_equity_with_duplicate_final_instants():
+    # Several final ticks can share one known time (the stored series keys on
+    # bid/ask too). A fill on the first of them appends a curve point at that
+    # instant; the later same-instant tick still moves equity, and the curve
+    # must end on the truly final value, not the fill-time one.
+    ticks = synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=600, seed=7)
+    shifted = ticks[-1].model_copy(
+        update={
+            "bid": ticks[-1].bid + Decimal("0.100"),
+            "ask": ticks[-1].ask + Decimal("0.100"),
+        }
+    )
+    result = build_engine(
+        STRESS_SCENARIOS["normal"], plan={598: PositionDirection.LONG}
+    ).run([*ticks, shifted])
+
+    assert result.fills and result.fills[-1].at == ticks[-1].known_time
+    assert result.equity_curve[-1][1] == Decimal(result.metrics["final_equity"])

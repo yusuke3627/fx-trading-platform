@@ -78,6 +78,18 @@ def ended_server_day(boundary: datetime) -> date:
     return boundary.astimezone(_NY).date()
 
 
+def server_midnight_label(boundary: datetime) -> datetime:
+    """boundary の broker wall-clock ラベル（= server midnight、ADR-014 軸）。
+
+    tick.time / opened_at はこのラベル軸にあるため、「rollover 時点で
+    broker の帳簿に載っていたか」はこのラベルと比較する — known-time 軸の
+    boundary と直接比較すると遅延受信 tick で判定がずれる。
+    """
+    return datetime.combine(
+        ended_server_day(boundary) + timedelta(days=1), time(0), UTC
+    )
+
+
 class SwapTimeline:
     """1 シンボルの swap snapshot 列。known_at <= t の最新を返す。"""
 

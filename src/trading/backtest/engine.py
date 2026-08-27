@@ -44,6 +44,7 @@ from trading.backtest.rollover import (
     SwapTimeline,
     ended_server_day,
     next_rollover_boundary,
+    server_midnight_label,
 )
 from trading.backtest.simulator import ExecutionSimulator
 from trading.data.features import ReplayFeatureTimeline
@@ -371,7 +372,7 @@ class BacktestEngine:
             # tick: the boundary lies before the tick instant, so the hourly
             # snapshot below (the loss-window baseline series) must already
             # include it.
-            self._accrue_carry(state, w)
+            self._accrue_carry(state, w, item)
             # Warm-up ticks build bars, indicators and features but leave no
             # trace in the outputs: the strategy is not asked, and the equity
             # curve, snapshots and metrics start at the period's opening
@@ -453,7 +454,7 @@ class BacktestEngine:
 
         return self._result(state, w.simulator)
 
-    def _accrue_carry(self, state: _RunState, w: _Wiring) -> None:
+    def _accrue_carry(self, state: _RunState, w: _Wiring, item: Tick) -> None:
         """Swap carry for every rollover boundary reached by the clock.
 
         The snapshot must be known AT the boundary (`known_at <= boundary`),
@@ -461,6 +462,10 @@ class BacktestEngine:
         snapshot collected after it would be look-ahead. A boundary a
         position crossed with no snapshot known is counted, not silently
         priced at zero.
+
+        「rollover 時点で broker の帳簿に載っていたか」は broker wall-clock
+        ラベル軸（tick.time / opened_at、ADR-014）で判定する。known-time 軸
+        の boundary と直接比較すると遅延受信 tick で判定がずれる。
         """
         now = w.clock.now()
         if state.next_rollover is None:
@@ -471,14 +476,19 @@ class BacktestEngine:
             state.next_rollover = next_rollover_boundary(
                 boundary, self._server_ahead_hours
             )
-            # いま book にある position は必ず boundary より前から保有して
-            # いる: position は tick 処理でしか生まれず、この tick の fill は
-            # まだ適用されておらず、直前 tick までの境界は処理済みなので
-            # boundary は直前 tick より後にある。opened_at での絞り込みは
-            # 不要で、しかも有害 — opened_at は broker wall-clock 軸
-            # （ADR-014）にあり、known-time 軸の boundary と比較すると
-            # research replay で先行ラベルの position が漏れる。
-            held = w.simulator.open_positions(self._spec.symbol)
+            midnight_label = server_midnight_label(boundary)
+            if item.time < midnight_label:
+                # この tick の broker ラベルは boundary より前 — 遅延受信。
+                # broker の帳簿ではこの tick の fill / 保護決済が rollover
+                # より先に起きているので、carry の対象を決める前に反映する
+                # （どちらも冪等で、handle() 側の再実行は no-op になる）。
+                self._apply_pending(state, w, item)
+                self._apply_protection(state, w, item)
+            held = [
+                p
+                for p in w.simulator.open_positions(self._spec.symbol)
+                if p.opened_at < midnight_label
+            ]
             if not held:
                 continue
             snapshot = self._swap_timeline.latest_known_before(boundary)

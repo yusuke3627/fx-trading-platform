@@ -173,6 +173,65 @@ def test_hourly_snapshot_after_boundary_includes_carry():
     assert with_carry.snapshots[-1].equity - without.snapshots[-1].equity == carry
 
 
+def test_late_tick_protection_before_midnight_label_skips_carry():
+    # 遅延受信 tick（broker ラベルは server midnight より前、known は
+    # boundary より後）で SL が発動するケース: broker の帳簿では決済が
+    # rollover より先に起きているので、swap は課されない。
+    label = timedelta(hours=3)
+    entry_times = [
+        datetime(2026, 8, 10, 20, 0, 0, tzinfo=UTC),
+        datetime(2026, 8, 10, 20, 0, 1, tzinfo=UTC),
+        datetime(2026, 8, 10, 20, 0, 2, tzinfo=UTC),
+    ]
+    ticks = [
+        make_tick("147.000", "147.004", time=t + label, received_at=t)
+        for t in entry_times
+    ]
+    # ラベル 23:58（midnight 前）、known 21:05（boundary 後）の SL 到達 tick。
+    ticks.append(
+        make_tick(
+            "146.900",
+            "146.904",
+            time=datetime(2026, 8, 10, 23, 58, tzinfo=UTC),
+            received_at=datetime(2026, 8, 10, 21, 5, tzinfo=UTC),
+        )
+    )
+    result = _run([_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")], ticks)
+
+    assert any(f.origin == "PROTECTION" for f in result.fills)
+    assert result.metrics["carry_total"] == "0"
+    assert result.metrics["unpriced_rollovers"] == "0"
+
+
+def test_protection_after_midnight_label_still_pays_carry():
+    # 通常ケース: boundary 後の最初の tick（ラベルも midnight 後）で SL が
+    # 発動しても、rollover 時点では保有していたので swap は課されている。
+    label = timedelta(hours=3)
+    entry_times = [
+        datetime(2026, 8, 10, 20, 0, 0, tzinfo=UTC),
+        datetime(2026, 8, 10, 20, 0, 1, tzinfo=UTC),
+        datetime(2026, 8, 10, 20, 0, 2, tzinfo=UTC),
+    ]
+    ticks = [
+        make_tick("147.000", "147.004", time=t + label, received_at=t)
+        for t in entry_times
+    ]
+    ticks.append(
+        make_tick(
+            "146.900",
+            "146.904",
+            time=datetime(2026, 8, 11, 0, 5, tzinfo=UTC),
+            received_at=datetime(2026, 8, 10, 21, 5, tzinfo=UTC),
+        )
+    )
+    result = _run([_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")], ticks)
+
+    entry = result.fills[0]
+    assert any(f.origin == "PROTECTION" for f in result.fills)
+    expected = Decimal("-2.2") * Decimal("0.001") * entry.quantity
+    assert Decimal(result.metrics["carry_total"]) == expected
+
+
 def test_no_snapshots_keeps_carry_zero_and_counts_boundaries():
     result = _run([], _plain_ticks(_times_across(MONDAY_BOUNDARY)))
 

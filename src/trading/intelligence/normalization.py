@@ -104,7 +104,10 @@ def normalize_series(
         return None
 
     latest_at, latest = window[-1]
-    z = (latest - median) / (mad * _MAD_TO_SIGMA)
+    # mad で先に割る。mad * _MAD_TO_SIGMA を先に求めると巨大な mad で
+    # inf になり、inf での除算が 0.0（＝偏差があるのに中立）を返して
+    # 有限性ガードをすり抜ける。
+    z = (latest - median) / mad / _MAD_TO_SIGMA
     if not math.isfinite(z):
         # clip は NaN を上限側へ通す（min(3.0, nan) は 3.0）ので、ここで
         # 止めないと破損した系列が「最も強い買いシグナル」になる。

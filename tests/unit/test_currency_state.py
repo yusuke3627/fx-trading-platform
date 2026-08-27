@@ -255,6 +255,15 @@ def test_overflowing_weight_sum_is_rejected():
         )
 
 
+def test_service_revalidates_a_config_copied_past_the_validator():
+    # model_copy(update=...) は validator を通さず、未検証で可変な weights
+    # が入る。サービスの入口で弾く。
+    bypassed = CONFIG.model_copy(update={"weights": {}})
+
+    with pytest.raises(ValueError, match="finite positive"):
+        CurrencyStateService(MappingFactorSeries({}), bypassed)
+
+
 def test_snapshot_currency_map_is_read_only():
     # strategy へ渡す snapshot を一つの読み手が書き換えられない。
     snapshot = RuleBasedCurrencyRegimeService(InMemoryFeatureStore()).snapshot(NOW)

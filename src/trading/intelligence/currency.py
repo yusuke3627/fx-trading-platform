@@ -176,7 +176,14 @@ class CurrencyStateService:
         config: CurrencyScoreConfig | None = None,
     ) -> None:
         self._source = source
-        self._config = config or CurrencyScoreConfig()
+        # model_copy(update=...) は validator を通さず、未検証で可変な
+        # weights がそのまま入る。サービスの入口で検証し直し、構築時の
+        # 制約（有限・正の合計・不変）が存続中も保たれるようにする。
+        self._config = (
+            CurrencyScoreConfig.model_validate(dict(config.__dict__))
+            if config is not None
+            else CurrencyScoreConfig()
+        )
 
     def state(
         self,

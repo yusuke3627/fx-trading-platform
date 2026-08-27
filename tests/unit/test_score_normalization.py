@@ -171,3 +171,14 @@ def test_opposite_sign_extremes_still_normalize():
 
     assert result is not None
     assert -1 <= result.value <= 1
+
+
+def test_huge_spread_keeps_the_deviation_signed():
+    # mad * _MAD_TO_SIGMA が inf になると inf 除算で z が 0.0 になり、
+    # 偏差があるのに「中立」と報告してしまう。
+    rows = series([-1.7e308, -1.6e308, -1.5e308, 1.5e308, 1.6e308, 1.7e308])
+
+    result = normalize_series(rows, rows[-1][0], CONFIG)
+
+    assert result is not None
+    assert result.value > 0

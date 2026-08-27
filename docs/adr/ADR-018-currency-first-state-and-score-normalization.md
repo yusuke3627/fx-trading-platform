@@ -50,7 +50,10 @@ cancellation = (|b| + |q| − |b − q|) / (|b| + |q|)
 小さい）は大きな値どうしの引き算で、同じ絶対値の差でも相対的な不確かさが
 大きい。異符号なら `cancellation = 0` で減点は掛からない。
 
-`known_at` は両 leg の古い方 — ペアは遅れている leg の分しか語れない。
+`known_at` は両 leg が揃う**新しい方**の時刻。`directional_score` は
+新しい方の leg の情報を含むため、古い方を known_at にすると known_at
+順の replay でその時点に存在しない情報が見える（look-ahead）。データの
+鮮度は confidence の freshness 減点が担う。
 
 ### 4. PairState に event risk を載せない
 

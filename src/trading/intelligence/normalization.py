@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # MAD を正規分布の標準偏差へ合わせる定数（1 / Φ⁻¹(3/4)）。
 _MAD_TO_SIGMA = 1.4826
@@ -39,6 +39,16 @@ class NormalizationConfig(BaseModel):
     min_observations: int = Field(default=20, gt=1)
     # z を切り詰める幅。tanh の入力スケールもこれで割って揃える。
     clip_sigma: float = Field(default=3.0, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _window_holds_the_minimum(self) -> NormalizationConfig:
+        if self.min_observations > self.window:
+            raise ValueError(
+                "min_observations must not exceed window; a wider minimum "
+                "would be satisfied by rows the window then drops, scoring "
+                "on fewer observations than the contract promises"
+            )
+        return self
 
 
 class NormalizedScore(BaseModel):

@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from tests.support import eurusd_spec, usdjpy_spec
 from trading.domain.money import Currency
 from trading.intelligence.currency import (
@@ -185,7 +187,7 @@ def test_pair_known_at_follows_the_later_leg():
 # ---------------------------------------------------------------------------
 
 
-def test_currency_regimes_are_scoped_and_global_applies_to_all():
+def test_currency_regimes_stay_scoped_to_their_currency():
     store = InMemoryFeatureStore()
     store.replace({"fed_policy_shift_score": 0.8, "intervention_risk": 0.9})
 
@@ -193,9 +195,37 @@ def test_currency_regimes_are_scoped_and_global_applies_to_all():
 
     assert RegimeLabel.USD_POLICY_HAWKISH in snapshot.active(Currency.USD)
     assert RegimeLabel.USD_POLICY_HAWKISH not in snapshot.active(Currency.JPY)
-    # global は通貨を問わず掛かる。
-    for currency in (Currency.USD, Currency.JPY, Currency.GBP):
-        assert RegimeLabel.INTERVENTION_RISK_HIGH in snapshot.active(currency)
+    # 介入リスクは日本の介入から算出される JPY の状態。EUR/USD 側の
+    # ペアまで抑制しない（設計書 §12.3）。
+    assert RegimeLabel.INTERVENTION_RISK_HIGH in snapshot.active(Currency.JPY)
+    assert RegimeLabel.INTERVENTION_RISK_HIGH not in snapshot.active(Currency.USD)
+    assert RegimeLabel.INTERVENTION_RISK_HIGH not in snapshot.active(Currency.EUR)
+
+
+def test_global_regimes_reach_every_currency():
+    store = InMemoryFeatureStore()
+    store.replace({"intervention_risk": 0.9})
+    # global rule は feature が繋がるまで既定が空。二層構造そのものは
+    # ルールを渡せば機能する。
+    service = RuleBasedCurrencyRegimeService(
+        store,
+        global_rules={
+            RegimeLabel.GLOBAL_RISK_OFF: lambda s: (s.get("intervention_risk") or 0) > 0.5
+        },
+    )
+
+    snapshot = service.snapshot(NOW)
+
+    for currency in (Currency.USD, Currency.JPY, Currency.GBP, Currency.EUR):
+        assert RegimeLabel.GLOBAL_RISK_OFF in snapshot.active(currency)
+
+
+def test_snapshot_currency_map_is_read_only():
+    # strategy へ渡す snapshot を一つの読み手が書き換えられない。
+    snapshot = RuleBasedCurrencyRegimeService(InMemoryFeatureStore()).snapshot(NOW)
+
+    with pytest.raises(TypeError):
+        snapshot.by_currency[Currency.USD] = frozenset({RegimeLabel.USD_POLICY_HAWKISH})
 
 
 def test_missing_features_activate_no_regime():

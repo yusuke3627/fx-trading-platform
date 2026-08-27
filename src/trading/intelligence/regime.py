@@ -10,9 +10,10 @@ from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
+from types import MappingProxyType
+from typing import Annotated, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from trading.domain.money import Currency
 from trading.intelligence import features as f
@@ -71,15 +72,24 @@ class RuleBasedRegimeService:
         return frozenset(label for label, rule in self._rules.items() if rule(self._store))
 
 
+# frozen=True が止めるのはフィールドの再代入だけで、公開した dict 自体は
+# 書き換えられる。read-only snapshot という契約を型で守るために包む。
+ImmutableRegimeMap = Annotated[
+    Mapping[Currency, frozenset[RegimeLabel]],
+    AfterValidator(lambda value: MappingProxyType(dict(value))),
+]
+
+
 class CurrencyRegimeSnapshot(BaseModel):
     """ある時点の regime 全体像（通貨別 + global）。
 
-    strategy には read-only のこの snapshot を渡す（設計書 §13）。
+    strategy には read-only のこの snapshot を渡す（設計書 §13）。一つの
+    読み手が書き換えて後続の判断を動かせないよう、通貨マップも不変。
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    by_currency: dict[Currency, frozenset[RegimeLabel]]
+    by_currency: ImmutableRegimeMap
     global_regimes: frozenset[RegimeLabel]
     known_at: datetime
 
@@ -100,6 +110,7 @@ def default_currency_rules(
     t = {
         "usd_hawkish_min": 0.0,
         "jpy_hawkish_min": 0.0,
+        "intervention_risk_high": 0.6,
         **(thresholds or {}),
     }
     return {
@@ -111,19 +122,15 @@ def default_currency_rules(
         Currency.JPY: {
             RegimeLabel.JPY_POLICY_HAWKISH: _gt(
                 f.BOJ_POLICY_SHIFT_SCORE, t["jpy_hawkish_min"]
-            )
+            ),
+            # 介入リスクは日本の為替介入から算出される JPY の状態
+            # （設計書 §12.3）。global に置くと EURUSD のような無関係な
+            # ペアまで抑制する。JPY を含むペア（USDJPY / GBPJPY）だけが
+            # これを受け取る。
+            RegimeLabel.INTERVENTION_RISK_HIGH: _gt(
+                f.INTERVENTION_RISK, t["intervention_risk_high"]
+            ),
         },
-    }
-
-
-def default_global_rules(
-    thresholds: dict[str, float] | None = None,
-) -> dict[RegimeLabel, RegimeRule]:
-    t = {"intervention_risk_high": 0.6, **(thresholds or {})}
-    return {
-        RegimeLabel.INTERVENTION_RISK_HIGH: _gt(
-            f.INTERVENTION_RISK, t["intervention_risk_high"]
-        )
     }
 
 
@@ -144,9 +151,10 @@ class RuleBasedCurrencyRegimeService:
         self._currency_rules = (
             dict(currency_rules) if currency_rules is not None else default_currency_rules()
         )
-        self._global_rules = (
-            dict(global_rules) if global_rules is not None else default_global_rules()
-        )
+        # global regime（GLOBAL_RISK_OFF / GLOBAL_LIQUIDITY_STRESS）を出す
+        # feature はまだ供給されていない。既定を空にしておき、系列が
+        # 繋がった時点でルールを渡す。
+        self._global_rules = dict(global_rules or {})
 
     def snapshot(self, now: datetime) -> CurrencyRegimeSnapshot:
         return CurrencyRegimeSnapshot(

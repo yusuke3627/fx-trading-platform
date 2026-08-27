@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from trading.intelligence.normalization import NormalizationConfig, normalize_series
 
 T0 = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
@@ -106,3 +108,10 @@ def test_reports_the_observation_it_fitted_through():
     assert result is not None
     assert result.fitted_through == rows[-1][0]
     assert result.observations == 6
+
+
+def test_minimum_must_fit_inside_the_window():
+    # window より広い最小観測数は、window が捨てる行で満たされてしまい、
+    # 契約より少ない観測でスコアが出る。設定境界で弾く。
+    with pytest.raises(ValueError, match="min_observations"):
+        NormalizationConfig(window=3, min_observations=5)

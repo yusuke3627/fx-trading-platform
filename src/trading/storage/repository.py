@@ -19,6 +19,7 @@ from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand
 from trading.domain.risk import RiskDecision
 from trading.domain.signal import StrategySignal
+from trading.domain.swap import SwapSnapshot
 
 
 class StaleCommandStateError(RuntimeError):
@@ -172,6 +173,16 @@ class MacroObservationRepository(Protocol):
     def known_before(
         self, series: str, t: datetime, since: datetime
     ) -> Sequence[EconomicObservation]: ...
+
+
+class SwapSnapshotRepository(Protocol):
+    def insert(self, snapshot: SwapSnapshot) -> None: ...
+
+    # Snapshots visible at `t`, oldest first — the backtest loads the whole
+    # visible series once and does its latest-known lookups in memory.
+    def known_before(self, symbol: str, t: datetime) -> Sequence[SwapSnapshot]: ...
+
+    def latest_known_before(self, symbol: str, t: datetime) -> SwapSnapshot | None: ...
 
 
 class DecisionRepository(Protocol):

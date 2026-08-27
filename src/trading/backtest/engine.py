@@ -17,16 +17,18 @@ and only that tick's fill mutates the book, the ledger and equity. Follow-up
 intents of a flip (the reversal OPEN) are risk-evaluated only after every
 close leg resolved — the OMS re-delta convention, collapsed to the slice.
 
-Simplifications vs live, by design: no outbox/worker processes, no swap
-accrual, and open positions at the end of the replay are marked to market
-instead of being force-closed.
+Simplifications vs live, by design: no outbox/worker processes, and open
+positions at the end of the replay are marked to market instead of being
+force-closed. Overnight carry is accrued from PIT swap snapshots when the
+run is given any (ADR-016); with none, carry stays zero and the boundary
+crossings are counted as unpriced.
 """
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from itertools import chain
 from uuid import uuid4
@@ -38,7 +40,13 @@ from trading.backtest.market import (
     TICK_HORIZON_SECONDS,
     ReplayMarketData,
 )
-from trading.backtest.simulator import ExecutionSimulator
+from trading.backtest.rollover import (
+    SwapTimeline,
+    ended_server_day,
+    next_rollover_boundary,
+    server_midnight_label,
+)
+from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
 from trading.data.features import ReplayFeatureTimeline
 from trading.data.market.bars import BarBuilder
 from trading.domain.account import AccountMode, AccountSnapshot
@@ -51,6 +59,7 @@ from trading.domain.order import ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.domain.signal import StrategySignal
+from trading.domain.swap import SwapSnapshot, carry_amount
 from trading.indicators import IndicatorService
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.regime import RuleBasedRegimeService
@@ -68,7 +77,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.4.0"
+ENGINE_VERSION = "0.5.0"
 
 
 class ScriptedStrategy(Strategy):
@@ -203,6 +212,20 @@ class _Pending:
 
 
 @dataclass
+class _ChargedCarry:
+    """ある boundary で ticket に計上した carry の記録。
+
+    受信順 replay では broker ラベルの古い tick が後から届く（ADR-014）。
+    rollover より前の broker 時刻で決済されたと後から判明した数量の carry
+    を按分で戻すために、単価と数量を持つ。
+    """
+
+    midnight_label: datetime
+    per_unit: Decimal
+    quantity: Decimal
+
+
+@dataclass
 class _RunState:
     initial_equity: Decimal
     realized: Decimal = Decimal(0)
@@ -228,6 +251,19 @@ class _RunState:
     last_snapshot_hour: datetime | None = None
     # Signals held back while an entry for their slot is still in flight.
     deferred: dict[tuple[str, str], list[StrategySignal]] = field(default_factory=dict)
+    # Overnight carry accrued so far, and the boundaries a position crossed
+    # without any snapshot to price them (telemetry: an unexpected hold with
+    # no cost data must not read as "carry was zero").
+    carry_total: Decimal = Decimal(0)
+    unpriced_rollovers: int = 0
+    next_rollover: datetime | None = None
+    # 処理済み boundary（昇順）と、boundary ごとの ticket 別計上記録。遅着
+    # tick が broker 時系列を訂正したときの遡及チャージ / 按分リバース用。
+    processed_boundaries: list[datetime] = field(default_factory=list)
+    carry_charged: dict[str, list[_ChargedCarry]] = field(default_factory=dict)
+    # snapshot 無しで跨いだ boundary の ticket 別残数量。遅着決済で「実は
+    # 跨いでいなかった」と判明したら unpriced_rollovers ごと取り消す。
+    unpriced_crossings: dict[datetime, dict[str, Decimal]] = field(default_factory=dict)
 
 
 def signed_pnl(
@@ -272,6 +308,8 @@ class BacktestEngine:
         event_risk: EventRiskCalendar | None = None,
         features: ReplayFeatureTimeline | None = None,
         evaluate_from: datetime | None = None,
+        swap_snapshots: Sequence[SwapSnapshot] = (),
+        broker_server_ahead_of_ny_hours: float = 7.0,
     ) -> None:
         if account_mode is not AccountMode.HEDGING:
             raise ValueError("the vertical slice runs on HEDGING only")
@@ -297,6 +335,10 @@ class BacktestEngine:
         # build state but the strategy is not asked, so a research period's
         # first evaluation already sees its slowest window populated.
         self._evaluate_from = evaluate_from
+        # PIT swap snapshots for overnight carry; the boundary derivation
+        # shares ADR-014's server-clock convention (server = NY + ahead).
+        self._swap_timeline = SwapTimeline(swap_snapshots, spec.symbol)
+        self._server_ahead_hours = broker_server_ahead_of_ny_hours
 
     def run(self, ticks: list[Tick]) -> BacktestResult:
         ordered = sorted(ticks, key=lambda t: t.known_time)
@@ -347,6 +389,11 @@ class BacktestEngine:
                     w.market.add_bar(bar)
             if state.marking_tick is None or item.time >= state.marking_tick.time:
                 state.marking_tick = item
+            # Rollover carry precedes everything that reads equity at this
+            # tick: the boundary lies before the tick instant, so the hourly
+            # snapshot below (the loss-window baseline series) must already
+            # include it.
+            self._accrue_carry(state, w)
             # Warm-up ticks build bars, indicators and features but leave no
             # trace in the outputs: the strategy is not asked, and the equity
             # curve, snapshots and metrics start at the period's opening
@@ -427,6 +474,184 @@ class BacktestEngine:
                 state.equity_curve.append(closing)
 
         return self._result(state, w.simulator)
+
+    def _accrue_carry(self, state: _RunState, w: _Wiring) -> None:
+        """Swap carry for every rollover boundary reached by the clock.
+
+        The snapshot must be known AT the boundary (`known_at <= boundary`),
+        not merely by the current tick — pricing a past rollover with a
+        snapshot collected after it would be look-ahead. A boundary a
+        position crossed with no snapshot known is counted, not silently
+        priced at zero.
+
+        「rollover 時点で broker の帳簿に載っていたか」は broker wall-clock
+        ラベル軸（tick.time / opened_at、ADR-014）で判定する。受信順 replay
+        では broker ラベルの古い tick が後から届き得るため、ここでの計上は
+        確定ではない: 計上記録（carry_charged）を持ち、rollover より前の
+        broker 時刻の決済が後から届けば _settle_close が按分で戻し、遅着の
+        建玉には _retro_carry_for_open が遡って課す。
+        """
+        now = w.clock.now()
+        if state.next_rollover is None:
+            state.next_rollover = next_rollover_boundary(now, self._server_ahead_hours)
+            return
+        while state.next_rollover <= now:
+            boundary = state.next_rollover
+            state.next_rollover = next_rollover_boundary(
+                boundary, self._server_ahead_hours
+            )
+            state.processed_boundaries.append(boundary)
+            midnight_label = server_midnight_label(boundary)
+            held = [
+                p
+                for p in w.simulator.open_positions(self._spec.symbol)
+                if p.opened_at < midnight_label
+            ]
+            if not held:
+                continue
+            snapshot = self._swap_timeline.latest_known_before(boundary)
+            if snapshot is None:
+                state.unpriced_rollovers += 1
+                state.unpriced_crossings[midnight_label] = {
+                    p.position_id: p.quantity for p in held
+                }
+                continue
+            day = ended_server_day(boundary)
+            for position in held:
+                self._charge_carry(
+                    state, snapshot, position, midnight_label=midnight_label, day=day
+                )
+
+    def _charge_carry(
+        self,
+        state: _RunState,
+        snapshot: SwapSnapshot,
+        position: SimulatedPosition,
+        *,
+        midnight_label: datetime,
+        day: date,
+    ) -> None:
+        per_unit = carry_amount(
+            snapshot,
+            spec=self._spec,
+            direction=position.direction,
+            quantity=Decimal(1),
+            day=day,
+        )
+        carry = per_unit * position.quantity
+        state.realized += carry
+        state.carry_total += carry
+        state.carry_charged.setdefault(position.position_id, []).append(
+            _ChargedCarry(midnight_label, per_unit, position.quantity)
+        )
+
+    def _retro_carry_for_open(
+        self,
+        state: _RunState,
+        w: _Wiring,
+        position: SimulatedPosition,
+        opened_label: datetime,
+    ) -> None:
+        """遅着 tick の建玉に、処理済み boundary の carry を遡って課す。
+
+        broker の帳簿では opened_label より後の server midnight を全て保有
+        で跨いでいるが、boundary 処理時にはまだ book に居なかった。"""
+        adjusted = False
+        for boundary in reversed(state.processed_boundaries):
+            midnight_label = server_midnight_label(boundary)
+            if opened_label >= midnight_label:
+                break
+            snapshot = self._swap_timeline.latest_known_before(boundary)
+            if snapshot is None:
+                crossings = state.unpriced_crossings.setdefault(midnight_label, {})
+                if not crossings:
+                    state.unpriced_rollovers += 1
+                crossings[position.position_id] = (
+                    crossings.get(position.position_id, Decimal(0)) + position.quantity
+                )
+                continue
+            self._charge_carry(
+                state,
+                snapshot,
+                position,
+                midnight_label=midnight_label,
+                day=ended_server_day(boundary),
+            )
+            adjusted = True
+        if adjusted:
+            self._refresh_same_instant_snapshots(state, w)
+
+    def _reverse_carry_for_close(
+        self,
+        state: _RunState,
+        w: _Wiring,
+        ticket: str,
+        quantity: Decimal,
+        at: datetime,
+    ) -> None:
+        """決済数量ぶんの計上記録を消し込み、broker 時刻が rollover より
+        前だった決済（遅着 tick で後から判明する）は carry を按分で戻す。
+        snapshot が無く unpriced と数えた boundary も、跨いでいなかったと
+        判明した数量を取り消す。
+
+        訂正が直すのは金額（realized / carry_total）と同 instant の
+        snapshot まで。計上と訂正の間の instant に記録済みの経路依存の
+        集計（high_water_mark / max_drawdown / equity_curve）は遡って
+        再計算しない — 正確な再計算には broker 時間軸での全経路 replay が
+        要る。残差は取り消した carry 1 件分が上限で、方向は常に保守側
+        （正の carry の取り消しで HWM が高止まりしても halt は早まる側、
+        負の carry の取り消しで max_drawdown が過大でも報告が悪化する側）
+        に倒れる（ADR-016）。"""
+        adjusted = False
+        charged = state.carry_charged.get(ticket)
+        if charged:
+            remaining: list[_ChargedCarry] = []
+            for entry in charged:
+                consumed = min(quantity, entry.quantity)
+                if consumed and at < entry.midnight_label:
+                    reversal = entry.per_unit * consumed
+                    state.realized -= reversal
+                    state.carry_total -= reversal
+                    adjusted = True
+                entry.quantity -= consumed
+                if entry.quantity > 0:
+                    remaining.append(entry)
+            if remaining:
+                state.carry_charged[ticket] = remaining
+            else:
+                state.carry_charged.pop(ticket, None)
+        for midnight_label in list(state.unpriced_crossings):
+            if at >= midnight_label:
+                continue
+            crossings = state.unpriced_crossings[midnight_label]
+            held_quantity = crossings.get(ticket)
+            if held_quantity is None:
+                continue
+            held_quantity -= quantity
+            if held_quantity > 0:
+                crossings[ticket] = held_quantity
+            else:
+                del crossings[ticket]
+            if not crossings:
+                del state.unpriced_crossings[midnight_label]
+                state.unpriced_rollovers -= 1
+        if adjusted:
+            self._refresh_same_instant_snapshots(state, w)
+
+    def _refresh_same_instant_snapshots(self, state: _RunState, w: _Wiring) -> None:
+        """現 instant の保存済み snapshot を訂正後の値で置き換える。
+
+        時間足 snapshot は carry 計上の後・broker event の前に保存されるが、
+        遅着 tick の訂正はその後に走る。loss window の基準
+        （risk/limits.py の _baseline_equity は同時刻ならリスト先頭を選ぶ）
+        が訂正前の equity を読まないよう、同 instant の snapshot を全て
+        置き換える。"""
+        now = w.clock.now()
+        refreshed = self._snapshot(state, w.simulator, now)
+        for index in range(len(state.snapshots) - 1, -1, -1):
+            if state.snapshots[index].observed_at != now:
+                break
+            state.snapshots[index] = refreshed
 
     def _apply_protection(self, state: _RunState, w: _Wiring, tick: Tick) -> None:
         """Broker-side SL/TP sweep of the whole book at this tick's price.
@@ -711,6 +936,7 @@ class BacktestEngine:
         w.ledger.apply_fill(
             strategy_id, self._spec.symbol, fill.side, fill.quantity, fill.price
         )
+        self._retro_carry_for_open(state, w, result.position, fill.broker_time)
         state.fills.append(
             FillRecord(
                 at=fill.broker_time,
@@ -745,6 +971,7 @@ class BacktestEngine:
         strategy_id = state.ticket_owner[ticket]
         entry = state.entry_price[ticket]
         state.realized += signed_pnl(direction, entry, price, quantity)
+        self._reverse_carry_for_close(state, w, ticket, quantity, at)
         state.gross_mid_closed += signed_pnl(
             direction, state.entry_mid[ticket], mid, quantity
         )
@@ -932,7 +1159,9 @@ class BacktestEngine:
             )
         gross_mid = state.gross_mid_closed + open_gross_mid
         net = state.realized + unrealized
-        execution_cost = gross_mid - net
+        # Carry is its own line: leaving it inside net would let gross-vs-net
+        # attribute overnight swap to spread/slippage.
+        execution_cost = gross_mid - net + state.carry_total
 
         protection_fills = sum(1 for f in state.fills if f.origin == "PROTECTION")
         metrics = {
@@ -943,6 +1172,8 @@ class BacktestEngine:
             "gross_mid_pnl": str(gross_mid),
             "execution_cost": str(execution_cost),
             "max_drawdown": str(state.max_drawdown),
+            "carry_total": str(state.carry_total),
+            "unpriced_rollovers": str(state.unpriced_rollovers),
             "final_equity": str(state.initial_equity + net),
             "fills": str(len(state.fills)),
             "protection_fills": str(protection_fills),

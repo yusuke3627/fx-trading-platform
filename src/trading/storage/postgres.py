@@ -24,6 +24,7 @@ from trading.domain.market import Bar, Tick
 from trading.domain.order import CommandState, ExecutionCommand
 from trading.domain.risk import RiskCheck, RiskDecision
 from trading.domain.signal import StrategySignal
+from trading.domain.swap import SwapSnapshot
 from trading.storage.repository import StaleCommandStateError
 
 # One keyset batch of the research stream: large enough that 99M rows cost
@@ -784,6 +785,92 @@ class PostgresMacroObservationRepository:
             (series, t, since),
         ).fetchall()
         return [_row_to_observation(r) for r in rows]
+
+
+def _row_to_swap_snapshot(row: dict[str, Any]) -> SwapSnapshot:
+    return SwapSnapshot(
+        snapshot_id=row["id"],
+        symbol=row["symbol"],
+        swap_mode=row["swap_mode"],
+        swap_long=row["swap_long"],
+        swap_short=row["swap_short"],
+        swap_rollover3days=row["swap_rollover3days"],
+        swap_sunday=row["swap_sunday"],
+        swap_monday=row["swap_monday"],
+        swap_tuesday=row["swap_tuesday"],
+        swap_wednesday=row["swap_wednesday"],
+        swap_thursday=row["swap_thursday"],
+        swap_friday=row["swap_friday"],
+        swap_saturday=row["swap_saturday"],
+        payload_hash=row["payload_hash"],
+        retrieved_at=row["retrieved_at"],
+        known_at=row["known_at"],
+    )
+
+
+class PostgresSwapSnapshotRepository:
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    def insert(self, s: SwapSnapshot) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO swap_snapshots (
+                id, symbol, swap_mode, swap_long, swap_short,
+                swap_rollover3days, swap_sunday, swap_monday, swap_tuesday,
+                swap_wednesday, swap_thursday, swap_friday, swap_saturday,
+                payload_hash, retrieved_at, known_at
+            ) VALUES (
+                %(id)s, %(symbol)s, %(swap_mode)s, %(swap_long)s,
+                %(swap_short)s, %(swap_rollover3days)s, %(swap_sunday)s,
+                %(swap_monday)s, %(swap_tuesday)s, %(swap_wednesday)s,
+                %(swap_thursday)s, %(swap_friday)s, %(swap_saturday)s,
+                %(payload_hash)s, %(retrieved_at)s, %(known_at)s
+            )
+            """,
+            {
+                "id": s.snapshot_id,
+                "symbol": s.symbol,
+                "swap_mode": s.swap_mode,
+                "swap_long": s.swap_long,
+                "swap_short": s.swap_short,
+                "swap_rollover3days": s.swap_rollover3days,
+                "swap_sunday": s.swap_sunday,
+                "swap_monday": s.swap_monday,
+                "swap_tuesday": s.swap_tuesday,
+                "swap_wednesday": s.swap_wednesday,
+                "swap_thursday": s.swap_thursday,
+                "swap_friday": s.swap_friday,
+                "swap_saturday": s.swap_saturday,
+                "payload_hash": s.payload_hash,
+                "retrieved_at": s.retrieved_at,
+                "known_at": s.known_at,
+            },
+        )
+        self._conn.commit()
+
+    def known_before(self, symbol: str, t: datetime) -> Sequence[SwapSnapshot]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM swap_snapshots
+            WHERE symbol = %s AND known_at <= %s
+            ORDER BY known_at, id
+            """,
+            (symbol, t),
+        ).fetchall()
+        return [_row_to_swap_snapshot(r) for r in rows]
+
+    def latest_known_before(self, symbol: str, t: datetime) -> SwapSnapshot | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM swap_snapshots
+            WHERE symbol = %s AND known_at <= %s
+            ORDER BY known_at DESC, id DESC
+            LIMIT 1
+            """,
+            (symbol, t),
+        ).fetchone()
+        return _row_to_swap_snapshot(row) if row else None
 
 
 class PostgresEventRepository:

@@ -123,6 +123,9 @@ def main() -> None:
         # The same calendar live grades against. A replay that ignored it would
         # let a strategy trade through a decision the live path refuses.
         event_risk=central_bank_calendar(config),
+        # 合成データセットに swap snapshot は無い（carry 0 のまま）が、
+        # boundary の位置は実運用と同じ規約で決まる。
+        broker_server_ahead_of_ny_hours=config.market.broker_server_ahead_of_ny_hours,
     )
     result = engine.run(ticks)
 

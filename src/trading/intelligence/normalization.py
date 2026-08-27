@@ -105,6 +105,10 @@ def normalize_series(
 
     latest_at, latest = window[-1]
     z = (latest - median) / (mad * _MAD_TO_SIGMA)
+    if not math.isfinite(z):
+        # clip は NaN を上限側へ通す（min(3.0, nan) は 3.0）ので、ここで
+        # 止めないと破損した系列が「最も強い買いシグナル」になる。
+        return None
     clipped = max(-settings.clip_sigma, min(settings.clip_sigma, z))
     bounded = math.tanh(clipped / settings.clip_sigma)
     return NormalizedScore(
@@ -119,4 +123,7 @@ def _median(values: list[float]) -> float:
     middle = len(ordered) // 2
     if len(ordered) % 2:
         return ordered[middle]
-    return (ordered[middle - 1] + ordered[middle]) / 2
+    low, high = ordered[middle - 1], ordered[middle]
+    # (low + high) / 2 は両者が大きいと合計側でオーバーフローする。
+    # 差分は必ず有限なので、下側からの中点として求める。
+    return low + (high - low) / 2

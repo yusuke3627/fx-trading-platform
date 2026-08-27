@@ -150,3 +150,13 @@ def test_same_instant_observations_keep_their_supplied_order():
     # 供給順の最後がそれぞれ最新なので、結果は一致しない。
     assert first.value != second.value
     assert first.value > 0 > second.value
+
+
+def test_huge_but_finite_values_do_not_become_a_max_score():
+    # 入力が有限でも、中央値の加算がオーバーフローすると z が NaN になり、
+    # clip が上限を選んで最大の買いスコアに化ける。
+    rows = series([1e308, 1.1e308, 1.2e308, 1.05e308, 1.15e308, 1.3e308])
+
+    result = normalize_series(rows, rows[-1][0], CONFIG)
+
+    assert result is None or result.value != Decimal("0.761594")

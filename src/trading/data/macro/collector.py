@@ -13,6 +13,7 @@ Usage:
     python -m trading.data.macro.collector --env demo --source bea
     python -m trading.data.macro.collector --env demo --source census
     python -m trading.data.macro.collector --env demo --source boe
+    python -m trading.data.macro.collector --env demo --source boe_ois
     python -m trading.data.macro.collector --env demo --source ons
     python -m trading.data.macro.collector --env demo --source ecb
     python -m trading.data.macro.collector --env demo --source eurostat
@@ -25,12 +26,12 @@ from collections.abc import Iterator
 from datetime import date
 
 from trading.backtest.clock import SystemClock
-from trading.data.macro import alfred, bea, bls, boe, census, ecb, eurostat, ons
+from trading.data.macro import alfred, bea, bls, boe, boe_yield_curve, census, ecb, eurostat, ons
 from trading.data.macro.base import CollectionBatch
 from trading.data.macro.http import HttpTransport
 from trading.storage.repository import EventRepository, MacroObservationRepository
 
-SOURCES = ("alfred", "bls", "bea", "census", "boe", "ons", "ecb", "eurostat")
+SOURCES = ("alfred", "bls", "bea", "census", "boe", "boe_ois", "ons", "ecb", "eurostat")
 
 
 def _require_key(env_name: str) -> str:
@@ -60,7 +61,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.series and args.source in ("bea", "census", "boe"):
+    if args.series and args.source in ("bea", "census", "boe", "boe_ois"):
         parser.error(f"--series is not supported for {args.source} (single-series source)")
     if args.observation_start and args.source != "alfred":
         parser.error("--observation-start applies to --source alfred only")
@@ -116,9 +117,13 @@ def main() -> None:
                 transport, _require_key(keys.census_api_key_env), clock=clock
             )
             yield census_collector.collect(years)
-        # 以下の4ソースは API キー不要（transport の User-Agent のみ必要）。
+        # 以下の5ソースは API キー不要（transport の User-Agent のみ必要）。
         elif args.source == "boe":
             yield boe.BOECollector(transport, clock=clock).collect(years)
+        elif args.source == "boe_ois":
+            yield boe_yield_curve.BOEYieldCurveCollector(
+                transport, clock=clock
+            ).collect(years)
         elif args.source == "ons":
             ons_collector = ons.ONSCollector(transport, clock=clock)
             for name in args.series or list(ons.SERIES):

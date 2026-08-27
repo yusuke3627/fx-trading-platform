@@ -10,7 +10,9 @@ from trading.data.factor_series import (
     SeriesTransform,
 )
 from trading.data.macro.registry import (
+    EA_YIELD_CURVE_2Y,
     UK_CPI_HEADLINE_YOY_NSA,
+    UK_OIS_2Y,
     US_CPI_HEADLINE_SA,
     US_TREASURY_2Y_YIELD,
     US_UNEMPLOYMENT_RATE_SA,
@@ -371,3 +373,18 @@ def test_default_inputs_use_one_series_per_factor_across_currencies() -> None:
         DEFAULT_FACTOR_INPUTS[(Currency.USD, CurrencyFactor.INFLATION)].transform
         is SeriesTransform.YEAR_OVER_YEAR
     )
+
+
+def test_every_rates_factor_uses_the_two_year_tenor() -> None:
+    rates = {
+        currency: factor_input.series
+        for (currency, factor), factor_input in DEFAULT_FACTOR_INPUTS.items()
+        if factor is CurrencyFactor.RATES
+    }
+
+    # 年限が違う点どうしを引いても金利差にならない。
+    assert rates == {
+        Currency.USD: US_TREASURY_2Y_YIELD,
+        Currency.GBP: UK_OIS_2Y,
+        Currency.EUR: EA_YIELD_CURVE_2Y,
+    }

@@ -1,50 +1,411 @@
 # 中央銀行会合ファクト（機械採点の入力）。
 #
-# - 1 会合 1 エントリ。値は公式 statement / 議事要旨から転記し、確認が取れたら
-#   verified: true にする。人名は記録しない（dissent は人数のみ）。
-# - statement_published_at が known_at になる。FOMC は 14:00 ET 固定。BOJ は
-#   時刻非固定のため、実際の公表時刻を確認するまでは保守側の遅い時刻
-#   （15:00 JST）を置く（look-ahead 防止が優先）。
-# - 過去会合（2024 政策転換期など）のバックフィルは issue 管理で一次資料と
-#   照合しながら追加する。verified: false のエントリは research run で除外可能。
+# - 1 会合 1 エントリ。値は公式 statement / 展望レポート・SEP から転記し、確認が
+#   取れたら verified: true にする。人名は記録しない（dissent は人数のみ）。
+# - statement_published_at が known_at になる。FOMC は 14:00 ET 固定（夏時間
+#   18:00 UTC / 冬時間 19:00 UTC）。BOJ は時刻非固定のため、実際の公表時刻を
+#   確認するまでは保守側の遅い時刻（15:00 JST = 06:00 UTC）を置く
+#   （look-ahead 防止が優先。リスク窓の pre_hours=48 が実公表を確実に覆う）。
+#
+# 転記ルール（機械採点の再現性のため固定）:
+# - dissent は「政策金利決定への反対」のみ数える。方向は反対者が選好した金利
+#   （利上げ・据え置き=hawkish / 利下げ・より大幅な利下げ=dovish）で判定する。
+#   QT・国債買入れ・声明文言・見通し別紙への反対は数えない。
+# - inflation_forecast_change は見通し公表回（BOJ=展望レポート 1/4/7/10 月、
+#   FED=SEP 3/6/9/12 月）のみ。当該年度（FED は当該暦年）のコア CPI / PCE
+#   インフレ率の中央値を前回公表と比べ、上方修正 +1 / 不変 0 / 下方修正 -1。
+# - explicit_future_hike_language は当日公表の声明本文のみで判定する（展望
+#   レポート本文・SEP・総裁会見は見ない。BOJ の展望回声明は調節方針のみの
+#   短文形式が多く、同趣旨の文言が基本的見解側にあっても false とする）。
 
 # この暦が「網羅している」と主張する期間。登録済み会合の範囲ではなく、ここに
-# 載っていない会合が無いと言い切れる範囲を書く。バックフィルが進むまでは狭く
-# 保つ。この外側では Risk はイベントモードを設定の既定値（保守側）で扱うので、
-# 暦が痩せている間はサイズが絞られたままになる。
+# 載っていない会合が無いと言い切れる範囲を書く。この外側では Risk はイベント
+# モードを設定の既定値（保守側）で扱う。
 covers:
-  since: 2026-07-01T00:00:00+00:00
+  since: 2024-07-01T00:00:00+00:00
   until: 2027-01-01T00:00:00+00:00
 
 meetings:
+  - bank: BOJ
+    decision_date: 2024-07-31
+    statement_published_at: 2024-07-31T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 15  # 0〜0.1%程度 → 0.25%程度
+    hawkish_dissents: 0
+    dovish_dissents: 2  # 2名が利上げ実施に反対
+    inflation_forecast_change: -1  # 展望 2024年度コアCPI 2.8→2.5
+    explicit_future_hike_language: true  # 「引き続き政策金利を引き上げ…」が声明本文にある
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2024/k240731a.pdf
+
+  - bank: FED
+    decision_date: 2024-07-31
+    statement_published_at: 2024-07-31T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20240731a.htm
+
+  - bank: FED
+    decision_date: 2024-09-18
+    statement_published_at: 2024-09-18T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: -50
+    hawkish_dissents: 1  # 1名がより小幅の-25bpを主張
+    dovish_dissents: 0
+    inflation_forecast_change: -1  # SEP 2024年PCE 2.6→2.3
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20240918a.htm
+
+  - bank: BOJ
+    decision_date: 2024-09-20
+    statement_published_at: 2024-09-20T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2024/k240920a.pdf
+
+  - bank: BOJ
+    decision_date: 2024-10-31
+    statement_published_at: 2024-10-31T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0  # 展望 2024年度コアCPI 2.5→2.5
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2024/k241031a.pdf
+
+  - bank: FED
+    decision_date: 2024-11-07
+    statement_published_at: 2024-11-07T19:00:00+00:00  # 14:00 EST
+    rate_change_bp: -25
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20241107a.htm
+
+  - bank: FED
+    decision_date: 2024-12-18
+    statement_published_at: 2024-12-18T19:00:00+00:00  # 14:00 EST
+    rate_change_bp: -25
+    hawkish_dissents: 1  # 1名が据え置きを主張
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # SEP 2024年PCE 2.3→2.4
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20241218a.htm
+
+  - bank: BOJ
+    decision_date: 2024-12-19
+    statement_published_at: 2024-12-19T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 1  # 1名が0.5%への利上げ議案を提出
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2024/k241219a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-01-24
+    statement_published_at: 2025-01-24T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 25  # 0.25%程度 → 0.5%程度
+    hawkish_dissents: 0
+    dovish_dissents: 1  # 1名が利上げ実施に反対
+    inflation_forecast_change: 1  # 展望 2024年度コアCPI 2.5→2.7
+    explicit_future_hike_language: true
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k250124a.pdf
+
+  - bank: FED
+    decision_date: 2025-01-29
+    statement_published_at: 2025-01-29T19:00:00+00:00  # 14:00 EST
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20250129a.htm
+
+  - bank: BOJ
+    decision_date: 2025-03-19
+    statement_published_at: 2025-03-19T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k250319a.pdf
+
+  - bank: FED
+    decision_date: 2025-03-19
+    statement_published_at: 2025-03-19T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0  # 1名の反対はQT減速に対するもので、金利決定には賛成（数えない）
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # SEP 2025年PCE 2.5→2.7
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20250319a.htm
+
+  - bank: BOJ
+    decision_date: 2025-05-01
+    statement_published_at: 2025-05-01T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: -1  # 展望 2025年度コアCPI 2.4→2.2
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k250501a.pdf
+
+  - bank: FED
+    decision_date: 2025-05-07
+    statement_published_at: 2025-05-07T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20250507a.htm
+
+  - bank: BOJ
+    decision_date: 2025-06-17
+    statement_published_at: 2025-06-17T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 0  # 1名の反対は国債買入れ減額計画に対するもので、金利決定は全員一致（数えない）
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k250617a.pdf
+
+  - bank: FED
+    decision_date: 2025-06-18
+    statement_published_at: 2025-06-18T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # SEP 2025年PCE 2.7→3.0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20250618a.htm
+
+  - bank: FED
+    decision_date: 2025-07-30
+    statement_published_at: 2025-07-30T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 2  # 2名が-25bpを主張
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20250730a.htm
+
+  - bank: BOJ
+    decision_date: 2025-07-31
+    statement_published_at: 2025-07-31T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # 展望 2025年度コアCPI 2.2→2.7
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k250731a.pdf
+
+  - bank: FED
+    decision_date: 2025-09-17
+    statement_published_at: 2025-09-17T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: -25
+    hawkish_dissents: 0
+    dovish_dissents: 1  # 1名がより大幅の-50bpを主張
+    inflation_forecast_change: 0  # SEP 2025年PCE 3.0→3.0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20250917a.htm
+
+  - bank: BOJ
+    decision_date: 2025-09-19
+    statement_published_at: 2025-09-19T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 2  # 2名が0.75%への利上げ議案を提出
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k250919a.pdf
+
+  - bank: FED
+    decision_date: 2025-10-29
+    statement_published_at: 2025-10-29T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: -25
+    hawkish_dissents: 1  # 1名が据え置きを主張
+    dovish_dissents: 1  # 1名がより大幅の-50bpを主張
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20251029a.htm
+
+  - bank: BOJ
+    decision_date: 2025-10-30
+    statement_published_at: 2025-10-30T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 2  # 2名が0.75%への利上げ議案を再提出
+    dovish_dissents: 0
+    inflation_forecast_change: 0  # 展望 2025年度コアCPI 2.7→2.7
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k251030a.pdf
+
+  - bank: FED
+    decision_date: 2025-12-10
+    statement_published_at: 2025-12-10T19:00:00+00:00  # 14:00 EST
+    rate_change_bp: -25
+    hawkish_dissents: 2  # 2名が据え置きを主張
+    dovish_dissents: 1  # 1名がより大幅の-50bpを主張
+    inflation_forecast_change: -1  # SEP 2025年PCE 3.0→2.9
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20251210a.htm
+
+  - bank: BOJ
+    decision_date: 2025-12-19
+    statement_published_at: 2025-12-19T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 25  # 0.5%程度 → 0.75%程度
+    hawkish_dissents: 0  # 2名の反対は見通し別紙の記述に対するもので、金利決定は全員一致（数えない）
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: true
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2025/k251219a.pdf
+
+  - bank: BOJ
+    decision_date: 2026-01-23
+    statement_published_at: 2026-01-23T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 1  # 1名が1.0%への利上げ議案を提出
+    dovish_dissents: 0
+    inflation_forecast_change: 0  # 展望 2025年度コアCPI 2.7→2.7
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260123a.pdf
+
+  - bank: FED
+    decision_date: 2026-01-28
+    statement_published_at: 2026-01-28T19:00:00+00:00  # 14:00 EST
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 2  # 2名が-25bpを主張
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20260128a.htm
+
+  - bank: FED
+    decision_date: 2026-03-18
+    statement_published_at: 2026-03-18T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 1  # 1名が-25bpを主張
+    inflation_forecast_change: 1  # SEP 2026年PCE 2.4→2.7
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20260318a.htm
+
+  - bank: BOJ
+    decision_date: 2026-03-19
+    statement_published_at: 2026-03-19T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 1  # 1名が1.0%への利上げ議案を提出
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: true
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260319a.pdf
+
+  - bank: BOJ
+    decision_date: 2026-04-28
+    statement_published_at: 2026-04-28T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 0
+    hawkish_dissents: 3  # 3名が1.0%への利上げ議案を提出
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # 展望 2026年度コアCPI 1.9→2.8（原油高を反映）
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260428a.pdf
+
+  - bank: FED
+    decision_date: 2026-04-29
+    statement_published_at: 2026-04-29T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0  # 3名の反対は声明のeasing bias文言に対するもので、金利維持には賛成（数えない）
+    dovish_dissents: 1  # 1名が-25bpを主張
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20260429a.htm
+
+  - bank: BOJ
+    decision_date: 2026-06-16
+    statement_published_at: 2026-06-16T06:00:00+00:00  # 15:00 JST（保守置き）
+    rate_change_bp: 25  # 0.75%程度 → 1.0%程度
+    hawkish_dissents: 0
+    dovish_dissents: 1  # 1名が据え置きを主張（中東情勢による下振れリスク）
+    inflation_forecast_change: 0
+    explicit_future_hike_language: true
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260616a.pdf
+
+  - bank: FED
+    decision_date: 2026-06-17
+    statement_published_at: 2026-06-17T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0  # 12-0（この会合から短文の新フォーマット・前文に票数記載）
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # SEP 2026年PCE 2.7→3.6（エネルギー供給ショックを反映）
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20260617a.htm
+
   - bank: FED
     decision_date: 2026-07-29
     statement_published_at: 2026-07-29T18:00:00+00:00  # 14:00 EDT
     rate_change_bp: 0
-    hawkish_dissents: 3
+    hawkish_dissents: 3  # 3名が+25bpの利上げを主張
     dovish_dissents: 0
     inflation_forecast_change: 0
     explicit_future_hike_language: false
-    verified: false  # 票数は research note 転記。公式 statement と要照合
-    source_uri: https://www.federalreserve.gov/newsevents/pressreleases.htm
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20260729a.htm
 
   - bank: BOJ
     decision_date: 2026-07-31
-    statement_published_at: 2026-07-31T06:00:00+00:00  # 15:00 JST（保守置き・要実時刻確認）
+    statement_published_at: 2026-07-31T06:00:00+00:00  # 15:00 JST（保守置き）
     rate_change_bp: 0
-    hawkish_dissents: 1
+    hawkish_dissents: 1  # 1名が1.25%への利上げ議案を提出
     dovish_dissents: 0
-    inflation_forecast_change: 0
+    inflation_forecast_change: -1  # 展望 2026年度コアCPI 2.8→2.5（原油高一服）
     explicit_future_hike_language: false
-    verified: false  # 8対1（1名が25bp利上げ提案）は research note 転記。公式と要照合
-    source_uri: https://www.boj.or.jp/mopo/mpmdeci/index.htm
-
-
+    verified: true
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260731a.pdf
 
 
 # 公式カレンダーどおりの会合予定（恒久記録）。リスク窓はこのセクションだけ
 # から構築され、採点には乗らない（結果未公表の会合を meetings: に置くと、
 # 日次 collector が 0 点イベントを決定的 id で永続化し、後から訂正できない）。
+# schedule 導入（2026-08）前にバックフィルした過去会合は meetings: のみで持ち、
+# 窓は statement_published_at の一点から作られる（risk_windows.py 参照）。
 #
 # statement 公表後は実結果を meetings: へ「追加」する。ここのエントリは
 # 消さない — 事前に市場が知っていたのは予定区間であり、窓は転記後もそれに

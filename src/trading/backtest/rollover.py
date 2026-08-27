@@ -1,0 +1,61 @@
+"""Broker rollover boundary と swap snapshot の PIT timeline（ADR-016）。
+
+rollover は broker server の日付変更で発生する。server の壁時計は
+「NY より broker_server_ahead_of_ny_hours 時間先行」という NY クローズ
+規約（ADR-014 と同じ定義）なので、server midnight は NY ローカルの
+(24 - ahead) 時にあたり、DST は America/New_York の壁時計経由で追従する。
+"""
+from __future__ import annotations
+
+from bisect import bisect_right
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+from trading.domain.swap import SwapSnapshot
+
+_NY = ZoneInfo("America/New_York")
+
+
+def _boundary_time_of_day(server_ahead_of_ny_hours: float) -> time:
+    minutes = round((24 - server_ahead_of_ny_hours) * 60) % (24 * 60)
+    return time(minutes // 60, minutes % 60)
+
+
+def next_rollover_boundary(after: datetime, server_ahead_of_ny_hours: float) -> datetime:
+    """`after` より厳密に後の、次の server midnight（UTC instant）。"""
+    tod = _boundary_time_of_day(server_ahead_of_ny_hours)
+    local = after.astimezone(_NY)
+    candidate_date = local.date()
+    candidate = datetime.combine(candidate_date, tod, _NY).astimezone(UTC)
+    while candidate <= after:
+        candidate_date += timedelta(days=1)
+        candidate = datetime.combine(candidate_date, tod, _NY).astimezone(UTC)
+    return candidate
+
+
+def ended_server_day(boundary: datetime) -> date:
+    """boundary で終わった broker server 日付（swap 倍率の曜日キー）。
+
+    server は NY より 0〜24h 先行するので、boundary 直前の server 日付は
+    boundary 時点の NY ローカル日付と常に一致する。
+    """
+    return boundary.astimezone(_NY).date()
+
+
+class SwapTimeline:
+    """1 シンボルの swap snapshot 列。known_at <= t の最新を返す。"""
+
+    def __init__(self, snapshots: Sequence[SwapSnapshot], symbol: str) -> None:
+        rows = sorted(
+            (s for s in snapshots if s.symbol == symbol), key=lambda s: s.known_at
+        )
+        self._rows = rows
+        self._known = [s.known_at for s in rows]
+
+    def __bool__(self) -> bool:
+        return bool(self._rows)
+
+    def latest_known_before(self, t: datetime) -> SwapSnapshot | None:
+        index = bisect_right(self._known, t)
+        return self._rows[index - 1] if index else None

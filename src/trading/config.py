@@ -42,8 +42,9 @@ class MarketConfig(BaseModel):
     tick_poll_interval_seconds: float = Field(default=0.2, gt=0, allow_inf_nan=False)
     # How far the trade server's wall clock runs ahead of New York's,
     # year-round — the MT5 New York-close convention that puts the server at
-    # UTC+3 during US DST and UTC+2 outside it. Used ONLY to reconstruct a
-    # recorded tick's known time for research replays (ADR-014); verify
+    # UTC+3 during US DST and UTC+2 outside it. Used to reconstruct a
+    # recorded tick's known time for research replays (ADR-014) and to place
+    # the swap rollover boundary at server midnight (ADR-016); verify
     # against measured received_at once winter rows exist. Bounded to one
     # day ahead: zero/negative or a multi-day value would silently shift
     # every reconstructed instant rather than fail anywhere.

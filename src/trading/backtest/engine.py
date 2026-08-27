@@ -17,14 +17,16 @@ and only that tick's fill mutates the book, the ledger and equity. Follow-up
 intents of a flip (the reversal OPEN) are risk-evaluated only after every
 close leg resolved — the OMS re-delta convention, collapsed to the slice.
 
-Simplifications vs live, by design: no outbox/worker processes, no swap
-accrual, and open positions at the end of the replay are marked to market
-instead of being force-closed.
+Simplifications vs live, by design: no outbox/worker processes, and open
+positions at the end of the replay are marked to market instead of being
+force-closed. Overnight carry is accrued from PIT swap snapshots when the
+run is given any (ADR-016); with none, carry stays zero and the boundary
+crossings are counted as unpriced.
 """
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -37,6 +39,11 @@ from trading.backtest.market import (
     BAR_CAPACITY,
     TICK_HORIZON_SECONDS,
     ReplayMarketData,
+)
+from trading.backtest.rollover import (
+    SwapTimeline,
+    ended_server_day,
+    next_rollover_boundary,
 )
 from trading.backtest.simulator import ExecutionSimulator
 from trading.data.features import ReplayFeatureTimeline
@@ -51,6 +58,7 @@ from trading.domain.order import ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.domain.signal import StrategySignal
+from trading.domain.swap import SwapSnapshot, carry_amount
 from trading.indicators import IndicatorService
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.regime import RuleBasedRegimeService
@@ -68,7 +76,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.4.0"
+ENGINE_VERSION = "0.5.0"
 
 
 class ScriptedStrategy(Strategy):
@@ -228,6 +236,12 @@ class _RunState:
     last_snapshot_hour: datetime | None = None
     # Signals held back while an entry for their slot is still in flight.
     deferred: dict[tuple[str, str], list[StrategySignal]] = field(default_factory=dict)
+    # Overnight carry accrued so far, and the boundaries a position crossed
+    # without any snapshot to price them (telemetry: an unexpected hold with
+    # no cost data must not read as "carry was zero").
+    carry_total: Decimal = Decimal(0)
+    unpriced_rollovers: int = 0
+    next_rollover: datetime | None = None
 
 
 def signed_pnl(
@@ -272,6 +286,8 @@ class BacktestEngine:
         event_risk: EventRiskCalendar | None = None,
         features: ReplayFeatureTimeline | None = None,
         evaluate_from: datetime | None = None,
+        swap_snapshots: Sequence[SwapSnapshot] = (),
+        broker_server_ahead_of_ny_hours: float = 7.0,
     ) -> None:
         if account_mode is not AccountMode.HEDGING:
             raise ValueError("the vertical slice runs on HEDGING only")
@@ -297,6 +313,10 @@ class BacktestEngine:
         # build state but the strategy is not asked, so a research period's
         # first evaluation already sees its slowest window populated.
         self._evaluate_from = evaluate_from
+        # PIT swap snapshots for overnight carry; the boundary derivation
+        # shares ADR-014's server-clock convention (server = NY + ahead).
+        self._swap_timeline = SwapTimeline(swap_snapshots, spec.symbol)
+        self._server_ahead_hours = broker_server_ahead_of_ny_hours
 
     def run(self, ticks: list[Tick]) -> BacktestResult:
         ordered = sorted(ticks, key=lambda t: t.known_time)
@@ -367,8 +387,11 @@ class BacktestEngine:
                         self._snapshot(state, w.simulator, w.clock.now())
                     )
 
-            # Broker events precede strategy evaluation: pending command
-            # fills first, then broker-side protection on the same price.
+            # Broker events precede strategy evaluation: rollover carry for
+            # boundaries this tick's clock advance crossed (they lie strictly
+            # before the tick), then pending command fills, then broker-side
+            # protection on the same price.
+            self._accrue_carry(state, w)
             self._apply_pending(state, w, item)
             self._apply_protection(state, w, item)
 
@@ -427,6 +450,47 @@ class BacktestEngine:
                 state.equity_curve.append(closing)
 
         return self._result(state, w.simulator)
+
+    def _accrue_carry(self, state: _RunState, w: _Wiring) -> None:
+        """Swap carry for every rollover boundary reached by the clock.
+
+        The snapshot must be known AT the boundary (`known_at <= boundary`),
+        not merely by the current tick — pricing a past rollover with a
+        snapshot collected after it would be look-ahead. A boundary a
+        position crossed with no snapshot known is counted, not silently
+        priced at zero.
+        """
+        now = w.clock.now()
+        if state.next_rollover is None:
+            state.next_rollover = next_rollover_boundary(now, self._server_ahead_hours)
+            return
+        while state.next_rollover <= now:
+            boundary = state.next_rollover
+            state.next_rollover = next_rollover_boundary(
+                boundary, self._server_ahead_hours
+            )
+            held = [
+                p
+                for p in w.simulator.open_positions(self._spec.symbol)
+                if p.opened_at < boundary
+            ]
+            if not held:
+                continue
+            snapshot = self._swap_timeline.latest_known_before(boundary)
+            if snapshot is None:
+                state.unpriced_rollovers += 1
+                continue
+            day = ended_server_day(boundary)
+            for position in held:
+                carry = carry_amount(
+                    snapshot,
+                    spec=self._spec,
+                    direction=position.direction,
+                    quantity=position.quantity,
+                    day=day,
+                )
+                state.realized += carry
+                state.carry_total += carry
 
     def _apply_protection(self, state: _RunState, w: _Wiring, tick: Tick) -> None:
         """Broker-side SL/TP sweep of the whole book at this tick's price.
@@ -932,7 +996,9 @@ class BacktestEngine:
             )
         gross_mid = state.gross_mid_closed + open_gross_mid
         net = state.realized + unrealized
-        execution_cost = gross_mid - net
+        # Carry is its own line: leaving it inside net would let gross-vs-net
+        # attribute overnight swap to spread/slippage.
+        execution_cost = gross_mid - net + state.carry_total
 
         protection_fills = sum(1 for f in state.fills if f.origin == "PROTECTION")
         metrics = {
@@ -943,6 +1009,8 @@ class BacktestEngine:
             "gross_mid_pnl": str(gross_mid),
             "execution_cost": str(execution_cost),
             "max_drawdown": str(state.max_drawdown),
+            "carry_total": str(state.carry_total),
+            "unpriced_rollovers": str(state.unpriced_rollovers),
             "final_equity": str(state.initial_equity + net),
             "fills": str(len(state.fills)),
             "protection_fills": str(protection_fills),

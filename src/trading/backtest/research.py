@@ -314,6 +314,7 @@ def main() -> None:
         PostgresEventRepository,
         PostgresMacroObservationRepository,
         PostgresMarketTickRepository,
+        PostgresSwapSnapshotRepository,
         connect,
     )
 
@@ -375,6 +376,13 @@ def main() -> None:
         # The lead-in only builds bar/indicator/feature state; orders and
         # metrics that matter start at the period's opening instant.
         evaluate_from=broker_label_to_known(args.start, anchor),
+        # 期間終端までに見えていた snapshot を一括ロードし、boundary ごとの
+        # latest-known 参照は engine 側の in-memory timeline が行う
+        # （known_at <= boundary の PIT 判定込み、ADR-016）。
+        swap_snapshots=PostgresSwapSnapshotRepository(conn).known_before(
+            symbol, known_end
+        ),
+        broker_server_ahead_of_ny_hours=config.market.broker_server_ahead_of_ny_hours,
     )
     # Reproduction inputs are captured before the replay: a long run must
     # record the code state it started under, not whatever the worktree

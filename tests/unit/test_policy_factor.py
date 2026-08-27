@@ -16,7 +16,12 @@ from trading.data.factor_series import (
     POLICY_LOOKBACK,
     PolicyScoreFactorSeries,
 )
-from trading.data.policy.scoring import EVENT_TYPES, SCORE_MAX, SCORE_MIN
+from trading.data.policy.scoring import (
+    EVENT_TYPES,
+    SCORE_MAX,
+    SCORE_MIN,
+    SCORING_VERSION,
+)
 from trading.domain.event import EventEnvelope
 from trading.domain.money import Currency
 from trading.intelligence.currency import (
@@ -31,12 +36,17 @@ from trading.intelligence.normalization import bounded_score, normalize_series
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
 
 
-def score_event(bank: str, score: float, known_at: datetime) -> EventEnvelope:
+def score_event(
+    bank: str,
+    score: float,
+    known_at: datetime,
+    version: str = SCORING_VERSION,
+) -> EventEnvelope:
     return EventEnvelope(
         event_id=uuid4(),
         event_type=EVENT_TYPES[bank],
         source=f"{bank}_OFFICIAL",
-        payload={"score": score, "scoring_version": "policy_shift_v1"},
+        payload={"score": score, "scoring_version": version},
         retrieved_at=known_at,
         known_at=known_at,
     )
@@ -91,6 +101,19 @@ def test_a_meeting_beyond_the_lookback_is_not_read() -> None:
     assert [value for _, value in source.series(
         Currency.USD, CurrencyFactor.POLICY, NOW
     )] == [0.5]
+
+
+def test_a_retired_scoring_version_is_not_read() -> None:
+    # 配点を見直すと、同じ会合が複数の版で同じ known_at のまま並ぶ。版を
+    # 選ばないと、同時刻の並び順次第で旧版が「直近」になり向きが反転する。
+    known_at = NOW - timedelta(days=3)
+    current = score_event("FED", 1.0, known_at)
+    retired = score_event("FED", -2.0, known_at, version="policy_shift_v0")
+    source = policy_source([current, retired])
+
+    assert [value for _, value in source.series(
+        Currency.USD, CurrencyFactor.POLICY, NOW
+    )] == [1.0]
 
 
 # ---------------------------------------------------------------------------

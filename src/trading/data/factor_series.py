@@ -46,7 +46,7 @@ from trading.data.macro.registry import (
     US_UNEMPLOYMENT_RATE_SA,
 )
 from trading.data.policy.risk_windows import BANK_CURRENCIES
-from trading.data.policy.scoring import EVENT_TYPES
+from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
 from trading.domain.economic import EconomicObservation
 from trading.domain.money import Currency
 from trading.intelligence.currency import CurrencyFactor
@@ -254,9 +254,15 @@ class PolicyScoreFactorSeries:
         event_type = EVENT_TYPE_BY_CURRENCY.get(currency)
         if factor is not CurrencyFactor.POLICY or event_type is None:
             return ()
+        # 配点を見直すと、scoring.py は過去会合を書き換えずに新しい版の
+        # イベントとして再投入する。同じ会合が複数の版で、同じ known_at の
+        # まま store に並ぶ。読み手が版を選ばないと、同時刻の並び順（events
+        # の ORDER BY は known_at だけ）次第で旧版が「直近」になり、政策の
+        # 向きが反転しうる。このビルドが計算する版だけを採る。
         return [
             (event.known_at, float(event.payload["score"]))
             for event in self._events.known_before(
                 now, event_type=event_type, since=now - POLICY_LOOKBACK
             )
+            if event.payload.get("scoring_version") == SCORING_VERSION
         ]

@@ -26,6 +26,28 @@ US_RETAIL_SALES_ADVANCE_SA = "us_retail_sales_advance_sa"
 # 2026-08-15), so the series is named for what it is.
 US_TREASURY_2Y_YIELD = "us_treasury_2y_yield"
 
+UK_BANK_RATE = "uk_bank_rate"
+# CPI/HICP は指数でなく前年比を正本にする: 指数は基準改定で系列が切れる
+# （HICP は 2026-01 の 2025=100 移行で全 geo の指数系列が 2025-12 終端 —
+# 実測 2026-08-26）が、前年比は基準に依存しない（ADR-015）。
+UK_CPI_HEADLINE_YOY_NSA = "uk_cpi_headline_yoy_nsa"
+UK_UNEMPLOYMENT_RATE_SA = "uk_unemployment_rate_sa"
+UK_REAL_GDP_GROWTH_QOQ_SA = "uk_real_gdp_growth_qoq_sa"
+
+# ample-reserves レジームの実効政策金利は預金ファシリティ金利（MRO ではない）。
+EA_DEPOSIT_FACILITY_RATE = "ea_deposit_facility_rate"
+EA_HICP_HEADLINE_YOY_NSA = "ea_hicp_headline_yoy_nsa"
+EA_UNEMPLOYMENT_RATE_SA = "ea_unemployment_rate_sa"
+EA_REAL_GDP_GROWTH_QOQ_SCA = "ea_real_gdp_growth_qoq_sca"
+
+# 系列の「収集開始前の履歴」を真の vintage として復元できるか（ADR-015）。
+# PIT_VERIFIED: vintage アーカイブ（ALFRED）が release 時点の known_at を裏付ける。
+# PIT_UNVERIFIED: ソースが最新値しか返さないため、PIT が成立するのは自前の
+# forward snapshot 以降のみ。バックフィルした履歴に release 時刻の known_at を
+# 与えてはならず、strict OOS 評価は収集開始前の期間を除外する。
+PIT_VERIFIED = "PIT_VERIFIED"
+PIT_UNVERIFIED = "PIT_UNVERIFIED"
+
 
 class IndicatorSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -33,6 +55,7 @@ class IndicatorSpec(BaseModel):
     series: str
     unit: str
     frequency: Literal["daily", "monthly", "quarterly"]
+    pit_classification: Literal["PIT_VERIFIED", "PIT_UNVERIFIED"]
     # Official release time-of-day in the agency's timezone, used to place a
     # vintage date on the intraday timeline (all six initial indicators are
     # 08:30 ET releases).
@@ -54,7 +77,13 @@ class IndicatorSpec(BaseModel):
 
 
 _ET = "America/New_York"
+_LONDON = "Europe/London"
+_BRUSSELS = "Europe/Brussels"
 _0830 = time(8, 30)
+# ONS の統計公表は 07:00 ロンドン時刻。
+_0700 = time(7, 0)
+# Eurostat のニュースリリースは 11:00 ブリュッセル時刻。
+_1100 = time(11, 0)
 
 INDICATORS: dict[str, IndicatorSpec] = {
     spec.series: spec
@@ -63,6 +92,7 @@ INDICATORS: dict[str, IndicatorSpec] = {
             series=US_CPI_HEADLINE_SA,
             unit="index",
             frequency="monthly",
+            pit_classification=PIT_VERIFIED,
             release_time=_0830,
             release_timezone=_ET,
         ),
@@ -70,6 +100,7 @@ INDICATORS: dict[str, IndicatorSpec] = {
             series=US_CPI_CORE_SA,
             unit="index",
             frequency="monthly",
+            pit_classification=PIT_VERIFIED,
             release_time=_0830,
             release_timezone=_ET,
         ),
@@ -77,6 +108,7 @@ INDICATORS: dict[str, IndicatorSpec] = {
             series=US_NONFARM_PAYROLLS_SA,
             unit="thousands_of_persons",
             frequency="monthly",
+            pit_classification=PIT_VERIFIED,
             release_time=_0830,
             release_timezone=_ET,
         ),
@@ -84,6 +116,7 @@ INDICATORS: dict[str, IndicatorSpec] = {
             series=US_UNEMPLOYMENT_RATE_SA,
             unit="percent",
             frequency="monthly",
+            pit_classification=PIT_VERIFIED,
             release_time=_0830,
             release_timezone=_ET,
         ),
@@ -91,6 +124,7 @@ INDICATORS: dict[str, IndicatorSpec] = {
             series=US_REAL_GDP_GROWTH_SAAR,
             unit="percent",
             frequency="quarterly",
+            pit_classification=PIT_VERIFIED,
             release_time=_0830,
             release_timezone=_ET,
         ),
@@ -98,6 +132,7 @@ INDICATORS: dict[str, IndicatorSpec] = {
             series=US_RETAIL_SALES_ADVANCE_SA,
             unit="millions_of_dollars",
             frequency="monthly",
+            pit_classification=PIT_VERIFIED,
             release_time=_0830,
             release_timezone=_ET,
         ),
@@ -105,11 +140,80 @@ INDICATORS: dict[str, IndicatorSpec] = {
             series=US_TREASURY_2Y_YIELD,
             unit="percent",
             frequency="daily",
+            pit_classification=PIT_VERIFIED,
             # H.15 / daily par yield publishes ~16:15 ET; 18:00 ET keeps the
             # vintage on the safe side of look-ahead whether the ALFRED
             # vintage date is the publication day or FRED's ingestion day.
             release_time=time(18, 0),
             release_timezone=_ET,
+        ),
+        IndicatorSpec(
+            series=UK_BANK_RATE,
+            unit="percent",
+            frequency="daily",
+            pit_classification=PIT_UNVERIFIED,
+            # MPC 決定は 12:00 ロンドンだが、IADB の日次行が載る時刻は保証が
+            # ないため US_TREASURY_2Y_YIELD と同じく 18:00 で保守側に置く。
+            release_time=time(18, 0),
+            release_timezone=_LONDON,
+        ),
+        IndicatorSpec(
+            series=UK_CPI_HEADLINE_YOY_NSA,
+            unit="percent",
+            frequency="monthly",
+            pit_classification=PIT_UNVERIFIED,
+            release_time=_0700,
+            release_timezone=_LONDON,
+        ),
+        IndicatorSpec(
+            series=UK_UNEMPLOYMENT_RATE_SA,
+            unit="percent",
+            frequency="monthly",
+            pit_classification=PIT_UNVERIFIED,
+            release_time=_0700,
+            release_timezone=_LONDON,
+        ),
+        IndicatorSpec(
+            series=UK_REAL_GDP_GROWTH_QOQ_SA,
+            unit="percent",
+            frequency="quarterly",
+            pit_classification=PIT_UNVERIFIED,
+            release_time=_0700,
+            release_timezone=_LONDON,
+        ),
+        IndicatorSpec(
+            series=EA_DEPOSIT_FACILITY_RATE,
+            unit="percent",
+            frequency="daily",
+            pit_classification=PIT_UNVERIFIED,
+            # 政策決定の公表は 14:15 CET。日次系列がポータルへ載る時刻は保証
+            # がないため 18:00 で保守側に置く。
+            release_time=time(18, 0),
+            release_timezone=_BRUSSELS,
+        ),
+        IndicatorSpec(
+            series=EA_HICP_HEADLINE_YOY_NSA,
+            unit="percent",
+            frequency="monthly",
+            pit_classification=PIT_UNVERIFIED,
+            release_time=_1100,
+            release_timezone=_BRUSSELS,
+        ),
+        IndicatorSpec(
+            series=EA_UNEMPLOYMENT_RATE_SA,
+            unit="percent",
+            frequency="monthly",
+            pit_classification=PIT_UNVERIFIED,
+            release_time=_1100,
+            release_timezone=_BRUSSELS,
+        ),
+        IndicatorSpec(
+            series=EA_REAL_GDP_GROWTH_QOQ_SCA,
+            unit="percent",
+            frequency="quarterly",
+            pit_classification=PIT_UNVERIFIED,
+            release_time=_1100,
+            release_timezone=_BRUSSELS,
         ),
     )
 }

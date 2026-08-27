@@ -12,6 +12,10 @@ Usage:
     python -m trading.data.macro.collector --env demo --source bls
     python -m trading.data.macro.collector --env demo --source bea
     python -m trading.data.macro.collector --env demo --source census
+    python -m trading.data.macro.collector --env demo --source boe
+    python -m trading.data.macro.collector --env demo --source ons
+    python -m trading.data.macro.collector --env demo --source ecb
+    python -m trading.data.macro.collector --env demo --source eurostat
 """
 from __future__ import annotations
 
@@ -21,12 +25,12 @@ from collections.abc import Iterator
 from datetime import date
 
 from trading.backtest.clock import SystemClock
-from trading.data.macro import alfred, bea, bls, census
+from trading.data.macro import alfred, bea, bls, boe, census, ecb, eurostat, ons
 from trading.data.macro.base import CollectionBatch
 from trading.data.macro.http import HttpTransport
 from trading.storage.repository import EventRepository, MacroObservationRepository
 
-SOURCES = ("alfred", "bls", "bea", "census")
+SOURCES = ("alfred", "bls", "bea", "census", "boe", "ons", "ecb", "eurostat")
 
 
 def _require_key(env_name: str) -> str:
@@ -56,7 +60,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.series and args.source in ("bea", "census"):
+    if args.series and args.source in ("bea", "census", "boe"):
         parser.error(f"--series is not supported for {args.source} (single-series source)")
     if args.observation_start and args.source != "alfred":
         parser.error("--observation-start applies to --source alfred only")
@@ -107,11 +111,26 @@ def main() -> None:
                 transport, _require_key(keys.bea_api_key_env), clock=clock
             )
             yield bea_collector.collect(years)
-        else:
+        elif args.source == "census":
             census_collector = census.CensusCollector(
                 transport, _require_key(keys.census_api_key_env), clock=clock
             )
             yield census_collector.collect(years)
+        # 以下の4ソースは API キー不要（transport の User-Agent のみ必要）。
+        elif args.source == "boe":
+            yield boe.BOECollector(transport, clock=clock).collect(years)
+        elif args.source == "ons":
+            ons_collector = ons.ONSCollector(transport, clock=clock)
+            for name in args.series or list(ons.SERIES):
+                yield ons_collector.collect(name, years)
+        elif args.source == "ecb":
+            ecb_collector = ecb.ECBCollector(transport, clock=clock)
+            for name in args.series or list(ecb.SERIES_KEYS):
+                yield ecb_collector.collect(name, years)
+        else:
+            eurostat_collector = eurostat.EurostatCollector(transport, clock=clock)
+            for name in args.series or list(eurostat.SERIES):
+                yield eurostat_collector.collect(name, years)
 
     parsed = 0
     stored = 0

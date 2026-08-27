@@ -19,6 +19,17 @@ from trading.domain.event import EventEnvelope
 
 ECONOMIC_RELEASE_RAW = "ECONOMIC_RELEASE_RAW"
 
+# Month tokens the UK sources print (BOE "02 Jan 2026", ONS "2026 JUL"),
+# parsed via an explicit table because strptime's %b is locale-dependent.
+MONTH_BY_ABBREV: dict[str, int] = {
+    abbrev: number
+    for number, abbrev in enumerate(
+        ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+         "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"),
+        start=1,
+    )
+}
+
 
 def payload_hash(payload: Any) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))

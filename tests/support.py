@@ -151,6 +151,28 @@ def make_bar(
     )
 
 
+class FakeTransport:
+    """HttpTransport の台本版: 呼び出しごとに canned response を1つ返す。"""
+
+    def __init__(self, responses: list) -> None:
+        self._responses = list(responses)
+        self.get_calls: list[tuple[str, dict]] = []
+        self.post_calls: list[tuple[str, dict]] = []
+        self.byte_calls: list[str] = []
+
+    def get_bytes(self, url: str) -> bytes:
+        self.byte_calls.append(url)
+        return self._responses.pop(0)
+
+    def get_json(self, url: str, params: dict) -> object:
+        self.get_calls.append((url, dict(params)))
+        return self._responses.pop(0)
+
+    def post_json(self, url: str, body: dict) -> object:
+        self.post_calls.append((url, dict(body)))
+        return self._responses.pop(0)
+
+
 class FakeObservationRepository:
     """MacroObservationRepository in memory: series match plus the
     since-exclusive known_at window, the way Postgres answers it."""

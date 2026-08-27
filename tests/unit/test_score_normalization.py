@@ -133,3 +133,20 @@ def test_all_non_finite_series_yields_no_score():
     rows = series([float("nan")] * 10)
 
     assert normalize_series(rows, rows[-1][0], CONFIG) is None
+
+
+def test_same_instant_observations_keep_their_supplied_order():
+    # 同一 known_at の観測（同時収集された改訂値など）を値で並べ替えると、
+    # window の末尾に最大値が来て「最新」として扱われ、スコアが正へ偏る。
+    at = T0 + timedelta(days=5)
+    base = series([1.0, 1.1, 0.9, 1.0, 1.05])
+    ascending = [*base, (at, 0.5), (at, 2.0)]
+    descending = [*base, (at, 2.0), (at, 0.5)]
+
+    first = normalize_series(ascending, at, CONFIG)
+    second = normalize_series(descending, at, CONFIG)
+
+    assert first is not None and second is not None
+    # 供給順の最後がそれぞれ最新なので、結果は一致しない。
+    assert first.value != second.value
+    assert first.value > 0 > second.value

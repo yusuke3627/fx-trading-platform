@@ -114,8 +114,11 @@ class CurrencyScoreConfig(BaseModel):
         # NaN は合計・符号のどちらの比較もすり抜けるので、先に弾く。
         if not all(math.isfinite(weight) for weight in self.weights.values()):
             raise ValueError("factor weights must be finite")
-        if sum(self.weights.values()) <= 0:
-            raise ValueError("weights must sum to a positive value")
+        total = sum(self.weights.values())
+        # 個別に有限でも合計はオーバーフローし得る。inf を通すと
+        # confidence が Infinity / Infinity の InvalidOperation になる。
+        if not math.isfinite(total) or total <= 0:
+            raise ValueError("weights must sum to a finite positive value")
         if any(weight < 0 for weight in self.weights.values()):
             raise ValueError("factor weights must not be negative")
         if self.freshness_zero_hours <= self.freshness_full_hours:

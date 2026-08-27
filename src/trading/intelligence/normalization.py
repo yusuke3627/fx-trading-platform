@@ -82,10 +82,16 @@ def normalize_series(
     に化ける — 異常データが最大確信の売買判断になる経路を入口で断つ。
     """
     settings = config or NormalizationConfig()
+    # known_at だけで並べる（安定ソート）。タプルの自然順序に任せると同一
+    # 時刻の観測が値の昇順に並び、window の末尾＝「最新」として最大値が
+    # 選ばれてスコアが正へ偏る。同時刻の行は供給された順序を最新とする。
     visible = sorted(
-        (at, value)
-        for at, value in series
-        if at <= now and math.isfinite(value)
+        (
+            (at, value)
+            for at, value in series
+            if at <= now and math.isfinite(value)
+        ),
+        key=lambda row: row[0],
     )
     if len(visible) < settings.min_observations:
         return None

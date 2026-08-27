@@ -240,6 +240,18 @@ def test_non_finite_weights_are_rejected():
         CurrencyScoreConfig(weights={CurrencyFactor.POLICY: float("nan")})
 
 
+def test_overflowing_weight_sum_is_rejected():
+    # 個別には有限でも合計が inf になる設定は、confidence の
+    # Infinity / Infinity で落ちる。境界で拒否する。
+    with pytest.raises(ValueError, match="finite"):
+        CurrencyScoreConfig(
+            weights={
+                CurrencyFactor.POLICY: 1e308,
+                CurrencyFactor.RATES: 1e308,
+            }
+        )
+
+
 def test_snapshot_currency_map_is_read_only():
     # strategy へ渡す snapshot を一つの読み手が書き換えられない。
     snapshot = RuleBasedCurrencyRegimeService(InMemoryFeatureStore()).snapshot(NOW)

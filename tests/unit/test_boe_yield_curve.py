@@ -170,6 +170,30 @@ def test_an_older_era_is_read_when_the_requested_years_reach_it() -> None:
     ]
 
 
+def test_rows_outside_the_requested_years_are_dropped() -> None:
+    archive = zipped(
+        {
+            ARCHIVE_OLD: workbook(
+                [
+                    day_row(date(2016, 6, 3), 5.55),
+                    day_row(date(2024, 6, 3), 4.44),
+                ]
+            ),
+            ARCHIVE_RECENT: workbook([day_row(date(2026, 7, 31), 4.23)]),
+        }
+    )
+    latest = zipped({CURRENT_MONTH_MEMBER: workbook([])})
+
+    batch, _ = collect(archive, latest, years=[2024, 2025, 2026])
+
+    # member は年代単位（"_2016 to 2024" で 9 年ぶん）でしか切れないので、
+    # 要求年の外の行が同じファイルに載っている。
+    assert [o.observation_period for o in batch.observations] == [
+        "2024-06-03",
+        "2026-07-31",
+    ]
+
+
 def test_the_glc_workbooks_in_the_current_month_zip_are_ignored() -> None:
     archive = zipped({ARCHIVE_RECENT: workbook([])})
     latest = zipped(

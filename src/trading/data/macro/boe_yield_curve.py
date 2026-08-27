@@ -112,9 +112,19 @@ def _read_curve(raw: bytes, url: str, years: list[int]) -> dict[date, Decimal]:
         raise ValueError(
             f"no OIS workbook covering {years} in {url}: {archive.namelist()}"
         )
+    wanted = set(years)
     curve: dict[date, Decimal] = {}
     for name in sorted(members):
-        curve.update(_read_workbook(archive.read(name), f"{url}#{name}"))
+        curve.update(
+            (day, value)
+            # member は年代単位でしか切れない（"_2016 to 2024" で 9 年ぶん）。
+            # 行の側でも要求年に絞らないと、呼び出し側が指定した期間を超えた
+            # 履歴を raw event と DB へ毎回積むことになる。
+            for day, value in _read_workbook(
+                archive.read(name), f"{url}#{name}"
+            ).items()
+            if day.year in wanted
+        )
     return curve
 
 

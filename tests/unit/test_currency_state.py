@@ -264,6 +264,17 @@ def test_service_revalidates_a_config_copied_past_the_validator():
         CurrencyStateService(MappingFactorSeries({}), bypassed)
 
 
+def test_service_revalidates_nested_normalization_config():
+    # ネストした pydantic モデルは既定では再検証されない。clip_sigma=0 を
+    # 迂回させると normalize_series がゼロ除算になる。
+    bypassed = CONFIG.normalization.model_copy(update={"clip_sigma": 0})
+
+    with pytest.raises(ValueError, match="clip_sigma"):
+        CurrencyStateService(
+            MappingFactorSeries({}), CONFIG.model_copy(update={"normalization": bypassed})
+        )
+
+
 def test_snapshot_currency_map_is_read_only():
     # strategy へ渡す snapshot を一つの読み手が書き換えられない。
     snapshot = RuleBasedCurrencyRegimeService(InMemoryFeatureStore()).snapshot(NOW)

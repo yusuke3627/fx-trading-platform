@@ -31,7 +31,10 @@ _SCORE_EXPONENT = Decimal("0.000001")
 
 
 class NormalizationConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    # revalidate_instances: 親 config へネストされるとき再検証させる。
+    # model_copy(update=...) は validator を通らないので、既存インスタンス
+    # をそのまま受け入れると迂回された値が生き残る。
+    model_config = ConfigDict(frozen=True, revalidate_instances="always")
 
     # rolling window に入れる観測数の上限。
     window: int = Field(default=60, gt=0)

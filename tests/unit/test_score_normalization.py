@@ -160,3 +160,14 @@ def test_huge_but_finite_values_do_not_become_a_max_score():
     result = normalize_series(rows, rows[-1][0], CONFIG)
 
     assert result is None or result.value != Decimal("0.761594")
+
+
+def test_opposite_sign_extremes_still_normalize():
+    # 中央の2値が異符号の巨大値だと差がオーバーフローする。和・差の安全な
+    # 側を選ばないと、有限値だけの系列が観測不能に落ちる。
+    rows = series([-1e308, 1e308, -0.9e308, 0.9e308, -0.5e308, 0.8e308])
+
+    result = normalize_series(rows, rows[-1][0], CONFIG)
+
+    assert result is not None
+    assert -1 <= result.value <= 1

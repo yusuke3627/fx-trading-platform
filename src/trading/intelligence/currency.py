@@ -226,8 +226,10 @@ class CurrencyStateService:
             quote=quote,
             directional_score=base.directional_score - quote.directional_score,
             confidence=self._pair_confidence(base, quote),
-            # 両 leg の古い方。ペアは遅れている leg の分しか語れない。
-            known_at=min(base.known_at, quote.known_at),
+            # 両 leg が揃う時刻。directional_score は新しい方の leg の情報も
+            # 含むので、古い方を known_at にすると known_at 順の replay で
+            # 未来の情報が混入する。データの鮮度は confidence が持つ。
+            known_at=max(base.known_at, quote.known_at),
         )
 
     def _directional(self, normalized: Mapping[CurrencyFactor, NormalizedScore]) -> Decimal:

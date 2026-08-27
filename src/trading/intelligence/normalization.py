@@ -124,6 +124,9 @@ def _median(values: list[float]) -> float:
     if len(ordered) % 2:
         return ordered[middle]
     low, high = ordered[middle - 1], ordered[middle]
-    # (low + high) / 2 は両者が大きいと合計側でオーバーフローする。
-    # 差分は必ず有限なので、下側からの中点として求める。
+    # 巨大値でオーバーフローしない側を選ぶ: 異符号なら和が相殺されて必ず
+    # 有限、同符号なら差が必ず有限。どちらか一方に固定すると、残った側の
+    # 組み合わせで median が inf になり、正規化可能な系列を取りこぼす。
+    if (low < 0) != (high < 0):
+        return (low + high) / 2
     return low + (high - low) / 2

@@ -168,6 +168,8 @@ def test_conflicting_legs_lower_pair_confidence():
 
 
 def test_pair_known_at_follows_the_later_leg():
+    # directional_score は新しい方の leg の情報を含む。古い方を known_at に
+    # すると、known_at 順の replay でその時点にはまだ無い情報が見える。
     states = service(
         {
             (Currency.USD, CurrencyFactor.POLICY): rising(),
@@ -179,7 +181,8 @@ def test_pair_known_at_follows_the_later_leg():
 
     pair = states.project(usdjpy_spec(), base, quote)
 
-    assert pair.known_at == quote.known_at
+    assert pair.known_at == base.known_at
+    assert pair.known_at > quote.known_at
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,8 @@ rollover は broker server の日付変更で発生する。server の壁時計�
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from bisect import bisect_right
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
@@ -15,6 +17,34 @@ from zoneinfo import ZoneInfo
 from trading.domain.swap import SwapSnapshot
 
 _NY = ZoneInfo("America/New_York")
+
+
+def swap_dataset_fingerprint(snapshots: Sequence[SwapSnapshot]) -> str:
+    """replay が消費する swap snapshot 列の content fingerprint。
+
+    carry に効く値と可視時点（known_at）だけを畳む。row id や取得時刻は
+    含めない: 同じ内容を別 DB で再収集しても一致し、値か可視性が違えば
+    一致しない — manifest の再現性メタデータ用。
+    """
+    canonical = [
+        (
+            s.symbol,
+            s.known_at.astimezone(UTC).isoformat(),
+            s.swap_mode,
+            str(s.swap_long),
+            str(s.swap_short),
+            s.swap_rollover3days,
+            s.swap_sunday,
+            s.swap_monday,
+            s.swap_tuesday,
+            s.swap_wednesday,
+            s.swap_thursday,
+            s.swap_friday,
+            s.swap_saturday,
+        )
+        for s in sorted(snapshots, key=lambda s: (s.symbol, s.known_at))
+    ]
+    return hashlib.sha256(json.dumps(canonical).encode()).hexdigest()
 
 
 def _boundary_time_of_day(server_ahead_of_ny_hours: float) -> time:

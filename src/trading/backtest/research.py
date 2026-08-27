@@ -48,6 +48,7 @@ from trading.backtest.costs import STRESS_SCENARIOS
 from trading.backtest.data import TickDigest
 from trading.backtest.engine import ENGINE_VERSION, BacktestEngine
 from trading.backtest.report import write_report
+from trading.backtest.rollover import swap_dataset_fingerprint
 from trading.backtest.run import git_state, synthetic_usdjpy_spec
 from trading.config import load_config
 from trading.data.features import ReplayFeatureTimeline, StoredFeatureSource
@@ -362,6 +363,13 @@ def main() -> None:
     scenario = args.scenario or config.simulator.scenario
     costs = replace(STRESS_SCENARIOS[scenario], latency_ms=config.simulator.latency_ms)
 
+    # 期間終端までに見えていた snapshot を一括ロードし、boundary ごとの
+    # latest-known 参照は engine 側の in-memory timeline が行う
+    # （known_at <= boundary の PIT 判定込み、ADR-016）。
+    swap_snapshots = PostgresSwapSnapshotRepository(conn).known_before(
+        symbol, known_end
+    )
+
     engine = BacktestEngine(
         risk_config=config.risk,
         # Stands in until broker specs are persisted alongside the ticks; the
@@ -376,12 +384,7 @@ def main() -> None:
         # The lead-in only builds bar/indicator/feature state; orders and
         # metrics that matter start at the period's opening instant.
         evaluate_from=broker_label_to_known(args.start, anchor),
-        # 期間終端までに見えていた snapshot を一括ロードし、boundary ごとの
-        # latest-known 参照は engine 側の in-memory timeline が行う
-        # （known_at <= boundary の PIT 判定込み、ADR-016）。
-        swap_snapshots=PostgresSwapSnapshotRepository(conn).known_before(
-            symbol, known_end
-        ),
+        swap_snapshots=swap_snapshots,
         broker_server_ahead_of_ny_hours=config.market.broker_server_ahead_of_ny_hours,
     )
     # Reproduction inputs are captured before the replay: a long run must
@@ -422,6 +425,10 @@ def main() -> None:
         # what the gates saw, and re-collection changes them under the same
         # tick series.
         "feature_dataset_hash": source.dataset_fingerprint(known_start, known_end),
+        # Swap snapshot 列も結果を決める入力: 同じ tick / feature でも
+        # snapshot の欠落・差異で carry が変わるため、消費した内容の
+        # fingerprint を残す（ADR-016）。
+        "swap_dataset_hash": swap_dataset_fingerprint(swap_snapshots),
         "config_sha256": hashlib.sha256(config.model_dump_json().encode()).hexdigest(),
         "python_version": sys.version.split()[0],
     }

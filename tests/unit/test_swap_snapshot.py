@@ -16,6 +16,7 @@ from trading.backtest.rollover import (
     SwapTimeline,
     ended_server_day,
     next_rollover_boundary,
+    swap_dataset_fingerprint,
 )
 from trading.data.swap.collector import SWAP_SNAPSHOT_RAW, build_snapshot
 from trading.domain.position import PositionDirection
@@ -190,6 +191,26 @@ def test_timeline_latest_known_before_and_symbol_filter():
     assert timeline.latest_known_before(
         datetime(2026, 8, 9, 0, 0, tzinfo=UTC)
     ) is None
+
+
+def test_fingerprint_is_content_based_not_row_identity():
+    early = snapshot()
+    # 同じ内容を別 DB で再収集した形（snapshot_id と retrieved_at が違う）。
+    recollected = snapshot(
+        snapshot_id=uuid4(),
+        retrieved_at=RETRIEVED.replace(hour=9),
+    )
+    revalued = snapshot(swap_long=Decimal("-9.9"))
+
+    assert swap_dataset_fingerprint([early]) == swap_dataset_fingerprint(
+        [recollected]
+    )
+    assert swap_dataset_fingerprint([early]) != swap_dataset_fingerprint([revalued])
+    # 並び順にも依存しない（symbol, known_at で正規化）。
+    late = snapshot(known_at=RETRIEVED.replace(hour=18))
+    assert swap_dataset_fingerprint([early, late]) == swap_dataset_fingerprint(
+        [late, early]
+    )
 
 
 # ---------------------------------------------------------------------------

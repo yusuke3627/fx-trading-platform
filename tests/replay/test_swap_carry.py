@@ -6,7 +6,7 @@ rollover に値付けするのは look-ahead（ADR-016）。
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -55,7 +55,7 @@ def _snapshot(known_at: datetime, swap_long: str) -> SwapSnapshot:
     )
 
 
-def _run(swap_snapshots: list[SwapSnapshot], tick_times: list[datetime]):
+def _run(swap_snapshots: list[SwapSnapshot], ticks: list):
     engine = BacktestEngine(
         risk_config=_risk_config(),
         spec=usdjpy_spec(),
@@ -71,8 +71,11 @@ def _run(swap_snapshots: list[SwapSnapshot], tick_times: list[datetime]):
         swap_snapshots=swap_snapshots,
         broker_server_ahead_of_ny_hours=7.0,
     )
-    ticks = [make_tick("147.000", "147.004", time=t) for t in tick_times]
     return engine.run(ticks)
+
+
+def _plain_ticks(times: list[datetime]) -> list:
+    return [make_tick("147.000", "147.004", time=t) for t in times]
 
 
 def _times_across(*boundaries: datetime) -> list[datetime]:
@@ -92,7 +95,7 @@ def _times_across(*boundaries: datetime) -> list[datetime]:
 def test_carry_accrues_at_boundary_from_pit_snapshot():
     result = _run(
         [_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")],
-        _times_across(MONDAY_BOUNDARY),
+        _plain_ticks(_times_across(MONDAY_BOUNDARY)),
     )
 
     (fill,) = result.fills
@@ -110,7 +113,7 @@ def test_carry_accrues_at_boundary_from_pit_snapshot():
 def test_snapshot_known_after_boundary_is_not_used():
     result = _run(
         [_snapshot(MONDAY_BOUNDARY.replace(hour=22), "-2.2")],
-        _times_across(MONDAY_BOUNDARY),
+        _plain_ticks(_times_across(MONDAY_BOUNDARY)),
     )
 
     assert result.metrics["carry_total"] == "0"
@@ -121,7 +124,9 @@ def test_each_boundary_uses_its_latest_known_snapshot():
     early = _snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")
     # 月曜 boundary の後・火曜 boundary の前に改定が届く。
     revised = _snapshot(datetime(2026, 8, 10, 22, 0, tzinfo=UTC), "-9.9")
-    result = _run([early, revised], _times_across(MONDAY_BOUNDARY, TUESDAY_BOUNDARY))
+    result = _run(
+        [early, revised], _plain_ticks(_times_across(MONDAY_BOUNDARY, TUESDAY_BOUNDARY))
+    )
 
     (fill,) = result.fills
     point = Decimal("0.001")
@@ -130,8 +135,27 @@ def test_each_boundary_uses_its_latest_known_snapshot():
     assert result.metrics["unpriced_rollovers"] == "0"
 
 
+def test_carry_on_reconstructed_axis_with_broker_labels_ahead():
+    # ADR-014 の research 軸: tick.time は broker wall-clock ラベル（実 UTC
+    # より数時間先行）、known_time（received_at）が実 UTC で clock を進める。
+    # server ラベル 23:00 に建てた position（実 20:00Z）は 21:00Z の
+    # boundary を実際に跨ぐ — ラベル軸の opened_at と known-time 軸の
+    # boundary を比較すると、この carry が漏れる。
+    label_offset = timedelta(hours=3)
+    ticks = [
+        make_tick("147.000", "147.004", time=t + label_offset, received_at=t)
+        for t in _times_across(MONDAY_BOUNDARY)
+    ]
+    result = _run([_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")], ticks)
+
+    (fill,) = result.fills
+    expected = Decimal("-2.2") * Decimal("0.001") * fill.quantity
+    assert Decimal(result.metrics["carry_total"]) == expected
+    assert result.metrics["unpriced_rollovers"] == "0"
+
+
 def test_no_snapshots_keeps_carry_zero_and_counts_boundaries():
-    result = _run([], _times_across(MONDAY_BOUNDARY))
+    result = _run([], _plain_ticks(_times_across(MONDAY_BOUNDARY)))
 
     # snapshot が 1 つも無い run は carry 0 のまま（従来挙動）だが、値付け
     # できなかった boundary 越えは telemetry に残る — 「carry はゼロだった」

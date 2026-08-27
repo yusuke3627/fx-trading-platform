@@ -469,11 +469,14 @@ class BacktestEngine:
             state.next_rollover = next_rollover_boundary(
                 boundary, self._server_ahead_hours
             )
-            held = [
-                p
-                for p in w.simulator.open_positions(self._spec.symbol)
-                if p.opened_at < boundary
-            ]
+            # いま book にある position は必ず boundary より前から保有して
+            # いる: position は tick 処理でしか生まれず、この tick の fill は
+            # まだ適用されておらず、直前 tick までの境界は処理済みなので
+            # boundary は直前 tick より後にある。opened_at での絞り込みは
+            # 不要で、しかも有害 — opened_at は broker wall-clock 軸
+            # （ADR-014）にあり、known-time 軸の boundary と比較すると
+            # research replay で先行ラベルの position が漏れる。
+            held = w.simulator.open_positions(self._spec.symbol)
             if not held:
                 continue
             snapshot = self._swap_timeline.latest_known_before(boundary)

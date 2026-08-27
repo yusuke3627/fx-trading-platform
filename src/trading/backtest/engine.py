@@ -592,7 +592,16 @@ class BacktestEngine:
         """決済数量ぶんの計上記録を消し込み、broker 時刻が rollover より
         前だった決済（遅着 tick で後から判明する）は carry を按分で戻す。
         snapshot が無く unpriced と数えた boundary も、跨いでいなかったと
-        判明した数量を取り消す。"""
+        判明した数量を取り消す。
+
+        訂正が直すのは金額（realized / carry_total）と同 instant の
+        snapshot まで。計上と訂正の間の instant に記録済みの経路依存の
+        集計（high_water_mark / max_drawdown / equity_curve）は遡って
+        再計算しない — 正確な再計算には broker 時間軸での全経路 replay が
+        要る。残差は取り消した carry 1 件分が上限で、方向は常に保守側
+        （正の carry の取り消しで HWM が高止まりしても halt は早まる側、
+        負の carry の取り消しで max_drawdown が過大でも報告が悪化する側）
+        に倒れる（ADR-016）。"""
         adjusted = False
         charged = state.carry_charged.get(ticket)
         if charged:

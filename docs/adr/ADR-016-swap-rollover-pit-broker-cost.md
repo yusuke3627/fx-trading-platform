@@ -48,6 +48,25 @@ backtest の cost model に接続する（設計書 v2.1 §33.10A / 34.5B / M2B�
   で、「replay の時刻再構成」と「rollover の位置」が別々の仮定を持って
   ずれることを防ぐ
 
+## 受信順 replay と遅着 tick の扱い
+
+受信順 replay（ADR-014）では broker ラベルの古い tick が後から届く。carry
+は boundary 到達時に計上するが確定ではなく、ticket 単位の計上記録を持ち、
+
+- rollover より前の broker 時刻の決済が後から届けば按分でリバース
+- server midnight より前のラベルで建った遅着建玉には遡ってチャージ
+- unpriced と数えた boundary 越えも同様に取り消す
+- 訂正が金額を動かしたら同 instant の保存済み snapshot を置き換える
+
+**既知の制約**: 計上と訂正の間の instant に記録済みの経路依存の集計
+（high_water_mark / max_drawdown / equity_curve）は遡って再計算しない。
+正確な再計算には broker 時間軸での全経路 replay が必要になる。残差は
+取り消した carry 1 件分（1 泊分 swap、equity の概ね 0.001〜0.01%）が
+上限で、方向は常に保守側 — 正の carry の取り消しで HWM が高止まりして
+も halt は早まる側にしか働かず、負の carry の取り消しで max_drawdown が
+過大でも報告が悪化する側に倒れる。逆に不完全な部分再計算は HWM の過小
+評価（halt が緩む側）を作り得るため採らない。
+
 ## 影響
 
 - 既存 backtest（swap snapshot 無し）は carry 0 のままで、metrics に

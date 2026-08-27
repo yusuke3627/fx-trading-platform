@@ -47,6 +47,34 @@ def event(event_type: str, known_offset_hours: int = 0) -> EventEnvelope:
     )
 
 
+def test_upsert_inserts_corrects_and_leaves_identical_facts_alone(repo):
+    # Deterministic-id ingests (policy meeting scores) correct transcription
+    # errors by editing the curated file; the store must follow the file, and
+    # a run that changes nothing must not churn the stored rows.
+    r, event_type = repo
+    first = event(event_type, 0)
+    assert r.upsert(first) == "inserted"
+
+    # retrieved_at moves on every run but is not a fact: no correction.
+    rerun = first.model_copy(update={"retrieved_at": T0 + timedelta(days=1)})
+    assert r.upsert(rerun) == "unchanged"
+    stored = r.known_before(T0 + timedelta(days=30), event_type)
+    assert stored[0].retrieved_at == T0
+
+    corrected = first.model_copy(
+        update={
+            "payload": {"offset": 99},
+            "known_at": T0 + timedelta(hours=1),
+            "retrieved_at": T0 + timedelta(days=2),
+        }
+    )
+    assert r.upsert(corrected) == "updated"
+    stored = r.known_before(T0 + timedelta(days=30), event_type)
+    assert [e.payload["offset"] for e in stored] == [99]
+    assert stored[0].known_at == T0 + timedelta(hours=1)
+    assert stored[0].retrieved_at == T0 + timedelta(days=2)
+
+
 def test_every_filter_combination_selects_what_it_claims(repo):
     r, event_type = repo
     other_type = f"{event_type}_OTHER"

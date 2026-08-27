@@ -2,8 +2,9 @@
 
 Loads the curated meeting facts, scores them mechanically and appends the
 resulting events to the PIT store. Event ids are deterministic per
-(bank, meeting, scoring version), so re-running after editing the yaml only
-inserts what is new.
+(bank, meeting, scoring version), so re-running after editing the yaml
+inserts what is new and rewrites what the edit corrected — the yaml is the
+source of truth for these events, and its git history is the audit trail.
 
 Usage:
 
@@ -61,8 +62,13 @@ def main() -> None:
     from trading.storage.postgres import PostgresEventRepository, connect
 
     repository = PostgresEventRepository(connect(dsn))
-    stored = sum(1 for event in events if repository.insert_new(event))
-    print(f"policy: {len(meetings)} meetings, stored {stored} new events")
+    results = [repository.upsert(event) for event in events]
+    inserted = results.count("inserted")
+    updated = results.count("updated")
+    print(
+        f"policy: {len(meetings)} meetings, "
+        f"stored {inserted} new events, corrected {updated}"
+    )
 
 
 if __name__ == "__main__":

@@ -950,6 +950,66 @@ class PostgresEventRepository:
         self._conn.commit()
         return cursor.rowcount == 1
 
+    def upsert(self, e: EventEnvelope) -> str:
+        # Fact columns only: processed_at / superseded_at belong to the
+        # store's own lifecycle and must survive a re-ingest, and
+        # event_type / source are fixed by the deterministic id. retrieved_at
+        # moves with every run, so it updates alongside a correction but
+        # never triggers one.
+        ensure_json_native(e.payload)
+        cursor = self._conn.execute(
+            """
+            INSERT INTO events (
+                id, event_type, source, source_uri, payload, payload_hash,
+                raw_uri, effective_at, published_at, retrieved_at, known_at,
+                processed_at, superseded_at
+            ) VALUES (
+                %(id)s, %(event_type)s, %(source)s, %(source_uri)s, %(payload)s,
+                %(payload_hash)s, %(raw_uri)s, %(effective_at)s, %(published_at)s,
+                %(retrieved_at)s, %(known_at)s, %(processed_at)s, %(superseded_at)s
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                source_uri = EXCLUDED.source_uri,
+                payload = EXCLUDED.payload,
+                payload_hash = EXCLUDED.payload_hash,
+                raw_uri = EXCLUDED.raw_uri,
+                effective_at = EXCLUDED.effective_at,
+                published_at = EXCLUDED.published_at,
+                retrieved_at = EXCLUDED.retrieved_at,
+                known_at = EXCLUDED.known_at
+            WHERE (
+                events.source_uri, events.payload, events.payload_hash,
+                events.raw_uri, events.effective_at, events.published_at,
+                events.known_at
+            ) IS DISTINCT FROM (
+                EXCLUDED.source_uri, EXCLUDED.payload, EXCLUDED.payload_hash,
+                EXCLUDED.raw_uri, EXCLUDED.effective_at, EXCLUDED.published_at,
+                EXCLUDED.known_at
+            )
+            RETURNING (xmax = 0) AS inserted
+            """,
+            {
+                "id": e.event_id,
+                "event_type": e.event_type,
+                "source": e.source,
+                "source_uri": e.source_uri,
+                "payload": Jsonb(e.payload),
+                "payload_hash": e.payload_hash,
+                "raw_uri": e.raw_uri,
+                "effective_at": e.effective_at,
+                "published_at": e.published_at,
+                "retrieved_at": e.retrieved_at,
+                "known_at": e.known_at,
+                "processed_at": e.processed_at,
+                "superseded_at": e.superseded_at,
+            },
+        )
+        row = cursor.fetchone()
+        self._conn.commit()
+        if row is None:
+            return "unchanged"
+        return "inserted" if row["inserted"] else "updated"
+
     def known_before(
         self,
         t: datetime,

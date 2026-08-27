@@ -404,8 +404,6 @@ meetings:
 # 公式カレンダーどおりの会合予定（恒久記録）。リスク窓はこのセクションだけ
 # から構築され、採点には乗らない（結果未公表の会合を meetings: に置くと、
 # 日次 collector が 0 点イベントを決定的 id で永続化し、後から訂正できない）。
-# schedule 導入（2026-08）前にバックフィルした過去会合は meetings: のみで持ち、
-# 窓は statement_published_at の一点から作られる（risk_windows.py 参照）。
 #
 # statement 公表後は実結果を meetings: へ「追加」する。ここのエントリは
 # 消さない — 事前に市場が知っていたのは予定区間であり、窓は転記後もそれに
@@ -417,9 +415,111 @@ meetings:
 # FED は 14:00 ET 固定なので両者同値。BOJ は時刻非固定のため、早い境界に
 # 会合 2 日目の開始（9:00 JST。それより早い公表はあり得ない）、遅い境界に
 # 保守置きの 15:00 JST を置く。
-# 日程の一次資料: FED は FRB 公式カレンダー、BOJ は 2025-07-31 公表の
-# 「2026年の金融政策決定会合等の日程」PDF。8 月は両行とも会合なし。
+# バックフィルした過去会合も BOJ は区間を登録する（meetings: の保守置き一点
+# だけだと窓が 9:00 JST 起点より 6 時間遅く開き、historical replay の
+# HALT/REDUCED 判定がずれる）。FED は固定時刻＝meetings: の一点が予定区間
+# そのものなので、過去分は schedule に重複登録しない（risk_windows.py が
+# meetings: の一点から同じ窓を作る）。
+# 日程の一次資料: FED は FRB 公式カレンダー、BOJ は各年の
+# 「金融政策決定会合等の日程」PDF（2024年分 mref230728a / 2025年分
+# mref240731a / 2026年分 mref250731a）。8 月は両行とも会合なし。
 schedule:
+  - bank: BOJ
+    decision_date: 2024-07-31
+    earliest_published_at: 2024-07-31T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2024-07-31T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref230728a.pdf
+
+  - bank: BOJ
+    decision_date: 2024-09-20
+    earliest_published_at: 2024-09-20T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2024-09-20T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref230728a.pdf
+
+  - bank: BOJ
+    decision_date: 2024-10-31
+    earliest_published_at: 2024-10-31T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2024-10-31T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref230728a.pdf
+
+  - bank: BOJ
+    decision_date: 2024-12-19
+    earliest_published_at: 2024-12-19T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2024-12-19T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref230728a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-01-24
+    earliest_published_at: 2025-01-24T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-01-24T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-03-19
+    earliest_published_at: 2025-03-19T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-03-19T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-05-01
+    earliest_published_at: 2025-05-01T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-05-01T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-06-17
+    earliest_published_at: 2025-06-17T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-06-17T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-07-31
+    earliest_published_at: 2025-07-31T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-07-31T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-09-19
+    earliest_published_at: 2025-09-19T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-09-19T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-10-30
+    earliest_published_at: 2025-10-30T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-10-30T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2025-12-19
+    earliest_published_at: 2025-12-19T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2025-12-19T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref240731a.pdf
+
+  - bank: BOJ
+    decision_date: 2026-01-23
+    earliest_published_at: 2026-01-23T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-01-23T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: BOJ
+    decision_date: 2026-03-19
+    earliest_published_at: 2026-03-19T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-03-19T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: BOJ
+    decision_date: 2026-04-28
+    earliest_published_at: 2026-04-28T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-04-28T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
+  - bank: BOJ
+    decision_date: 2026-06-16
+    earliest_published_at: 2026-06-16T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2026-06-16T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref250731a.pdf
+
   - bank: FED
     decision_date: 2026-07-29
     earliest_published_at: 2026-07-29T18:00:00+00:00  # 14:00 EDT

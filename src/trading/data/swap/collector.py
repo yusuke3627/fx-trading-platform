@@ -69,8 +69,14 @@ def build_snapshot(
     """
     payload = {key: _json_native(value) for key, value in info._asdict().items()}
     digest = payload_hash(payload)
+    # MT5 API 上は double の倍率。broker 返却値を truth source にする以上、
+    # ここで整数へ丸めてはならない（0.5 / 1.5 を返す broker があり得る）。
     per_day = {
-        name: int(value) if (value := getattr(info, name, None)) is not None else None
+        name: (
+            Decimal(str(value))
+            if (value := getattr(info, name, None)) is not None
+            else None
+        )
         for name in _PER_DAY_FIELDS
     }
     snapshot = SwapSnapshot(

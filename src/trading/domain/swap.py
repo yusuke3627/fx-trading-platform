@@ -47,19 +47,20 @@ class SwapSnapshot(BaseModel):
     # 3日分 swap を課す曜日（MQL5 ENUM_DAY_OF_WEEK）。
     swap_rollover3days: int
 
-    swap_sunday: int | None = None
-    swap_monday: int | None = None
-    swap_tuesday: int | None = None
-    swap_wednesday: int | None = None
-    swap_thursday: int | None = None
-    swap_friday: int | None = None
-    swap_saturday: int | None = None
+    # MT5 API 上は double（broker が 0.5 や 1.5 を返し得る）。丸めない。
+    swap_sunday: Decimal | None = None
+    swap_monday: Decimal | None = None
+    swap_tuesday: Decimal | None = None
+    swap_wednesday: Decimal | None = None
+    swap_thursday: Decimal | None = None
+    swap_friday: Decimal | None = None
+    swap_saturday: Decimal | None = None
 
     payload_hash: str | None = None
     retrieved_at: datetime
     known_at: datetime
 
-    def rollover_multiplier(self, day: date) -> int:
+    def rollover_multiplier(self, day: date) -> Decimal:
         """`day`（broker server 日付）の rollover で課される日数倍率。
 
         broker が per-day 倍率を返していればそれが truth source。返して
@@ -79,8 +80,8 @@ class SwapSnapshot(BaseModel):
         if per_day is not None:
             return per_day
         if mql_dow in (_MQL_SUNDAY, _MQL_SATURDAY):
-            return 0
-        return 3 if mql_dow == self.swap_rollover3days else 1
+            return Decimal(0)
+        return Decimal(3) if mql_dow == self.swap_rollover3days else Decimal(1)
 
 
 def carry_amount(

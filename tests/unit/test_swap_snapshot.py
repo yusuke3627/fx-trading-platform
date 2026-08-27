@@ -113,6 +113,21 @@ def test_carry_long_short_direction_and_points_math():
     assert short_carry == Decimal(2)
 
 
+def test_fractional_per_day_multiplier_is_preserved():
+    # broker は 0.5 / 1.5 のような非整数倍率を返し得る（MT5 API 上 double）。
+    s = snapshot(swap_wednesday=Decimal("1.5"))
+    assert s.rollover_multiplier(WEDNESDAY) == Decimal("1.5")
+    carry = carry_amount(
+        s,
+        spec=usdjpy_spec(),
+        direction=PositionDirection.LONG,
+        quantity=Decimal(5000),
+        day=WEDNESDAY,
+    )
+    # -2.2 × 0.001 × 5000 × 1.5 = -16.5 JPY
+    assert carry == Decimal("-16.5")
+
+
 def test_unsupported_swap_mode_fails_loud_on_charged_day():
     s = snapshot(swap_mode=5)
     with pytest.raises(UnsupportedSwapModeError):
@@ -240,13 +255,14 @@ _InfoWithoutDays = namedtuple(
 
 
 def test_build_snapshot_maps_fields_and_archives_raw_payload():
-    info = _InfoWithDays(1, -2.2, 0.4, 3, 0, 1, 1, 3, 1, 1, 0, float("inf"))
+    info = _InfoWithDays(1, -2.2, 0.4, 3, 0, 1, 1, 1.5, 1, 1, 0, float("inf"))
     parsed, event = build_snapshot("USDJPY", info, retrieved_at=RETRIEVED)
 
     assert parsed.swap_mode == SWAP_MODE_POINTS
     assert parsed.swap_long == Decimal("-2.2")
     assert parsed.swap_short == Decimal("0.4")
-    assert parsed.swap_wednesday == 3
+    # double の倍率は丸めずそのまま保存する。
+    assert parsed.swap_wednesday == Decimal("1.5")
     assert parsed.known_at == RETRIEVED
     assert event.event_type == SWAP_SNAPSHOT_RAW
     # raw payload は swap 以外のフィールドも全量保存し、非有限 float は

@@ -34,13 +34,18 @@ def swap_dataset_fingerprint(snapshots: Sequence[SwapSnapshot]) -> str:
             str(s.swap_long),
             str(s.swap_short),
             s.swap_rollover3days,
-            s.swap_sunday,
-            s.swap_monday,
-            s.swap_tuesday,
-            s.swap_wednesday,
-            s.swap_thursday,
-            s.swap_friday,
-            s.swap_saturday,
+            *(
+                str(value) if value is not None else None
+                for value in (
+                    s.swap_sunday,
+                    s.swap_monday,
+                    s.swap_tuesday,
+                    s.swap_wednesday,
+                    s.swap_thursday,
+                    s.swap_friday,
+                    s.swap_saturday,
+                )
+            ),
         )
         for s in sorted(snapshots, key=lambda s: (s.symbol, s.known_at))
     ]

@@ -13,13 +13,14 @@ CREATE TABLE swap_snapshots (
     swap_short          NUMERIC NOT NULL,
     -- 3日分 swap を課す曜日（MQL5 ENUM_DAY_OF_WEEK: 0=Sunday .. 6=Saturday）
     swap_rollover3days  INTEGER NOT NULL,
-    swap_sunday         INTEGER,
-    swap_monday         INTEGER,
-    swap_tuesday        INTEGER,
-    swap_wednesday      INTEGER,
-    swap_thursday       INTEGER,
-    swap_friday         INTEGER,
-    swap_saturday       INTEGER,
+    -- MT5 API 上は double の倍率（0.5 等があり得るため NUMERIC）
+    swap_sunday         NUMERIC,
+    swap_monday         NUMERIC,
+    swap_tuesday        NUMERIC,
+    swap_wednesday      NUMERIC,
+    swap_thursday       NUMERIC,
+    swap_friday         NUMERIC,
+    swap_saturday       NUMERIC,
     payload_hash        TEXT,
     retrieved_at        TIMESTAMPTZ NOT NULL,
     known_at            TIMESTAMPTZ NOT NULL

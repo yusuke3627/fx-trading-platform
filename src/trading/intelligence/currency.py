@@ -17,12 +17,13 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Protocol
+from typing import Annotated, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.money import Currency
+from trading.intelligence.immutable import freeze_mapping
 from trading.intelligence.normalization import (
     NormalizationConfig,
     NormalizedScore,
@@ -77,18 +78,25 @@ class MappingFactorSeries:
 
 
 class CurrencyScoreConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     # factor の重み。合計は正規化されるので相対値でよい。欠測 factor の
     # 重みは directional_score の合成から外れ、coverage の減点になる。
-    weights: dict[CurrencyFactor, float] = Field(
-        default_factory=lambda: {
-            CurrencyFactor.POLICY: 1.0,
-            CurrencyFactor.GROWTH: 1.0,
-            CurrencyFactor.INFLATION: 1.0,
-            CurrencyFactor.RATES: 1.0,
-            CurrencyFactor.RISK_SENTIMENT: 1.0,
-        }
+    # 構築時の検証をサービス存続中も保つため不変で持つ。
+    weights: Annotated[
+        Mapping[CurrencyFactor, float], AfterValidator(freeze_mapping)
+    ] = Field(
+        # default は pydantic の検証を通らない（validate_default=False）ため、
+        # ここで不変にしておく。
+        default_factory=lambda: freeze_mapping(
+            {
+                CurrencyFactor.POLICY: 1.0,
+                CurrencyFactor.GROWTH: 1.0,
+                CurrencyFactor.INFLATION: 1.0,
+                CurrencyFactor.RATES: 1.0,
+                CurrencyFactor.RISK_SENTIMENT: 1.0,
+            }
+        )
     )
     normalization: NormalizationConfig = NormalizationConfig()
     # これより古い観測しか無い factor は freshness 減点を受ける。
@@ -116,13 +124,16 @@ class CurrencyScoreConfig(BaseModel):
 
 
 class CurrencyState(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     currency: Currency
     directional_score: Decimal
     # 欠測 factor は None のまま持つ。0 は「中立という観測がある」ことを
-    # 意味してしまい、無いこととは違う。
-    factor_scores: dict[CurrencyFactor, Decimal | None]
+    # 意味してしまい、無いこととは違う。作成時に確定した directional_score
+    # / confidence と食い違わないよう、read-only で共有する。
+    factor_scores: Annotated[
+        Mapping[CurrencyFactor, Decimal | None], AfterValidator(freeze_mapping)
+    ]
     confidence: Decimal
     regimes: frozenset[RegimeLabel] = frozenset()
     intervention_risk: Decimal | None = None

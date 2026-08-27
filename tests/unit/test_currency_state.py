@@ -220,6 +220,20 @@ def test_global_regimes_reach_every_currency():
         assert RegimeLabel.GLOBAL_RISK_OFF in snapshot.active(currency)
 
 
+def test_state_and_config_mappings_are_read_only():
+    # frozen=True はフィールド再代入しか止めない。共有された state / config
+    # の中身を書き換えられると、作成時に確定した directional_score や
+    # 検証済みの重みと食い違う。
+    state = service({(Currency.USD, CurrencyFactor.POLICY): rising()}).state(
+        Currency.USD, NOW
+    )
+
+    with pytest.raises(TypeError):
+        state.factor_scores[CurrencyFactor.GROWTH] = Decimal(1)
+    with pytest.raises(TypeError):
+        CONFIG.weights[CurrencyFactor.POLICY] = -1.0
+
+
 def test_snapshot_currency_map_is_read_only():
     # strategy へ渡す snapshot を一つの読み手が書き換えられない。
     snapshot = RuleBasedCurrencyRegimeService(InMemoryFeatureStore()).snapshot(NOW)

@@ -10,7 +10,6 @@ from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from datetime import datetime
 from enum import StrEnum
-from types import MappingProxyType
 from typing import Annotated, Protocol
 
 from pydantic import AfterValidator, BaseModel, ConfigDict
@@ -18,6 +17,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict
 from trading.domain.money import Currency
 from trading.intelligence import features as f
 from trading.intelligence.features import FeatureStore
+from trading.intelligence.immutable import freeze_mapping
 
 
 class RegimeLabel(StrEnum):
@@ -72,11 +72,8 @@ class RuleBasedRegimeService:
         return frozenset(label for label, rule in self._rules.items() if rule(self._store))
 
 
-# frozen=True が止めるのはフィールドの再代入だけで、公開した dict 自体は
-# 書き換えられる。read-only snapshot という契約を型で守るために包む。
 ImmutableRegimeMap = Annotated[
-    Mapping[Currency, frozenset[RegimeLabel]],
-    AfterValidator(lambda value: MappingProxyType(dict(value))),
+    Mapping[Currency, frozenset[RegimeLabel]], AfterValidator(freeze_mapping)
 ]
 
 

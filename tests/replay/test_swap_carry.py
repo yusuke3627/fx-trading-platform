@@ -201,6 +201,13 @@ def test_late_tick_protection_before_midnight_label_skips_carry():
     assert any(f.origin == "PROTECTION" for f in result.fills)
     assert Decimal(result.metrics["carry_total"]) == 0
     assert result.metrics["unpriced_rollovers"] == "0"
+    # 訂正の走った instant では、先に保存された時間足 snapshot も訂正後の
+    # 値へ置き換わる（loss window の _baseline_equity は同時刻ならリスト
+    # 先頭を読むため）。
+    correction_instant = datetime(2026, 8, 10, 21, 5, tzinfo=UTC)
+    at_instant = [s for s in result.snapshots if s.observed_at == correction_instant]
+    assert len(at_instant) >= 2
+    assert all(s.equity == at_instant[-1].equity for s in at_instant)
 
 
 def test_protection_after_midnight_label_still_pays_carry():
@@ -232,10 +239,9 @@ def test_protection_after_midnight_label_still_pays_carry():
     assert Decimal(result.metrics["carry_total"]) == expected
 
 
-def test_late_close_arriving_after_boundary_was_charged_reverses_carry():
-    # 「00:05 の tick で boundary を計上した後」に、midnight 前の broker
-    # ラベルを持つ遅着 tick が SL を発動する複数 tick の順序。broker の
-    # 帳簿では rollover 前に決済済みなので、計上済み carry は戻される。
+def _late_close_ticks() -> list:
+    """boundary 計上後（00:05 tick）に midnight 前ラベルの遅着 SL tick が
+    届く複数 tick の並び。"""
     label = timedelta(hours=3)
     entry_times = [
         datetime(2026, 8, 10, 20, 0, 0, tzinfo=UTC),
@@ -262,10 +268,28 @@ def test_late_close_arriving_after_boundary_was_charged_reverses_carry():
             received_at=datetime(2026, 8, 10, 21, 6, tzinfo=UTC),
         )
     )
-    result = _run([_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")], ticks)
+    return ticks
+
+
+def test_late_close_arriving_after_boundary_was_charged_reverses_carry():
+    # broker の帳簿では rollover 前に決済済みなので、計上済み carry は
+    # 戻される。
+    result = _run(
+        [_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")],
+        _late_close_ticks(),
+    )
 
     assert any(f.origin == "PROTECTION" for f in result.fills)
     assert Decimal(result.metrics["carry_total"]) == 0
+    assert result.metrics["unpriced_rollovers"] == "0"
+
+
+def test_late_close_cancels_unpriced_crossing():
+    # snapshot の無い boundary 越えも、broker 時系列上は跨いでいなかったと
+    # 判明したら unexpected-hold telemetry から取り消す。
+    result = _run([], _late_close_ticks())
+
+    assert any(f.origin == "PROTECTION" for f in result.fills)
     assert result.metrics["unpriced_rollovers"] == "0"
 
 

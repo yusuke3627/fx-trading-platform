@@ -261,6 +261,9 @@ class _RunState:
     # tick が broker 時系列を訂正したときの遡及チャージ / 按分リバース用。
     processed_boundaries: list[datetime] = field(default_factory=list)
     carry_charged: dict[str, list[_ChargedCarry]] = field(default_factory=dict)
+    # snapshot 無しで跨いだ boundary の ticket 別残数量。遅着決済で「実は
+    # 跨いでいなかった」と判明したら unpriced_rollovers ごと取り消す。
+    unpriced_crossings: dict[datetime, dict[str, Decimal]] = field(default_factory=dict)
 
 
 def signed_pnl(
@@ -509,6 +512,9 @@ class BacktestEngine:
             snapshot = self._swap_timeline.latest_known_before(boundary)
             if snapshot is None:
                 state.unpriced_rollovers += 1
+                state.unpriced_crossings[midnight_label] = {
+                    p.position_id: p.quantity for p in held
+                }
                 continue
             day = ended_server_day(boundary)
             for position in held:
@@ -540,19 +546,29 @@ class BacktestEngine:
         )
 
     def _retro_carry_for_open(
-        self, state: _RunState, position: SimulatedPosition, opened_label: datetime
+        self,
+        state: _RunState,
+        w: _Wiring,
+        position: SimulatedPosition,
+        opened_label: datetime,
     ) -> None:
         """遅着 tick の建玉に、処理済み boundary の carry を遡って課す。
 
         broker の帳簿では opened_label より後の server midnight を全て保有
         で跨いでいるが、boundary 処理時にはまだ book に居なかった。"""
+        adjusted = False
         for boundary in reversed(state.processed_boundaries):
             midnight_label = server_midnight_label(boundary)
             if opened_label >= midnight_label:
                 break
             snapshot = self._swap_timeline.latest_known_before(boundary)
             if snapshot is None:
-                state.unpriced_rollovers += 1
+                crossings = state.unpriced_crossings.setdefault(midnight_label, {})
+                if not crossings:
+                    state.unpriced_rollovers += 1
+                crossings[position.position_id] = (
+                    crossings.get(position.position_id, Decimal(0)) + position.quantity
+                )
                 continue
             self._charge_carry(
                 state,
@@ -561,29 +577,72 @@ class BacktestEngine:
                 midnight_label=midnight_label,
                 day=ended_server_day(boundary),
             )
+            adjusted = True
+        if adjusted:
+            self._refresh_same_instant_snapshots(state, w)
 
     def _reverse_carry_for_close(
-        self, state: _RunState, ticket: str, quantity: Decimal, at: datetime
+        self,
+        state: _RunState,
+        w: _Wiring,
+        ticket: str,
+        quantity: Decimal,
+        at: datetime,
     ) -> None:
         """決済数量ぶんの計上記録を消し込み、broker 時刻が rollover より
-        前だった決済（遅着 tick で後から判明する）は carry を按分で戻す。"""
+        前だった決済（遅着 tick で後から判明する）は carry を按分で戻す。
+        snapshot が無く unpriced と数えた boundary も、跨いでいなかったと
+        判明した数量を取り消す。"""
+        adjusted = False
         charged = state.carry_charged.get(ticket)
-        if not charged:
-            return
-        remaining: list[_ChargedCarry] = []
-        for entry in charged:
-            consumed = min(quantity, entry.quantity)
-            if consumed and at < entry.midnight_label:
-                reversal = entry.per_unit * consumed
-                state.realized -= reversal
-                state.carry_total -= reversal
-            entry.quantity -= consumed
-            if entry.quantity > 0:
-                remaining.append(entry)
-        if remaining:
-            state.carry_charged[ticket] = remaining
-        else:
-            state.carry_charged.pop(ticket, None)
+        if charged:
+            remaining: list[_ChargedCarry] = []
+            for entry in charged:
+                consumed = min(quantity, entry.quantity)
+                if consumed and at < entry.midnight_label:
+                    reversal = entry.per_unit * consumed
+                    state.realized -= reversal
+                    state.carry_total -= reversal
+                    adjusted = True
+                entry.quantity -= consumed
+                if entry.quantity > 0:
+                    remaining.append(entry)
+            if remaining:
+                state.carry_charged[ticket] = remaining
+            else:
+                state.carry_charged.pop(ticket, None)
+        for midnight_label in list(state.unpriced_crossings):
+            if at >= midnight_label:
+                continue
+            crossings = state.unpriced_crossings[midnight_label]
+            held_quantity = crossings.get(ticket)
+            if held_quantity is None:
+                continue
+            held_quantity -= quantity
+            if held_quantity > 0:
+                crossings[ticket] = held_quantity
+            else:
+                del crossings[ticket]
+            if not crossings:
+                del state.unpriced_crossings[midnight_label]
+                state.unpriced_rollovers -= 1
+        if adjusted:
+            self._refresh_same_instant_snapshots(state, w)
+
+    def _refresh_same_instant_snapshots(self, state: _RunState, w: _Wiring) -> None:
+        """現 instant の保存済み snapshot を訂正後の値で置き換える。
+
+        時間足 snapshot は carry 計上の後・broker event の前に保存されるが、
+        遅着 tick の訂正はその後に走る。loss window の基準
+        （risk/limits.py の _baseline_equity は同時刻ならリスト先頭を選ぶ）
+        が訂正前の equity を読まないよう、同 instant の snapshot を全て
+        置き換える。"""
+        now = w.clock.now()
+        refreshed = self._snapshot(state, w.simulator, now)
+        for index in range(len(state.snapshots) - 1, -1, -1):
+            if state.snapshots[index].observed_at != now:
+                break
+            state.snapshots[index] = refreshed
 
     def _apply_protection(self, state: _RunState, w: _Wiring, tick: Tick) -> None:
         """Broker-side SL/TP sweep of the whole book at this tick's price.
@@ -868,7 +927,7 @@ class BacktestEngine:
         w.ledger.apply_fill(
             strategy_id, self._spec.symbol, fill.side, fill.quantity, fill.price
         )
-        self._retro_carry_for_open(state, result.position, fill.broker_time)
+        self._retro_carry_for_open(state, w, result.position, fill.broker_time)
         state.fills.append(
             FillRecord(
                 at=fill.broker_time,
@@ -903,7 +962,7 @@ class BacktestEngine:
         strategy_id = state.ticket_owner[ticket]
         entry = state.entry_price[ticket]
         state.realized += signed_pnl(direction, entry, price, quantity)
-        self._reverse_carry_for_close(state, ticket, quantity, at)
+        self._reverse_carry_for_close(state, w, ticket, quantity, at)
         state.gross_mid_closed += signed_pnl(
             direction, state.entry_mid[ticket], mid, quantity
         )

@@ -27,7 +27,7 @@ DEFAULT_MEETINGS_PATH = Path("config/policy_meetings.yaml")
 class PolicyMeeting(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    bank: Literal["BOJ", "FED"]
+    bank: Literal["BOJ", "FED", "BOE", "ECB"]
     decision_date: date
     statement_published_at: datetime
 
@@ -109,7 +109,7 @@ class ScheduledMeeting(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    bank: Literal["BOJ", "FED"]
+    bank: Literal["BOJ", "FED", "BOE", "ECB"]
     decision_date: date
     earliest_published_at: datetime
     latest_published_at: datetime

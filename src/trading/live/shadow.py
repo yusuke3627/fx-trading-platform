@@ -247,7 +247,7 @@ class ShadowRunner:
         """
         if self._event_risk is None:
             return self._risk_config.event_mode_default
-        mode = self._event_risk.mode_for(horizon, now)
+        mode = self._event_risk.mode_for_instrument(self._instrument, horizon, now)
         return mode if mode is not None else self._risk_config.event_mode_default
 
     def _pretrade_context(

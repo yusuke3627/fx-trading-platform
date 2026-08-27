@@ -1103,7 +1103,9 @@ class BacktestEngine:
         older than the recorded meetings must not grade as quiet."""
         if self._event_risk is None:
             return self._risk_config.event_mode_default
-        mode = self._event_risk.mode_for(w.strategy.horizon, now)
+        mode = self._event_risk.mode_for_instrument(
+            self._spec, w.strategy.horizon, now
+        )
         return mode if mode is not None else self._risk_config.event_mode_default
 
     def _unrealized(self, state: _RunState, simulator: ExecutionSimulator) -> Decimal:

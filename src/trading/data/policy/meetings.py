@@ -27,7 +27,9 @@ DEFAULT_MEETINGS_PATH = Path("config/policy_meetings.yaml")
 class PolicyMeeting(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    bank: Literal["BOJ", "FED", "BOE", "ECB"]
+    # 採点（scoring.EVENT_TYPES）が BOJ/FED のみのため facts もそこへ揃える。
+    # BOE/ECB の facts は採点接続とセットで解禁する（ADR-017）。
+    bank: Literal["BOJ", "FED"]
     decision_date: date
     statement_published_at: datetime
 

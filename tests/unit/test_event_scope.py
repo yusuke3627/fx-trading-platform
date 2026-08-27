@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from tests.support import eurusd_spec, gbpjpy_spec, gbpusd_spec, usdjpy_spec
-from tests.unit.test_policy_risk_windows import SETTINGS, meeting
+from tests.unit.test_policy_risk_windows import SETTINGS, meeting, scheduled
 from trading.data.policy.risk_windows import central_bank_windows
 from trading.domain.money import Currency
 from trading.domain.risk import EventRiskMode
@@ -85,7 +85,8 @@ def test_boj_affects_usdjpy_and_gbpjpy_only():
 
 
 def test_boe_affects_gbpusd_and_gbpjpy_only():
-    (boe,) = central_bank_windows([meeting("BOE", T0)], [], SETTINGS)
+    # BOE/ECB は schedule（採点パス外）としてのみ登録できる（ADR-017）。
+    (boe,) = central_bank_windows([], [scheduled("BOE", T0)], SETTINGS)
     calendar = EventRiskCalendar([boe], COVERS)
 
     assert calendar.mode_for_instrument(gbpusd_spec(), SCALP, T0) is EventRiskMode.HALT
@@ -123,7 +124,7 @@ def test_adjacent_cross_bank_windows_are_pair_local():
     # USDJPY は BOE 単独の時間帯（BOJ window の post 終了後）では止まらない。
     boe_at = T0 + timedelta(days=2)
     windows = central_bank_windows(
-        [meeting("BOJ", T0), meeting("BOE", boe_at)], [], SETTINGS
+        [meeting("BOJ", T0)], [scheduled("BOE", boe_at)], SETTINGS
     )
     calendar = EventRiskCalendar(windows, COVERS)
 

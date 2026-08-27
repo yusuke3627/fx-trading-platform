@@ -30,10 +30,11 @@ scheduled event risk を通貨 scope 付きにする（設計書 v2.1 §14 / §1
   4 中銀を 1 cluster に混ぜることを構造的に不可能にする
 - `affected_currencies` が空の window は全ペアに適用（fail-close の従来
   互換。手書きの window 定義が scope を忘れても止める側に倒れる）
-- meeting file の bank に BOE / ECB を追加（bank → 通貨は
-  `BANK_CURRENCIES`）。**BOE/ECB の会合日程・facts の yaml 登録と採点
-  接続は本 ADR の範囲外**（GBP/EUR ペアの shadow 開始前に登録する。
-  policy scoring の対応は M3 2/3 の CurrencyState とセット）
+- meeting file は **schedule（採点パス外・window の材料）のみ** BOE /
+  ECB を許可する。facts（`PolicyMeeting`）は採点（`EVENT_TYPES`）が
+  BOJ/FED のみのため従来どおり — BOE/ECB の facts と採点接続は
+  M3 2/3 の CurrencyState とセットで解禁し、日程の yaml 登録は
+  GBP/EUR ペアの shadow 開始前に行う（bank → 通貨は `BANK_CURRENCIES`）
 
 ## 理由
 

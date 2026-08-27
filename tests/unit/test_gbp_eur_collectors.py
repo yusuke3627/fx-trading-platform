@@ -19,11 +19,13 @@ from trading.data.macro.registry import (
     EA_HICP_HEADLINE_YOY_NSA,
     EA_REAL_GDP_GROWTH_QOQ_SCA,
     EA_UNEMPLOYMENT_RATE_SA,
+    EA_YIELD_CURVE_2Y,
     INDICATORS,
     PIT_UNVERIFIED,
     PIT_VERIFIED,
     UK_BANK_RATE,
     UK_CPI_HEADLINE_YOY_NSA,
+    UK_OIS_2Y,
     UK_REAL_GDP_GROWTH_QOQ_SA,
     UK_UNEMPLOYMENT_RATE_SA,
     US_CPI_HEADLINE_SA,
@@ -44,10 +46,12 @@ def test_gbp_eur_series_are_pit_unverified():
         UK_CPI_HEADLINE_YOY_NSA,
         UK_UNEMPLOYMENT_RATE_SA,
         UK_REAL_GDP_GROWTH_QOQ_SA,
+        UK_OIS_2Y,
         EA_DEPOSIT_FACILITY_RATE,
         EA_HICP_HEADLINE_YOY_NSA,
         EA_UNEMPLOYMENT_RATE_SA,
         EA_REAL_GDP_GROWTH_QOQ_SCA,
+        EA_YIELD_CURVE_2Y,
     ):
         assert INDICATORS[series].pit_classification == PIT_UNVERIFIED
     assert INDICATORS[US_CPI_HEADLINE_SA].pit_classification == PIT_VERIFIED
@@ -335,3 +339,22 @@ def test_eurostat_unpinned_dimension_raises():
         EurostatCollector(transport, clock=FixedClock(RETRIEVED)).collect(
             EA_UNEMPLOYMENT_RATE_SA, YEARS
         )
+
+
+def test_ecb_collects_the_yield_curve_two_year_spot():
+    payload = _ecb_payload(
+        {"0:0:0:0:0:0:0": {"observations": {"0": [2.7963537279, 0, 0, None, None]}}},
+        ["2026-08-24"],
+    )
+    transport = FakeTransport([payload])
+
+    batch = ECBCollector(transport, clock=FixedClock(RETRIEVED)).collect(
+        EA_YIELD_CURVE_2Y, YEARS
+    )
+
+    assert [(o.observation_period, o.value) for o in batch.observations] == [
+        ("2026-08-24", Decimal("2.7963537279"))
+    ]
+    url, _ = transport.get_calls[0]
+    # AAA ソブリンカーブ（G_N_A）の spot（SV_C_YM）2 年点。
+    assert url.endswith("/YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_2Y")

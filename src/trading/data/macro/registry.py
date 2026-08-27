@@ -33,12 +33,20 @@ UK_BANK_RATE = "uk_bank_rate"
 UK_CPI_HEADLINE_YOY_NSA = "uk_cpi_headline_yoy_nsa"
 UK_UNEMPLOYMENT_RATE_SA = "uk_unemployment_rate_sa"
 UK_REAL_GDP_GROWTH_QOQ_SA = "uk_real_gdp_growth_qoq_sa"
+# 会合パスの proxy（ADR-020）。MPC Dated SONIA futures の代わりに BOE の
+# OIS spot カーブから 2Y 点を採る。US_TREASURY_2Y_YIELD と同じ年限にして
+# あるのは、通貨間の減算が同じ年限どうしでしか意味を持たないため。
+UK_OIS_2Y = "uk_ois_2y"
 
 # ample-reserves レジームの実効政策金利は預金ファシリティ金利（MRO ではない）。
 EA_DEPOSIT_FACILITY_RATE = "ea_deposit_facility_rate"
 EA_HICP_HEADLINE_YOY_NSA = "ea_hicp_headline_yoy_nsa"
 EA_UNEMPLOYMENT_RATE_SA = "ea_unemployment_rate_sa"
 EA_REAL_GDP_GROWTH_QOQ_SCA = "ea_real_gdp_growth_qoq_sca"
+# ユーロ圏の会合パス proxy（ADR-020）。ECB は OIS カーブを公表しないため
+# AAA ソブリンカーブの 2Y spot を使う。信用・流動性プレミアムが乗るぶん
+# GBP 側の OIS より proxy として遠い。
+EA_YIELD_CURVE_2Y = "ea_yield_curve_2y"
 
 # 系列の「収集開始前の履歴」を真の vintage として復元できるか（ADR-015）。
 # PIT_VERIFIED: vintage アーカイブ（ALFRED）が release 時点の known_at を裏付ける。
@@ -158,6 +166,17 @@ INDICATORS: dict[str, IndicatorSpec] = {
             release_timezone=_LONDON,
         ),
         IndicatorSpec(
+            series=UK_OIS_2Y,
+            unit="percent",
+            frequency="daily",
+            pit_classification=PIT_UNVERIFIED,
+            # カーブは翌営業日正午に公表される（観測日 D の値が D+1 12:00）。
+            # forward collection では known_at は取得時刻なのでこの値は
+            # 使われないが、vintage 復元経路が付いたときの基準として置く。
+            release_time=time(12, 0),
+            release_timezone=_LONDON,
+        ),
+        IndicatorSpec(
             series=UK_CPI_HEADLINE_YOY_NSA,
             unit="percent",
             frequency="monthly",
@@ -189,6 +208,15 @@ INDICATORS: dict[str, IndicatorSpec] = {
             # 政策決定の公表は 14:15 CET。日次系列がポータルへ載る時刻は保証
             # がないため 18:00 で保守側に置く。
             release_time=time(18, 0),
+            release_timezone=_BRUSSELS,
+        ),
+        IndicatorSpec(
+            series=EA_YIELD_CURVE_2Y,
+            unit="percent",
+            frequency="daily",
+            pit_classification=PIT_UNVERIFIED,
+            # ポータルの更新は前営業日ぶんが翌日昼までに載る。
+            release_time=time(12, 0),
             release_timezone=_BRUSSELS,
         ),
         IndicatorSpec(

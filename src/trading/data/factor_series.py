@@ -37,9 +37,11 @@ from trading.data.macro.registry import (
     EA_DEPOSIT_FACILITY_RATE,
     EA_HICP_HEADLINE_YOY_NSA,
     EA_UNEMPLOYMENT_RATE_SA,
+    EA_YIELD_CURVE_2Y,
     INDICATORS,
     UK_BANK_RATE,
     UK_CPI_HEADLINE_YOY_NSA,
+    UK_OIS_2Y,
     UK_UNEMPLOYMENT_RATE_SA,
     US_CPI_HEADLINE_SA,
     US_TREASURY_2Y_YIELD,
@@ -75,9 +77,11 @@ class FactorInput:
 #
 # 埋まっていない組み合わせは意図的な欠測で、供給側は空列を返す:
 #   - JPY は macro 系列を持たない（BOJ 政策スコアと介入リスクが担う）
-#   - USD の POLICY は FOMC 声明スコア（EventRepository 側）
-#   - GBP / EUR の RATES は OIS / イールドカーブ proxy の収集待ち
+#   - USD / JPY の POLICY は中銀声明スコア（EventRepository 側）
 # CurrencyState 側で欠測 factor は合成から外れ、coverage の減点になる。
+#
+# RATES は 3 通貨とも 2 年点で揃える。年限が違う点どうしを引き算しても
+# 金利差にならない（ADR-020）。
 DEFAULT_FACTOR_INPUTS: Mapping[tuple[Currency, CurrencyFactor], FactorInput] = (
     freeze_mapping(
         {
@@ -95,6 +99,7 @@ DEFAULT_FACTOR_INPUTS: Mapping[tuple[Currency, CurrencyFactor], FactorInput] = (
             (Currency.GBP, CurrencyFactor.GROWTH): FactorInput(
                 UK_UNEMPLOYMENT_RATE_SA, -1
             ),
+            (Currency.GBP, CurrencyFactor.RATES): FactorInput(UK_OIS_2Y, 1),
             (Currency.EUR, CurrencyFactor.POLICY): FactorInput(
                 EA_DEPOSIT_FACILITY_RATE, 1
             ),
@@ -104,6 +109,7 @@ DEFAULT_FACTOR_INPUTS: Mapping[tuple[Currency, CurrencyFactor], FactorInput] = (
             (Currency.EUR, CurrencyFactor.GROWTH): FactorInput(
                 EA_UNEMPLOYMENT_RATE_SA, -1
             ),
+            (Currency.EUR, CurrencyFactor.RATES): FactorInput(EA_YIELD_CURVE_2Y, 1),
         }
     )
 )

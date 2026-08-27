@@ -16,7 +16,11 @@ from uuid import uuid4
 
 from trading.backtest.clock import Clock, SystemClock
 from trading.data.macro.base import CollectionBatch, payload_hash, raw_event
-from trading.data.macro.registry import EA_DEPOSIT_FACILITY_RATE, INDICATORS
+from trading.data.macro.registry import (
+    EA_DEPOSIT_FACILITY_RATE,
+    EA_YIELD_CURVE_2Y,
+    INDICATORS,
+)
 from trading.domain.economic import EconomicObservation
 
 SOURCE_ECB = "ECB"
@@ -25,6 +29,9 @@ DATA_URL = "https://data-api.ecb.europa.eu/service/data"
 # canonical series -> dataflow/series-key リソースパス（日次連続系列を使う）。
 SERIES_KEYS: dict[str, str] = {
     EA_DEPOSIT_FACILITY_RATE: "FM/D.U2.EUR.4F.KR.DFR.LEV",
+    # AAA ソブリンカーブの 2Y spot（G_N_A = AAA 格のみ、SV_C_YM = spot、
+    # SR_2Y = 2 年）。営業日次なので頻度は B。
+    EA_YIELD_CURVE_2Y: "YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_2Y",
 }
 
 

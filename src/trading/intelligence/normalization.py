@@ -124,6 +124,39 @@ def normalize_series(
     )
 
 
+def bounded_score(
+    series: Sequence[tuple[datetime, float]], now: datetime, bound: float
+) -> NormalizedScore | None:
+    """既に通貨横断で校正済みの系列の最新値を、その上限で割って [-1, 1] へ。
+
+    `normalize_series` を掛けてはいけない系列がある（ADR-021）。中銀の声明
+    スコアは同じ配点表で採るので BOJ の +2 と FED の -2 は最初から比較可能
+    だが、通貨ごとに自分の履歴で z を取ると **どちらも「その中銀にしては
+    普通」の中立へ潰れ**、最大の乖離が消える。
+
+    観測数の下限も置かない。1 回の声明はそれ自体が完結した stance の読み
+    取りで、分布を語るための標本ではない。
+    """
+    visible = sorted(
+        (
+            (at, value)
+            for at, value in series
+            if at <= now and math.isfinite(value)
+        ),
+        key=lambda row: row[0],
+    )
+    if not visible:
+        return None
+
+    latest_at, latest = visible[-1]
+    scaled = max(-1.0, min(1.0, latest / bound))
+    return NormalizedScore(
+        value=Decimal(str(scaled)).quantize(_SCORE_EXPONENT),
+        observations=len(visible),
+        fitted_through=latest_at,
+    )
+
+
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     middle = len(ordered) // 2

@@ -28,6 +28,7 @@ from trading.intelligence.immutable import freeze_mapping
 from trading.intelligence.normalization import (
     NormalizationConfig,
     NormalizedScore,
+    bounded_score,
     normalize_series,
 )
 from trading.intelligence.regime import RegimeLabel
@@ -78,6 +79,28 @@ class MappingFactorSeries:
         return [(at, value) for at, value in rows if at <= now]
 
 
+class ChainedFactorSeries:
+    """複数の供給元を 1 つの `FactorSeriesSource` として見せる。
+
+    factor によって出所が違う（macro リポジトリと中銀声明スコア）ため、
+    最初に観測を返した供給元を採る。各供給元は互いに素な
+    `(currency, factor)` を担当する前提で、重なりは設定の誤りとして
+    先勝ちに倒す。
+    """
+
+    def __init__(self, *sources: FactorSeriesSource) -> None:
+        self._sources = sources
+
+    def series(
+        self, currency: Currency, factor: CurrencyFactor, now: datetime
+    ) -> Sequence[tuple[datetime, float]]:
+        for source in self._sources:
+            rows = source.series(currency, factor, now)
+            if rows:
+                return rows
+        return ()
+
+
 class CurrencyScoreConfig(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -100,6 +123,15 @@ class CurrencyScoreConfig(BaseModel):
         )
     )
     normalization: NormalizationConfig = NormalizationConfig()
+    # 既に通貨横断で校正済みの尺度に載っている factor と、その絶対値上限。
+    # ここに載る factor へは rolling robust 正規化を掛けず、上限で割るだけに
+    # する（ADR-021）。POLICY の 2.0 は中銀声明スコアの範囲
+    # （`data/policy/scoring.py` の SCORE_MIN / SCORE_MAX）。
+    bounded_factors: Annotated[
+        Mapping[CurrencyFactor, float], AfterValidator(freeze_mapping)
+    ] = Field(
+        default_factory=lambda: freeze_mapping({CurrencyFactor.POLICY: 2.0})
+    )
     # これより古い観測しか無い factor は freshness 減点を受ける。
     freshness_full_hours: float = Field(default=48.0, gt=0, allow_inf_nan=False)
     # 減点が底を打つまでの経過（ここに達した factor の freshness は 0）。
@@ -121,6 +153,11 @@ class CurrencyScoreConfig(BaseModel):
             raise ValueError("weights must sum to a finite positive value")
         if any(weight < 0 for weight in self.weights.values()):
             raise ValueError("factor weights must not be negative")
+        if any(
+            not math.isfinite(bound) or bound <= 0
+            for bound in self.bounded_factors.values()
+        ):
+            raise ValueError("bounded factor limits must be finite and positive")
         if self.freshness_zero_hours <= self.freshness_full_hours:
             raise ValueError(
                 "freshness_zero_hours must exceed freshness_full_hours; "
@@ -196,10 +233,12 @@ class CurrencyStateService:
         scores: dict[CurrencyFactor, Decimal | None] = {}
         normalized: dict[CurrencyFactor, NormalizedScore] = {}
         for factor in CurrencyFactor:
-            result = normalize_series(
-                self._source.series(currency, factor, now),
-                now,
-                self._config.normalization,
+            points = self._source.series(currency, factor, now)
+            bound = self._config.bounded_factors.get(factor)
+            result = (
+                bounded_score(points, now, bound)
+                if bound is not None
+                else normalize_series(points, now, self._config.normalization)
             )
             scores[factor] = result.value if result else None
             if result is not None:

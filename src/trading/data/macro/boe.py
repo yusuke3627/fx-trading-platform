@@ -49,12 +49,11 @@ class BOECollector:
         self._clock = clock or SystemClock()
 
     def collect(self, years: list[int]) -> CollectionBatch:
-        now = self._clock.now()
         series_code = SERIES_CODES[UK_BANK_RATE]
         params = {
             "csv.x": "yes",
             "Datefrom": _iadb_date(date(min(years), 1, 1)),
-            "Dateto": _iadb_date(now.date()),
+            "Dateto": _iadb_date(self._clock.now().date()),
             "SeriesCodes": series_code,
             "CSVF": "TN",
             "UsingCodes": "Y",
@@ -63,6 +62,10 @@ class BOECollector:
         }
         url = f"{IADB_URL}?{urllib.parse.urlencode(params)}"
         text = self._transport.get_bytes(url).decode("utf-8-sig")
+        # 時刻は取得後に打つ。取得前だと known_at が実際の取得完了より
+        # 早くなり、その間に置いた replay clock から、まだ受け取って
+        # いなかった値が見えてしまう。
+        retrieved_at = self._clock.now()
 
         rows = list(csv.reader(io.StringIO(text)))
         if not rows or rows[0] != ["DATE", series_code]:
@@ -82,8 +85,8 @@ class BOECollector:
                 source=SOURCE_BOE,
                 source_uri=url,
                 payload_hash=page_hash,
-                retrieved_at=now,
-                known_at=now,
+                retrieved_at=retrieved_at,
+                known_at=retrieved_at,
             )
             for row in rows[1:]
             if row
@@ -95,7 +98,7 @@ class BOECollector:
                     source=SOURCE_BOE,
                     source_uri=url,
                     payload={"csv": text},
-                    retrieved_at=now,
+                    retrieved_at=retrieved_at,
                 ),
             ),
         )

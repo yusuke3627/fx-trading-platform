@@ -4,7 +4,7 @@ All payloads are fictional test data shaped like the real API responses.
 """
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -106,6 +106,27 @@ def test_boe_parses_iadb_csv():
     assert "Datefrom=01%2FJan%2F2025" in url
     assert "Dateto=15%2FAug%2F2026" in url
     assert batch.raw_events[0].payload == {"csv": csv_bytes.decode()}
+
+
+def test_boe_stamps_known_at_after_the_fetch():
+    class TickingClock:
+        """now() を呼ぶたび 1 分進む。取得に時間が掛かる状況の再現。"""
+
+        def __init__(self, start: datetime) -> None:
+            self._now = start
+
+        def now(self) -> datetime:
+            self._now += timedelta(minutes=1)
+            return self._now
+
+    transport = FakeTransport([b"DATE,IUDBEDR\r\n02 Jan 2026,3.75\r\n"])
+    batch = BOECollector(transport, clock=TickingClock(RETRIEVED)).collect(YEARS)
+
+    # 1 回目はクエリの Dateto、2 回目が取得完了時刻。取得前の時刻を known_at
+    # にすると、その間に置いた replay clock からまだ受け取っていない値が
+    # 見えてしまう。
+    assert batch.observations[0].known_at == RETRIEVED + timedelta(minutes=2)
+    assert batch.raw_events[0].retrieved_at == RETRIEVED + timedelta(minutes=2)
 
 
 def test_boe_rejects_html_response():

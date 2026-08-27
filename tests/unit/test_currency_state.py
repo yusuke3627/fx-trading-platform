@@ -1,0 +1,219 @@
+"""CurrencyState / PairState / 通貨別 regime（設計書 §12–13、34.5A）。
+
+All values are fictional test data.
+"""
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from tests.support import eurusd_spec, usdjpy_spec
+from trading.domain.money import Currency
+from trading.intelligence.currency import (
+    CurrencyFactor,
+    CurrencyScoreConfig,
+    CurrencyStateService,
+    MappingFactorSeries,
+)
+from trading.intelligence.features import InMemoryFeatureStore
+from trading.intelligence.normalization import NormalizationConfig
+from trading.intelligence.regime import (
+    RegimeLabel,
+    RuleBasedCurrencyRegimeService,
+)
+
+T0 = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+# 系列の最新観測（T0 + 5日）の直後。freshness 減点の掛からない基準時刻で、
+# coverage / conflict の効果だけを見られるようにする。
+NOW = T0 + timedelta(days=5, hours=1)
+CONFIG = CurrencyScoreConfig(
+    normalization=NormalizationConfig(window=20, min_observations=5)
+)
+
+
+def rising(start: datetime = T0) -> list[tuple[datetime, float]]:
+    return [(start + timedelta(days=i), v) for i, v in enumerate([1.0, 1.1, 0.9, 1.0, 1.05, 1.6])]
+
+
+def falling(start: datetime = T0) -> list[tuple[datetime, float]]:
+    return [(start + timedelta(days=i), v) for i, v in enumerate([1.0, 1.1, 0.9, 1.0, 1.05, 0.4])]
+
+
+def service(series: dict, config: CurrencyScoreConfig = CONFIG) -> CurrencyStateService:
+    return CurrencyStateService(MappingFactorSeries(series), config)
+
+
+# ---------------------------------------------------------------------------
+# CurrencyState
+# ---------------------------------------------------------------------------
+
+
+def test_missing_factors_lower_confidence_not_the_score():
+    # 設計書 §12.2A: coverage 不足で score を膨らませず confidence を下げる。
+    one_factor = service({(Currency.USD, CurrencyFactor.POLICY): rising()})
+    all_factors = service(
+        {(Currency.USD, factor): rising() for factor in CurrencyFactor}
+    )
+
+    sparse = one_factor.state(Currency.USD, NOW)
+    dense = all_factors.state(Currency.USD, NOW)
+
+    assert sparse.directional_score == dense.directional_score
+    assert sparse.confidence < dense.confidence
+    assert dense.confidence == Decimal(1)
+
+
+def test_absent_factor_scores_stay_none_not_zero():
+    state = service({(Currency.USD, CurrencyFactor.POLICY): rising()}).state(
+        Currency.USD, NOW
+    )
+
+    assert state.score(CurrencyFactor.POLICY) is not None
+    assert state.score(CurrencyFactor.GROWTH) is None
+
+
+def test_no_data_yields_neutral_score_with_zero_confidence():
+    state = service({}).state(Currency.GBP, NOW)
+
+    assert state.directional_score == 0
+    assert state.confidence == 0
+    assert all(state.score(factor) is None for factor in CurrencyFactor)
+
+
+def test_stale_observations_decay_confidence():
+    fresh = service({(Currency.USD, CurrencyFactor.POLICY): rising()})
+    old = service({(Currency.USD, CurrencyFactor.POLICY): rising(T0 - timedelta(days=8))})
+
+    fresh_state = fresh.state(Currency.USD, T0 + timedelta(days=5, hours=1))
+    stale_state = old.state(Currency.USD, T0 + timedelta(days=5, hours=1))
+
+    assert stale_state.directional_score == fresh_state.directional_score
+    assert stale_state.confidence < fresh_state.confidence
+
+
+def test_directional_score_weights_available_factors():
+    weighted = CurrencyScoreConfig(
+        weights={CurrencyFactor.POLICY: 3.0, CurrencyFactor.RATES: 1.0},
+        normalization=NormalizationConfig(window=20, min_observations=5),
+    )
+    states = service(
+        {
+            (Currency.USD, CurrencyFactor.POLICY): rising(),
+            (Currency.USD, CurrencyFactor.RATES): falling(),
+        },
+        weighted,
+    ).state(Currency.USD, NOW)
+
+    policy = states.score(CurrencyFactor.POLICY)
+    rates = states.score(CurrencyFactor.RATES)
+    assert policy is not None and rates is not None
+    expected = (policy * 3 + rates) / 4
+    assert states.directional_score == expected.quantize(Decimal("0.000001"))
+
+
+# ---------------------------------------------------------------------------
+# PairState
+# ---------------------------------------------------------------------------
+
+
+def test_pair_score_is_base_minus_quote():
+    states = service(
+        {
+            (Currency.USD, CurrencyFactor.POLICY): rising(),
+            (Currency.JPY, CurrencyFactor.POLICY): falling(),
+        }
+    )
+
+    pair = states.pair_state(usdjpy_spec(), NOW)
+
+    assert pair.symbol == "USDJPY"
+    assert pair.directional_score == (
+        pair.base.directional_score - pair.quote.directional_score
+    )
+    # USD が強く JPY が弱いので USDJPY は上向き。
+    assert pair.directional_score > 0
+
+
+def test_pair_confidence_is_bounded_by_the_weaker_leg():
+    # EUR 側にデータが無い EURUSD は、USD がいくら揃っていても信頼できない。
+    states = service({(Currency.USD, factor): rising() for factor in CurrencyFactor})
+
+    pair = states.pair_state(eurusd_spec(), NOW)
+
+    assert pair.quote.confidence == Decimal(1)
+    assert pair.base.confidence == 0
+    assert pair.confidence == 0
+
+
+def test_conflicting_legs_lower_pair_confidence():
+    # 両 leg が同方向に強いと net は小さくなるが、それは大きな値どうしの
+    # 引き算で、同じ差でも相対的な不確かさが大きい（設計書 §12.2）。
+    aligned = service(
+        {
+            (Currency.USD, CurrencyFactor.POLICY): rising(),
+            (Currency.JPY, CurrencyFactor.POLICY): rising(),
+        }
+    ).pair_state(usdjpy_spec(), NOW)
+    opposed = service(
+        {
+            (Currency.USD, CurrencyFactor.POLICY): rising(),
+            (Currency.JPY, CurrencyFactor.POLICY): falling(),
+        }
+    ).pair_state(usdjpy_spec(), NOW)
+
+    assert aligned.base.confidence == opposed.base.confidence
+    assert aligned.confidence < opposed.confidence
+
+
+def test_pair_known_at_follows_the_later_leg():
+    states = service(
+        {
+            (Currency.USD, CurrencyFactor.POLICY): rising(),
+            (Currency.JPY, CurrencyFactor.POLICY): rising(),
+        }
+    )
+    base = states.state(Currency.USD, NOW)
+    quote = states.state(Currency.JPY, NOW - timedelta(hours=3))
+
+    pair = states.project(usdjpy_spec(), base, quote)
+
+    assert pair.known_at == quote.known_at
+
+
+# ---------------------------------------------------------------------------
+# Currency regime
+# ---------------------------------------------------------------------------
+
+
+def test_currency_regimes_are_scoped_and_global_applies_to_all():
+    store = InMemoryFeatureStore()
+    store.replace({"fed_policy_shift_score": 0.8, "intervention_risk": 0.9})
+
+    snapshot = RuleBasedCurrencyRegimeService(store).snapshot(NOW)
+
+    assert RegimeLabel.USD_POLICY_HAWKISH in snapshot.active(Currency.USD)
+    assert RegimeLabel.USD_POLICY_HAWKISH not in snapshot.active(Currency.JPY)
+    # global は通貨を問わず掛かる。
+    for currency in (Currency.USD, Currency.JPY, Currency.GBP):
+        assert RegimeLabel.INTERVENTION_RISK_HIGH in snapshot.active(currency)
+
+
+def test_missing_features_activate_no_regime():
+    snapshot = RuleBasedCurrencyRegimeService(InMemoryFeatureStore()).snapshot(NOW)
+
+    assert snapshot.active(Currency.USD) == frozenset()
+    assert snapshot.global_regimes == frozenset()
+
+
+def test_regimes_ride_along_on_the_state():
+    states = service({(Currency.USD, CurrencyFactor.POLICY): rising()})
+
+    state = states.state(
+        Currency.USD,
+        NOW,
+        regimes=frozenset({RegimeLabel.USD_POLICY_HAWKISH}),
+        intervention_risk=Decimal("0.7"),
+    )
+
+    assert state.regimes == frozenset({RegimeLabel.USD_POLICY_HAWKISH})
+    assert state.intervention_risk == Decimal("0.7")

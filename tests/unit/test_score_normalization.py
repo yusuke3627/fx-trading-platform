@@ -1,0 +1,108 @@
+"""スコア正規化（設計書 34.5A、ADR-018）。
+
+All values are fictional test data.
+"""
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from trading.intelligence.normalization import NormalizationConfig, normalize_series
+
+T0 = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+CONFIG = NormalizationConfig(window=20, min_observations=5, clip_sigma=3.0)
+
+
+def series(values: list[float], start: datetime = T0) -> list[tuple[datetime, float]]:
+    return [(start + timedelta(days=i), v) for i, v in enumerate(values)]
+
+
+def test_future_observations_do_not_move_the_score():
+    # PIT: now より後の観測は統計にも最新値にも入らない。
+    rows = series([1.0, 1.2, 0.9, 1.1, 1.0, 1.05])
+    now = rows[-1][0]
+    with_future = [*rows, (now + timedelta(days=1), 99.0)]
+
+    assert normalize_series(rows, now, CONFIG) == normalize_series(
+        with_future, now, CONFIG
+    )
+
+
+def test_window_is_rolling_not_whole_history():
+    # 遠い過去の外れ値は window から外れる。全期間で fit していれば
+    # 同じ最新値でも別のスコアになる。
+    recent = [1.0, 1.2, 0.9, 1.1, 1.0, 1.3]
+    rows = series([-500.0] * 30 + recent)
+    settings = NormalizationConfig(window=6, min_observations=5)
+
+    windowed = normalize_series(rows, rows[-1][0], settings)
+    recent_rows = series(recent)
+    recent_only = normalize_series(recent_rows, recent_rows[-1][0], settings)
+
+    assert windowed is not None and recent_only is not None
+    assert windowed.value == recent_only.value
+
+
+def test_too_few_observations_yield_no_score():
+    rows = series([1.0, 2.0, 3.0])
+
+    assert normalize_series(rows, rows[-1][0], CONFIG) is None
+
+
+def test_constant_series_yields_no_score():
+    # 散らばりの無い系列は尺度を語れない。0（中立という観測）に潰さず
+    # None を返し、呼び出し側で coverage 不足として扱わせる。
+    rows = series([2.0] * 10)
+
+    assert normalize_series(rows, rows[-1][0], CONFIG) is None
+
+
+def test_score_is_bounded_and_signed():
+    high = series([1.0, 1.1, 0.9, 1.0, 1.05, 20.0])
+    low = series([1.0, 1.1, 0.9, 1.0, 1.05, -20.0])
+
+    up = normalize_series(high, high[-1][0], CONFIG)
+    down = normalize_series(low, low[-1][0], CONFIG)
+
+    assert up is not None and down is not None
+    assert 0 < up.value <= 1
+    assert -1 <= down.value < 0
+
+
+def test_distributions_stay_comparable_across_scales():
+    # 単位も振れ幅も違う 2 系列（% と bp）が、分布内で同じ相対位置なら
+    # 同じスコアになる — これが base - quote の前提（設計書 §12.2A）。
+    percent = [1.0, 1.1, 0.9, 1.0, 1.2, 1.3]
+    basis_points = [v * 100 for v in percent]
+
+    percent_rows = series(percent)
+    bp_rows = series(basis_points)
+    a = normalize_series(percent_rows, percent_rows[-1][0], CONFIG)
+    b = normalize_series(bp_rows, bp_rows[-1][0], CONFIG)
+
+    assert a is not None and b is not None
+    assert a.value == b.value
+
+
+def test_clip_bounds_extreme_moves():
+    # 外れ値がどれだけ大きくてもスコアは飽和する。1 通貨のデータ異常が
+    # portfolio 全体の方向感を支配しないための上限。
+    moderate = series([1.0, 1.1, 0.9, 1.0, 1.05, 5.0])
+    extreme = series([1.0, 1.1, 0.9, 1.0, 1.05, 5_000.0])
+
+    a = normalize_series(moderate, moderate[-1][0], CONFIG)
+    b = normalize_series(extreme, extreme[-1][0], CONFIG)
+
+    assert a is not None and b is not None
+    # clip_sigma=3 に張り付いた z の tanh(3/3)。
+    assert a.value == b.value == Decimal("0.761594")
+
+
+def test_reports_the_observation_it_fitted_through():
+    rows = series([1.0, 1.1, 0.9, 1.0, 1.05, 1.4])
+
+    result = normalize_series(rows, rows[-1][0], CONFIG)
+
+    assert result is not None
+    assert result.fitted_through == rows[-1][0]
+    assert result.observations == 6

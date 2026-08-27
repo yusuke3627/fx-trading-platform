@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from uuid import uuid4
 
 import pytest
@@ -292,6 +293,40 @@ schedule:
 def test_committed_schedule_loads():
     schedule = load_schedule("config/policy_meetings.yaml")
     assert all(s.source_uri.startswith("https://") for s in schedule)
+
+
+def test_covered_span_has_no_meeting_sized_holes():
+    # covers は「この期間に載っていない会合は無い」という主張。両行とも定例
+    # 会合の間隔は最長でも 8 週間弱なので、登録済み会合（結果転記済み＋予定）
+    # の並びに 70 日を超える隙間があれば、それは会合の転記漏れであって暦の
+    # 空白ではない。穴の空いたバックフィルは backtest でゲートが黙って閉じた
+    # ままになる（イベントが無い期間として正しく見えてしまう）ため、ここで
+    # 落とす。
+    coverage = load_coverage("config/policy_meetings.yaml")
+    assert coverage is not None
+    meetings = load_meetings("config/policy_meetings.yaml")
+    schedule = load_schedule("config/policy_meetings.yaml")
+
+    limit = timedelta(days=70)
+    for bank in ("BOJ", "FED"):
+        dates = sorted(
+            {m.decision_date for m in meetings if m.bank == bank}
+            | {s.decision_date for s in schedule if s.bank == bank}
+        )
+        covered = [
+            d for d in dates if coverage.since.date() <= d <= coverage.until.date()
+        ]
+        assert covered, f"{bank}: no meetings registered inside the covered span"
+        edges = (
+            [(coverage.since.date(), covered[0])]
+            + list(pairwise(covered))
+            + [(covered[-1], coverage.until.date())]
+        )
+        for earlier, later in edges:
+            assert later - earlier <= limit, (
+                f"{bank}: {(later - earlier).days}-day hole between "
+                f"{earlier} and {later} inside the covered span"
+            )
 
 
 def test_a_file_that_declares_no_coverage_claims_nothing(tmp_path):

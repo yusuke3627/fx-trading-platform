@@ -43,8 +43,11 @@ def score_meeting(meeting: PolicyMeeting) -> float:
 
 def event_from_meeting(meeting: PolicyMeeting, clock: Clock) -> EventEnvelope:
     # Deterministic id: re-ingesting the same meeting under the same scoring
-    # version is a no-op at the store; a new scoring version creates new
-    # events instead of overwriting history.
+    # version is a no-op at the store, and a corrected transcription updates
+    # the same event in place (the collector upserts; the yaml's git history
+    # is the audit trail). A re-tuned algorithm is a different thing — it
+    # bumps SCORING_VERSION and creates new events instead of rewriting
+    # already-scored history.
     event_id = uuid5(
         NAMESPACE_URL,
         f"policy-meeting:{meeting.bank}:{meeting.decision_date}:{SCORING_VERSION}",

@@ -83,6 +83,13 @@ class EventRepository(Protocol):
     # (policy meeting scores), re-running is a no-op instead of an error.
     def insert_new(self, event: EventEnvelope) -> bool: ...
 
+    # Insert, or bring an existing row's fact columns in line with the
+    # envelope; returns "inserted" / "updated" / "unchanged". For ingests
+    # whose source of truth is a curated file with deterministic event ids:
+    # a corrected transcription must reach environments that already stored
+    # the wrong facts, where insert_new's DO NOTHING would keep them forever.
+    def upsert(self, event: EventEnvelope) -> str: ...
+
     # `since` (a known_at lower bound) is optional, unlike the tick and
     # observation windows: some readers genuinely need the newest event
     # however old it is (the latest policy score), and events are sparse

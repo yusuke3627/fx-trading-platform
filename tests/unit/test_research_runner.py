@@ -1,4 +1,5 @@
 """Research runner pieces: the replay axis rewrite and the change schedule."""
+import io
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -6,7 +7,11 @@ from uuid import uuid4
 import pytest
 
 from tests.support import FakeEventRepository, FakeObservationRepository
-from trading.backtest.research import broker_label_to_known, reconstructed
+from trading.backtest.research import (
+    broker_label_to_known,
+    reconstructed,
+    with_progress,
+)
 from trading.data.features import US2Y_VINTAGE_LOOKBACK, StoredFeatureSource
 from trading.data.intervention.features import RECENCY_WINDOW_DAYS
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
@@ -346,3 +351,57 @@ def test_warmup_follows_the_evaluated_configuration():
         update={"parameters": {"resistance_lookback": 500}}
     )
     assert intraday.warmup(widened) > intraday.warmup(base_config)
+
+
+def test_progress_reports_one_line_per_replay_day_with_what_the_gates_saw():
+    # A months-long run says nothing until the manifest; the operator needs
+    # to tell a slow run from a stuck one, and a zero-fill run is usually a
+    # run whose gates never opened.
+    store = InMemoryFeatureStore()
+    day_one = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    ticks = [
+        tick(day_one, day_one),
+        tick(day_one + timedelta(hours=6), day_one),
+        tick(day_one + timedelta(days=1), day_one),
+    ]
+    out = io.StringIO()
+
+    consumed: list[Tick] = []
+    for item in with_progress(iter(ticks), store, out):
+        # The engine refreshes features as it consumes each tick; the line
+        # for a day must carry the values that day was evaluated against.
+        consumed.append(item)
+        store.replace({"fed_policy_shift_score": -1.0 * len(consumed)})
+
+    assert consumed == ticks
+    lines = out.getvalue().splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith("2026-05-01")
+    assert "1 ticks" in lines[0]
+    assert "fed_policy_shift_score=-1" in lines[0]
+    assert lines[1].startswith("2026-05-02")
+    assert "3 ticks" in lines[1]
+    assert "fed_policy_shift_score=-3" in lines[1]
+
+
+def test_progress_reports_the_broker_label_axis_the_period_is_given_in():
+    # --from/--to are broker labels; a line stamped with the reconstructed
+    # known time would read hours off the period the operator asked for.
+    store = InMemoryFeatureStore()
+    label = datetime(2026, 5, 1, 1, 0, tzinfo=UTC)
+    out = io.StringIO()
+
+    list(with_progress(iter([tick(label, label - timedelta(days=2))]), store, out))
+
+    assert out.getvalue().startswith("2026-05-01")
+
+
+def test_progress_says_so_when_no_feature_is_visible():
+    # An empty feature line would read as "not reported"; the gates being
+    # blind is exactly what the operator is looking for.
+    out = io.StringIO()
+    at = datetime(2026, 5, 1, tzinfo=UTC)
+
+    list(with_progress(iter([tick(at, at)]), InMemoryFeatureStore(), out))
+
+    assert "(no features)" in out.getvalue()

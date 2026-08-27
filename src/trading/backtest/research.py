@@ -28,6 +28,10 @@ Ticks are streamed from the database in one pass — reconstruction, the
 manifest digest and the engine ride the same iterator — so memory is bounded
 by the engine's tick-retention window, not the period length; months-long
 periods are a matter of runtime, not RAM.
+
+Such a run reports its position on stderr, one line per replay day, carrying
+the feature values the fundamental gates read at that point; stdout stays the
+manifest alone, so piping it to a file keeps the progress on the terminal.
 """
 from __future__ import annotations
 
@@ -39,8 +43,9 @@ import os
 import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import TextIO
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -239,6 +244,39 @@ def covered_reconstructed_stream(
     )
 
 
+def with_progress(
+    ticks: Iterator[Tick],
+    store: InMemoryFeatureStore,
+    out: TextIO,
+) -> Iterator[Tick]:
+    """One line per replay day, on the broker-label axis --from/--to use.
+
+    A months-long run reads tens of millions of ticks over hours with nothing
+    to show for it until the manifest, and an operator cannot tell a slow run
+    from a stuck one. The feature values travel with the line because they are
+    what the fundamental gates read: a run that ends at zero fills is usually
+    a run whose gates never opened, and that is worth seeing while it happens
+    rather than afterwards.
+
+    Each line is emitted AFTER the engine has consumed the day's first tick,
+    so the features are the ones that tick was evaluated against rather than
+    the previous day's.
+    """
+    day: date | None = None
+    for count, tick in enumerate(ticks, start=1):
+        yield tick
+        if tick.time.date() != day:
+            day = tick.time.date()
+            features = " ".join(
+                f"{name}={value:g}" for name, value in sorted(store.values().items())
+            )
+            print(
+                f"{day} {count:>12,} ticks  {features or '(no features)'}",
+                file=out,
+                flush=True,
+            )
+
+
 def warmup_days(value: str) -> float:
     """A finite, non-negative number of lead-in days.
 
@@ -392,13 +430,17 @@ def main() -> None:
     # holds hours later when the manifest is written.
     repro = git_state()
     result = engine.run_stream(
-        covered_reconstructed_stream(
-            repository.stream_between(symbol, read_from, args.end),
-            read_from,
-            args.start,
-            args.end,
-            anchor,
-            digest,
+        with_progress(
+            covered_reconstructed_stream(
+                repository.stream_between(symbol, read_from, args.end),
+                read_from,
+                args.start,
+                args.end,
+                anchor,
+                digest,
+            ),
+            timeline.store,
+            sys.stderr,
         )
     )
 

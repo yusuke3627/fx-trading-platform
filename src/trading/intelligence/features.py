@@ -58,3 +58,9 @@ class InMemoryFeatureStore:
         if (name, symbol) in self._values:
             return self._values[(name, symbol)]
         return self._values.get((name, None))
+
+    def values(self) -> dict[str, float]:
+        """Every global feature currently set, for reporting what the gates
+        can see. Symbol-scoped entries are left out: a report of them needs a
+        symbol to be meaningful, and nothing sets them today."""
+        return {name: value for (name, symbol), value in self._values.items() if symbol is None}

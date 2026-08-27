@@ -68,3 +68,19 @@ def test_roundtrip_and_latest_known_before(repo):
     assert at_boundary is not None
     assert at_boundary.snapshot_id == early.snapshot_id
     assert repository.latest_known_before(symbol, T0 - timedelta(hours=1)) is None
+
+
+def test_same_known_at_order_is_fixed_by_id(repo):
+    repository, symbol = repo
+    first = snapshot(symbol)
+    second = snapshot(symbol, swap_long=Decimal("-9.9"))
+    repository.insert(first)
+    repository.insert(second)
+
+    rows = repository.known_before(symbol, T0 + timedelta(hours=1))
+    assert [s.snapshot_id for s in rows] == sorted(
+        [first.snapshot_id, second.snapshot_id]
+    )
+    latest = repository.latest_known_before(symbol, T0 + timedelta(hours=1))
+    assert latest is not None
+    assert latest.snapshot_id == max(first.snapshot_id, second.snapshot_id)

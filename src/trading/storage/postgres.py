@@ -854,7 +854,7 @@ class PostgresSwapSnapshotRepository:
             """
             SELECT * FROM swap_snapshots
             WHERE symbol = %s AND known_at <= %s
-            ORDER BY known_at
+            ORDER BY known_at, id
             """,
             (symbol, t),
         ).fetchall()
@@ -865,7 +865,7 @@ class PostgresSwapSnapshotRepository:
             """
             SELECT * FROM swap_snapshots
             WHERE symbol = %s AND known_at <= %s
-            ORDER BY known_at DESC
+            ORDER BY known_at DESC, id DESC
             LIMIT 1
             """,
             (symbol, t),

@@ -193,6 +193,17 @@ def test_timeline_latest_known_before_and_symbol_filter():
     ) is None
 
 
+def test_timeline_tie_on_known_at_resolved_by_id():
+    # 同一 known_at の行は id で順序を固定する（storage の ORDER BY と同じ
+    # 行が latest になり、入力順に依存しない）。
+    a = snapshot()
+    b = snapshot(swap_long=Decimal("-9.9"))
+    latest = max(a, b, key=lambda s: s.snapshot_id)
+
+    assert SwapTimeline([a, b], "USDJPY").latest_known_before(RETRIEVED) is latest
+    assert SwapTimeline([b, a], "USDJPY").latest_known_before(RETRIEVED) is latest
+
+
 def test_fingerprint_is_content_based_not_row_identity():
     early = snapshot()
     # 同じ内容を別 DB で再収集した形（snapshot_id と retrieved_at が違う）。

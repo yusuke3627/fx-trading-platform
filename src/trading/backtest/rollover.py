@@ -77,8 +77,12 @@ class SwapTimeline:
     """1 シンボルの swap snapshot 列。known_at <= t の最新を返す。"""
 
     def __init__(self, snapshots: Sequence[SwapSnapshot], symbol: str) -> None:
+        # 同一 known_at の tiebreak は id: 入力順（DB の返却順）に依存する
+        # 未定義の latest を作らず、storage の ORDER BY known_at, id と
+        # 同じ行を latest に選ぶ。
         rows = sorted(
-            (s for s in snapshots if s.symbol == symbol), key=lambda s: s.known_at
+            (s for s in snapshots if s.symbol == symbol),
+            key=lambda s: (s.known_at, s.snapshot_id),
         )
         self._rows = rows
         self._known = [s.known_at for s in rows]

@@ -154,6 +154,25 @@ def test_carry_on_reconstructed_axis_with_broker_labels_ahead():
     assert result.metrics["unpriced_rollovers"] == "0"
 
 
+def test_hourly_snapshot_after_boundary_includes_carry():
+    # boundary 直後の tick では、carry を含んだ equity が時間足 snapshot
+    # （loss window の基準系列）に載る。carry より先に snapshot を保存する
+    # と、翌日の rolling-24h 判定が前日の carry を当日の損失として読む。
+    times = _times_across(MONDAY_BOUNDARY)
+    with_carry = _run(
+        [_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")],
+        _plain_ticks(times),
+    )
+    without = _run([], _plain_ticks(times))
+
+    carry = Decimal(with_carry.metrics["carry_total"])
+    assert carry != 0
+    # 21:05 の時間足 snapshot（両 run で同一 instant・同一 fill 列）。
+    assert with_carry.snapshots[-1].observed_at == times[-2]
+    assert without.snapshots[-1].observed_at == times[-2]
+    assert with_carry.snapshots[-1].equity - without.snapshots[-1].equity == carry
+
+
 def test_no_snapshots_keeps_carry_zero_and_counts_boundaries():
     result = _run([], _plain_ticks(_times_across(MONDAY_BOUNDARY)))
 

@@ -367,6 +367,11 @@ class BacktestEngine:
                     w.market.add_bar(bar)
             if state.marking_tick is None or item.time >= state.marking_tick.time:
                 state.marking_tick = item
+            # Rollover carry precedes everything that reads equity at this
+            # tick: the boundary lies before the tick instant, so the hourly
+            # snapshot below (the loss-window baseline series) must already
+            # include it.
+            self._accrue_carry(state, w)
             # Warm-up ticks build bars, indicators and features but leave no
             # trace in the outputs: the strategy is not asked, and the equity
             # curve, snapshots and metrics start at the period's opening
@@ -387,11 +392,8 @@ class BacktestEngine:
                         self._snapshot(state, w.simulator, w.clock.now())
                     )
 
-            # Broker events precede strategy evaluation: rollover carry for
-            # boundaries this tick's clock advance crossed (they lie strictly
-            # before the tick), then pending command fills, then broker-side
-            # protection on the same price.
-            self._accrue_carry(state, w)
+            # Broker events precede strategy evaluation: pending command
+            # fills first, then broker-side protection on the same price.
             self._apply_pending(state, w, item)
             self._apply_protection(state, w, item)
 

@@ -100,6 +100,24 @@ def test_fed_meeting_is_global_critical():
     assert calendar.mode_for_instrument(gbpjpy_spec(), SCALP, T0) is EventRiskMode.HALT
 
 
+def test_global_critical_escalates_reduced_horizons_to_halt():
+    # SETTINGS は INTRADAY/SWING を REDUCED に設定するが、GLOBAL_CRITICAL
+    # は hard gate: horizon 設定に依らず HALT（設計書 §14.1A）。BOJ
+    # （DIRECT_LEGS）は設定どおり REDUCED のまま。
+    (fed,) = central_bank_windows([meeting("FED", T0)], [], SETTINGS)
+    (boj,) = central_bank_windows([meeting("BOJ", T0)], [], SETTINGS)
+    calendar = EventRiskCalendar([fed, boj], COVERS)
+
+    for horizon in (StrategyHorizon.INTRADAY, StrategyHorizon.SWING):
+        assert calendar.mode_for_instrument(usdjpy_spec(), horizon, T0) is (
+            EventRiskMode.HALT
+        )
+    boj_only = EventRiskCalendar([boj], COVERS)
+    assert boj_only.mode_for_instrument(usdjpy_spec(), StrategyHorizon.INTRADAY, T0) is (
+        EventRiskMode.REDUCED
+    )
+
+
 def test_adjacent_cross_bank_windows_are_pair_local():
     # BOJ@T0 と BOE@T0+2d: GBPJPY（両 leg）は切れ目なく gate される一方、
     # USDJPY は BOE 単独の時間帯（BOJ window の post 終了後）では止まらない。

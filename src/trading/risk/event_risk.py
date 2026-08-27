@@ -114,6 +114,11 @@ class EventRiskCalendar:
         for w in windows:
             if not w.active_at(now):
                 continue
+            if w.propagation is not EventPropagationPolicy.DIRECT_LEGS:
+                # GLOBAL_CRITICAL（と scaffold の DEPENDENCY_GRAPH）は
+                # horizon 別設定に依らず hard gate（設計書 §14.1A の
+                # 「全ペアの new / risk-increasing entry を止める」）。
+                return EventRiskMode.HALT
             action = w.actions.get(horizon, EventRiskMode.NORMAL)
             if _SEVERITY.index(action) > _SEVERITY.index(mode):
                 mode = action

@@ -24,16 +24,20 @@ instead of being force-closed.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
+from itertools import chain
 from uuid import uuid4
 
 from trading.backtest.clock import Clock, ReplayClock
 from trading.backtest.costs import CostModel
-from trading.backtest.market import TICK_HORIZON_SECONDS, ReplayMarketData
-from trading.backtest.replay import ReplayEngine
+from trading.backtest.market import (
+    BAR_CAPACITY,
+    TICK_HORIZON_SECONDS,
+    ReplayMarketData,
+)
 from trading.backtest.simulator import ExecutionSimulator
 from trading.data.features import ReplayFeatureTimeline
 from trading.data.market.bars import BarBuilder
@@ -42,7 +46,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.exposure import OpenPositionExposure
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
-from trading.domain.market import Bar, Tick
+from trading.domain.market import Tick
 from trading.domain.order import ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
@@ -208,6 +212,8 @@ class _RunState:
     equity_curve: list[tuple[datetime, Decimal]] = field(default_factory=list)
     risk_rejections: list[tuple[datetime, tuple[str, ...]]] = field(default_factory=list)
     rejected_commands: int = 0
+    max_drawdown: Decimal = Decimal(0)
+    last_curve_minute: datetime | None = None
     pending: list[_Pending] = field(default_factory=list)
     # ticket -> owning strategy / entry marks for PnL attribution; a strategy
     # can hold several tickets (INCREASE opens a new one on hedging).
@@ -296,8 +302,26 @@ class BacktestEngine:
         ordered = sorted(ticks, key=lambda t: t.known_time)
         if not ordered:
             raise ValueError("backtest requires at least one tick")
+        return self._replay(iter(ordered))
 
-        w = self._wire(ordered[0].known_time - timedelta(seconds=1))
+    def run_stream(self, ticks: Iterable[Tick]) -> BacktestResult:
+        """Replay from an iterator without materializing the dataset.
+
+        The caller supplies ticks in known-time order — a stored series read
+        in (event_time, id) order is, under the ADR-007 reconstruction. An
+        out-of-order tick fails the replay clock's regression guard instead
+        of being silently resorted: resorting needs the whole dataset in
+        memory, which is exactly what this path exists to avoid.
+        """
+        return self._replay(iter(ticks))
+
+    def _replay(self, ticks: Iterator[Tick]) -> BacktestResult:
+        try:
+            first = next(ticks)
+        except StopIteration:
+            raise ValueError("backtest requires at least one tick") from None
+
+        w = self._wire(first.known_time - timedelta(seconds=1))
         state = _RunState(initial_equity=self._initial_equity)
         state.high_water_mark = self._initial_equity
         # The flat opening baseline carries the period's opening timestamp,
@@ -308,8 +332,8 @@ class BacktestEngine:
         )
         state.snapshots.append(self._snapshot(state, w.simulator, baseline_at))
 
-        def handle(item: EventEnvelope | Tick | Bar) -> None:
-            assert isinstance(item, Tick)
+        def handle(item: Tick) -> None:
+            fills_before = len(state.fills)
             # Features first: everything after this point may read the store,
             # and what it reads has to be the snapshot at this clock instant.
             if self._features is not None:
@@ -369,10 +393,38 @@ class BacktestEngine:
             if evaluating:
                 equity = self._equity(state, w.simulator)
                 state.high_water_mark = max(state.high_water_mark, equity)
-                state.equity_curve.append((w.clock.now(), equity))
+                # Drawdown is tracked on every evaluated tick; the curve is a
+                # display series, so per-minute points (plus every fill
+                # instant) lose no metric fidelity while a months-long replay
+                # stays bounded in memory.
+                state.max_drawdown = max(
+                    state.max_drawdown, state.high_water_mark - equity
+                )
+                minute = w.clock.now().replace(second=0, microsecond=0)
+                if (
+                    minute != state.last_curve_minute
+                    or len(state.fills) != fills_before
+                ):
+                    state.last_curve_minute = minute
+                    state.equity_curve.append((w.clock.now(), equity))
 
         with asyncio.Runner() as runner_loop:
-            ReplayEngine(w.clock).run(ordered, handle)
+            for item in chain([first], ticks):
+                w.clock.advance_to(item.known_time)
+                handle(item)
+
+        # The decimated curve still ends on the replay's closing equity: a
+        # reader of the series must see where the run actually finished. When
+        # the last appended point shares the closing instant (a fill on one
+        # of several final ticks with one known time), it is REPLACED — a
+        # timestamp-only comparison would leave the curve ending on the
+        # pre-final equity of that instant.
+        if state.equity_curve:
+            closing = (w.clock.now(), self._equity(state, w.simulator))
+            if state.equity_curve[-1][0] == closing[0]:
+                state.equity_curve[-1] = closing
+            else:
+                state.equity_curve.append(closing)
 
         return self._result(state, w.simulator)
 
@@ -413,7 +465,10 @@ class BacktestEngine:
             tick_horizon_seconds=max(
                 TICK_HORIZON_SECONDS,
                 type(strategy).tick_window_seconds(self._strategy_config),
-            )
+            ),
+            bar_capacity=max(
+                BAR_CAPACITY, type(strategy).bar_window(self._strategy_config)
+            ),
         )
         market.set_instrument(self._spec)
         # Replay-visible quotes only: the conversion service reads the same
@@ -879,12 +934,6 @@ class BacktestEngine:
         net = state.realized + unrealized
         execution_cost = gross_mid - net
 
-        peak = state.initial_equity
-        max_drawdown = Decimal(0)
-        for _, equity in state.equity_curve:
-            peak = max(peak, equity)
-            max_drawdown = max(max_drawdown, peak - equity)
-
         protection_fills = sum(1 for f in state.fills if f.origin == "PROTECTION")
         metrics = {
             "initial_equity": str(state.initial_equity),
@@ -893,7 +942,7 @@ class BacktestEngine:
             "net_pnl": str(net),
             "gross_mid_pnl": str(gross_mid),
             "execution_cost": str(execution_cost),
-            "max_drawdown": str(max_drawdown),
+            "max_drawdown": str(state.max_drawdown),
             "final_equity": str(state.initial_equity + net),
             "fills": str(len(state.fills)),
             "protection_fills": str(protection_fills),

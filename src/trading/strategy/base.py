@@ -153,6 +153,14 @@ class Strategy(ABC):
         refused mid-replay."""
         return 0.0
 
+    @classmethod
+    def bar_window(cls, config: StrategyConfig) -> int:
+        """The most bars of one timeframe on_event may request — directly or
+        through an indicator — under this configuration. The replay engine
+        sizes its bar retention from it, the same way tick_window_seconds
+        sizes the tick horizon."""
+        return 0
+
     @abstractmethod
     async def on_event(
         self,

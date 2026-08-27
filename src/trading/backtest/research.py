@@ -24,9 +24,10 @@ Each strategy declares the lead-in its slowest indicator window needs
 (`Strategy.warmup`); the runner reads that much history ahead of --from so
 state is populated, and evaluations start at --from itself.
 
-The engine materializes the period in memory (ticks and the equity curve),
-so a run is a period of days to weeks, not years; longer studies run as
-consecutive periods.
+Ticks are streamed from the database in one pass — reconstruction, the
+manifest digest and the engine ride the same iterator — so memory is bounded
+by the engine's tick-retention window, not the period length; months-long
+periods are a matter of runtime, not RAM.
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ import json
 import math
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,7 +45,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from trading.backtest.costs import STRESS_SCENARIOS
-from trading.backtest.data import dataset_hash
+from trading.backtest.data import TickDigest
 from trading.backtest.engine import ENGINE_VERSION, BacktestEngine
 from trading.backtest.report import write_report
 from trading.backtest.run import git_state, synthetic_usdjpy_spec
@@ -86,8 +87,8 @@ def broker_label_to_known(label: datetime, server_ahead_of_ny: timedelta) -> dat
     return first.astimezone(UTC)
 
 
-def reconstructed(ticks: Sequence[Tick], server_ahead_of_ny: timedelta) -> list[Tick]:
-    """Rewrite each tick's known time from its broker label (ADR-014).
+def reconstructed_tick(tick: Tick, server_ahead_of_ny: timedelta) -> Tick:
+    """Rewrite one tick's known time from its broker label (ADR-014).
 
     received_at records when the row was INGESTED — for the polling collector
     that is the tick's real arrival, but for a backfilled archive it is the
@@ -96,12 +97,14 @@ def reconstructed(ticks: Sequence[Tick], server_ahead_of_ny: timedelta) -> list[
     macro row has become visible. The broker timestamp is the honest per-tick
     instant both paths share, so the replay axis is derived from it.
     """
-    return [
-        t.model_copy(
-            update={"received_at": broker_label_to_known(t.time, server_ahead_of_ny)}
-        )
-        for t in ticks
-    ]
+    return tick.model_copy(
+        update={"received_at": broker_label_to_known(tick.time, server_ahead_of_ny)}
+    )
+
+
+def reconstructed(ticks: Sequence[Tick], server_ahead_of_ny: timedelta) -> list[Tick]:
+    """reconstructed_tick over a materialized dataset."""
+    return [reconstructed_tick(t, server_ahead_of_ny) for t in ticks]
 
 
 def broker_label(value: str) -> datetime:
@@ -150,8 +153,30 @@ def open_market_seconds(start: datetime, end: datetime) -> float:
     return total
 
 
+def _ensure_head_covered(first: Tick, read_from: datetime) -> None:
+    if open_market_seconds(read_from, first.time) > EDGE_GAP_TOLERANCE_SECONDS:
+        raise SystemExit(
+            f"stored history begins at {first.time}, market-open time "
+            f"after the requested warm-up start {read_from}; the opening "
+            "evaluations would run on starved indicator state — backfill "
+            "earlier history or move --from later"
+        )
+
+
+def _ensure_tail_covered(last: Tick, end: datetime) -> None:
+    if open_market_seconds(last.time, end) > EDGE_GAP_TOLERANCE_SECONDS:
+        raise SystemExit(
+            f"stored history ends at {last.time}, market-open time "
+            f"before the requested period end {end}; the report would claim "
+            "the full period — backfill the tail or move --to earlier"
+        )
+
+
 def ensure_period_covered(
-    ticks: Sequence[Tick], read_from: datetime, start: datetime, end: datetime
+    bounds: tuple[Tick, Tick] | None,
+    read_from: datetime,
+    start: datetime,
+    end: datetime,
 ) -> None:
     """SystemExit unless the stored series can honestly serve the run.
 
@@ -165,29 +190,52 @@ def ensure_period_covered(
     not detected here — the stored series is taken as the market record,
     and known server-side holes are the operator's period-selection concern.
     """
-    if not ticks:
+    if bounds is None:
         raise SystemExit(
             f"no stored ticks in [{read_from}, {end}); "
             "collect or backfill the period first"
         )
-    if ticks[-1].time < start:
+    first, last = bounds
+    if last.time < start:
         raise SystemExit(
             f"no stored ticks inside the evaluation period [{start}, {end}); "
             "only warm-up ticks were found"
         )
-    if open_market_seconds(read_from, ticks[0].time) > EDGE_GAP_TOLERANCE_SECONDS:
-        raise SystemExit(
-            f"stored history begins at {ticks[0].time}, market-open time "
-            f"after the requested warm-up start {read_from}; the opening "
-            "evaluations would run on starved indicator state — backfill "
-            "earlier history or move --from later"
-        )
-    if open_market_seconds(ticks[-1].time, end) > EDGE_GAP_TOLERANCE_SECONDS:
-        raise SystemExit(
-            f"stored history ends at {ticks[-1].time}, market-open time "
-            f"before the requested period end {end}; the report would claim "
-            "the full period — backfill the tail or move --to earlier"
-        )
+    _ensure_head_covered(first, read_from)
+    _ensure_tail_covered(last, end)
+
+
+def covered_reconstructed_stream(
+    ticks: Iterator[Tick],
+    read_from: datetime,
+    start: datetime,
+    end: datetime,
+    anchor: timedelta,
+    digest: TickDigest,
+) -> Iterator[Tick]:
+    """The replay input: reconstruction, digest and coverage in one pass.
+
+    The pre-flight bounds check reads a different snapshot than the pinned
+    stream, so the authoritative coverage verdict is rendered on what was
+    actually streamed: the head gap fails on the first tick (before hours
+    are spent), the tail and emptiness at exhaustion.
+    """
+    first: Tick | None = None
+    last: Tick | None = None
+    for tick in ticks:
+        if first is None:
+            first = tick
+            _ensure_head_covered(first, read_from)
+        last = tick
+        rewritten = reconstructed_tick(tick, anchor)
+        digest.update(rewritten)
+        yield rewritten
+    ensure_period_covered(
+        (first, last) if first is not None and last is not None else None,
+        read_from,
+        start,
+        end,
+    )
 
 
 def warmup_days(value: str) -> float:
@@ -278,14 +326,18 @@ def main() -> None:
     read_from = args.start - warmup
 
     conn = connect(dsn)
-    stored = PostgresMarketTickRepository(conn).between(symbol, read_from, args.end)
-    ensure_period_covered(stored, read_from, args.start, args.end)
+    repository = PostgresMarketTickRepository(conn)
+    # Fast feedback only: this reads its own snapshot, so the authoritative
+    # coverage verdict is rendered inside the stream on the pinned set.
+    ensure_period_covered(
+        repository.bounds_between(symbol, read_from, args.end),
+        read_from,
+        args.start,
+        args.end,
+    )
 
     anchor = timedelta(hours=config.market.broker_server_ahead_of_ny_hours)
-    ticks = reconstructed(stored, anchor)
-    # A multi-week period does not fit in memory twice: the stored originals
-    # are dead once their known times are rewritten.
-    del stored
+    digest = TickDigest()
 
     # One consistent load of the PIT rows: change schedule, every snapshot
     # during the replay and the manifest fingerprint answer from the same
@@ -328,7 +380,16 @@ def main() -> None:
     # record the code state it started under, not whatever the worktree
     # holds hours later when the manifest is written.
     repro = git_state()
-    result = engine.run(ticks)
+    result = engine.run_stream(
+        covered_reconstructed_stream(
+            repository.stream_between(symbol, read_from, args.end),
+            read_from,
+            args.start,
+            args.end,
+            anchor,
+            digest,
+        )
+    )
 
     manifest = {
         "run_id": str(uuid4()),
@@ -341,14 +402,14 @@ def main() -> None:
         "engine_version": ENGINE_VERSION,
         "scenario": scenario,
         "seed": seed,
-        "tick_count": len(ticks),
+        "tick_count": digest.count,
         "period_from": args.start.isoformat(),
         "period_to": args.end.isoformat(),
         "warmup_days": warmup / timedelta(days=1),
         "broker_server_ahead_of_ny_hours": (
             config.market.broker_server_ahead_of_ny_hours
         ),
-        "dataset_hash": dataset_hash(ticks),
+        "dataset_hash": digest.hexdigest(),
         # Ticks alone do not identify the dataset: the stored PIT rows decide
         # what the gates saw, and re-collection changes them under the same
         # tick series.

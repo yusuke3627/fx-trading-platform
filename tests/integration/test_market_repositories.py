@@ -203,6 +203,204 @@ def test_between_reads_the_period_regardless_of_reception(repos):
     assert [t.time for t in window] == [at(minutes=0), at(minutes=5)]
 
 
+def test_stream_and_bounds_agree_with_between(repos):
+    # The streaming read and the edge read are the same query in other
+    # shapes; disagreement would let a replay see rows its coverage check
+    # (or its materialized twin) does not.
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick(
+                "158.840",
+                "158.844",
+                time=at(minutes=minute),
+                received_at=at(days=100),
+                symbol=symbol,
+            )
+            for minute in (0, 5, 9)
+        ],
+    )
+
+    window = ticks.between(symbol, at(minutes=0), at(minutes=10))
+    assert list(ticks.stream_between(symbol, at(minutes=0), at(minutes=10))) == list(
+        window
+    )
+    assert ticks.bounds_between(symbol, at(minutes=0), at(minutes=10)) == (
+        window[0],
+        window[-1],
+    )
+    assert ticks.bounds_between(symbol, at(minutes=20), at(minutes=30)) is None
+    # A single-row range answers with that row as both edges.
+    single = ticks.bounds_between(symbol, at(minutes=5), at(minutes=6))
+    assert single is not None and single[0] == single[1]
+
+
+def test_stream_is_pinned_to_the_rows_present_at_its_start(repos, monkeypatch):
+    # A concurrent backfill must not add rows to a replay already streaming:
+    # the manifest digest describes the dataset, and a mid-run insert would
+    # make it one no later run can reproduce.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_BATCH_ROWS", 2)
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick("158.840", "158.844", time=at(minutes=minute), symbol=symbol)
+            for minute in (0, 2, 4)
+        ],
+    )
+
+    stream = ticks.stream_between(symbol, at(minutes=0), at(minutes=60))
+    seen = [next(stream)]
+    store(
+        ticks,
+        [make_tick("158.850", "158.854", time=at(minutes=6), symbol=symbol)],
+    )
+    seen.extend(stream)
+
+    assert [t.time for t in seen] == [at(minutes=m) for m in (0, 2, 4)]
+
+
+def test_stream_fails_loudly_when_unfetched_rows_are_deleted(repos, monkeypatch):
+    # A delete in the not-yet-fetched range would otherwise just shrink the
+    # replay: later batches see the post-delete snapshot and the run ends
+    # looking complete. The settled count turns that into a hard failure.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_BATCH_ROWS", 2)
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick("158.840", "158.844", time=at(minutes=minute), symbol=symbol)
+            for minute in (0, 2, 4)
+        ],
+    )
+
+    stream = ticks.stream_between(symbol, at(minutes=0), at(minutes=60))
+    seen = [next(stream)]
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            "DELETE FROM market_ticks WHERE symbol = %s AND event_time = %s",
+            (symbol, at(minutes=4)),
+        )
+        writer.commit()
+    with pytest.raises(RuntimeError):
+        seen.extend(stream)
+    assert len(seen) == 2
+
+
+def test_stream_fails_loudly_when_fetched_rows_are_deleted(repos, monkeypatch):
+    # A delete of an ALREADY-streamed row leaves the replay itself intact but
+    # the manifest describing a dataset that no longer exists; the closing
+    # re-count turns that into a failure too.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_BATCH_ROWS", 2)
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick("158.840", "158.844", time=at(minutes=minute), symbol=symbol)
+            for minute in (0, 2, 4)
+        ],
+    )
+
+    stream = ticks.stream_between(symbol, at(minutes=0), at(minutes=60))
+    seen = [next(stream), next(stream)]
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            "DELETE FROM market_ticks WHERE symbol = %s AND event_time = %s",
+            (symbol, at(minutes=0)),
+        )
+        writer.commit()
+    with pytest.raises(RuntimeError):
+        list(stream)
+    assert len(seen) == 2
+
+
+def test_stream_fails_loudly_when_rows_are_updated(repos, monkeypatch):
+    # An UPDATE keeps the row count intact, so only the whole-row content
+    # fingerprint can tell that the replayed data and the stored data have
+    # diverged mid-run.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_BATCH_ROWS", 2)
+    ticks, _, symbol = repos
+    store(
+        ticks,
+        [
+            make_tick("158.840", "158.844", time=at(minutes=minute), symbol=symbol)
+            for minute in (0, 2, 4)
+        ],
+    )
+
+    stream = ticks.stream_between(symbol, at(minutes=0), at(minutes=60))
+    seen = [next(stream)]
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            "UPDATE market_ticks SET bid = %s WHERE symbol = %s AND event_time = %s",
+            ("158.900", symbol, at(minutes=4)),
+        )
+        writer.commit()
+    with pytest.raises(RuntimeError):
+        list(stream)
+    assert len(seen) == 1
+
+
+def test_pin_instant_is_the_ceiling_read_not_the_transaction_start(repos, monkeypatch):
+    # The reader connection often has an open transaction from earlier PIT
+    # reads. now() would freeze the pin at that transaction's start, letting
+    # a writer that began in between escape the settle wait.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_SETTLE_TIMEOUT_SECONDS", 0.5)
+    ticks, _, symbol = repos
+    store(ticks, [make_tick("158.840", "158.844", time=at(minutes=0), symbol=symbol)])
+    # Open a transaction on the reader connection well before the writer.
+    ticks.latest_known_before(symbol, at(minutes=10))
+
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            """
+            INSERT INTO market_ticks (
+                symbol, bid, ask, event_time, received_at, source, ingestion_run
+            ) VALUES (%s, %s, %s, %s, %s, 'TEST', %s)
+            """,
+            (symbol, "158.860", "158.864", at(minutes=2), at(minutes=2), uuid4()),
+        )
+        with pytest.raises(RuntimeError):
+            next(ticks.stream_between(symbol, at(minutes=0), at(minutes=60)))
+        writer.rollback()
+
+
+def test_stream_refuses_to_start_over_an_unsettled_write(repos, monkeypatch):
+    # An insert can hold an id below the ceiling while uncommitted; streaming
+    # anyway would let it surface to a later batch nondeterministically. The
+    # start waits for such writers and fails loudly when one never finishes.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_SETTLE_TIMEOUT_SECONDS", 0.5)
+    ticks, _, symbol = repos
+    store(ticks, [make_tick("158.840", "158.844", time=at(minutes=0), symbol=symbol)])
+
+    with postgres.connect(DSN) as writer:
+        writer.execute(
+            """
+            INSERT INTO market_ticks (
+                symbol, bid, ask, event_time, received_at, source, ingestion_run
+            ) VALUES (%s, %s, %s, %s, %s, 'TEST', %s)
+            """,
+            (symbol, "158.850", "158.854", at(minutes=1), at(minutes=1), uuid4()),
+        )
+        # Deliberately no commit: the writer is mid-transaction.
+        with pytest.raises(RuntimeError):
+            next(ticks.stream_between(symbol, at(minutes=0), at(minutes=60)))
+        writer.rollback()
+
+
 def test_a_bar_round_trips_through_the_database(repos):
     _, bars, symbol = repos
     # ADR-005: the candle sits on the broker's clock, known_at on ours, so

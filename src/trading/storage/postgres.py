@@ -5,7 +5,8 @@ the queue-like execution_commands table without lock contention.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -24,6 +25,15 @@ from trading.domain.order import CommandState, ExecutionCommand
 from trading.domain.risk import RiskCheck, RiskDecision
 from trading.domain.signal import StrategySignal
 from trading.storage.repository import StaleCommandStateError
+
+# One keyset batch of the research stream: large enough that 99M rows cost
+# ~2000 round trips, small enough that a batch is a snap to fetch and free.
+_STREAM_BATCH_ROWS = 50_000
+
+# How long stream_between waits for transactions in flight at its ceiling
+# read to finish before giving up on pinning the dataset. Collector commits
+# are sub-second; only a stuck session should ever reach this.
+_STREAM_SETTLE_TIMEOUT_SECONDS = 60.0
 
 
 def connect(dsn: str) -> psycopg.Connection:
@@ -428,6 +438,186 @@ class PostgresMarketTickRepository:
             (symbol, start, end),
         ).fetchall()
         return [_row_to_tick(r) for r in rows]
+
+    def stream_between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> Iterator[Tick]:
+        # Keyset pagination rather than one server-side cursor: a months-long
+        # replay would hold a single read transaction open for hours, pinning
+        # vacuum on a database the collectors keep writing to. Each batch is
+        # its own short read resuming after the last (event_time, id) seen,
+        # committed away between batches.
+        #
+        # The set is pinned at stream start: without the id ceiling, each
+        # batch would see a fresh snapshot and a concurrent backfill could
+        # add rows to the period mid-replay — the manifest digest would then
+        # describe a dataset no later run can reproduce. The ceiling alone
+        # does not close the pin: an insert may hold an id BELOW it while
+        # still uncommitted (ids are allocated at insert, commits reorder),
+        # and would surface to a later batch nondeterministically. So the
+        # start also waits until every transaction in flight at the ceiling
+        # read has ended — from then on, id <= ceiling names one fixed set.
+        # A writer that inserted rows before the ceiling read may still be
+        # uncommitted while holding ids below the ceiling; streaming anyway
+        # would let those rows surface to a later batch nondeterministically.
+        # The wait is scoped to transactions actually WRITING this table
+        # (RowExclusiveLock) that began before the pin — a global snapshot
+        # bound would let any unrelated long transaction starve the start.
+        # A writer that begins earlier but only inserts after the pin cannot
+        # matter: its ids are allocated at insert time, above the ceiling.
+        # It is NOT scoped further: an uncommitted row's symbol and period
+        # are invisible, so a writer of another pair or range cannot be told
+        # apart and is deliberately waited on — refusing loudly after the
+        # timeout beats streaming a set that cannot be pinned, and a large
+        # backfill simply should not overlap a research start.
+        # clock_timestamp(), not now(): now() is frozen at transaction start,
+        # and a caller that read other tables on this connection first would
+        # pin at that earlier instant — writers starting in between would
+        # escape the wait below while their ids sit under the ceiling.
+        ceiling_row = self._conn.execute(
+            """
+            SELECT max(id) AS ceiling, clock_timestamp() AS pinned_at
+            FROM market_ticks
+            """
+        ).fetchone()
+        self._conn.commit()
+        ceiling = ceiling_row["ceiling"]
+        if ceiling is None:
+            return
+        deadline = time.monotonic() + _STREAM_SETTLE_TIMEOUT_SECONDS
+        while True:
+            writers_row = self._conn.execute(
+                """
+                SELECT count(*) AS writers
+                FROM pg_locks locks
+                JOIN pg_stat_activity activity ON activity.pid = locks.pid
+                WHERE locks.relation = 'market_ticks'::regclass
+                  AND locks.mode = 'RowExclusiveLock'
+                  AND activity.xact_start <= %s
+                """,
+                (ceiling_row["pinned_at"],),
+            ).fetchone()
+            self._conn.commit()
+            if writers_row["writers"] == 0:
+                break
+            if time.monotonic() > deadline:
+                # An idle-in-transaction writer would hold this forever;
+                # failing names the cause instead of streaming an unpinned
+                # set or hanging silently.
+                raise RuntimeError(
+                    "stream_between could not pin its dataset: a transaction "
+                    "writing market_ticks since before the ceiling read has "
+                    f"not finished within {_STREAM_SETTLE_TIMEOUT_SECONDS}s"
+                )
+            time.sleep(0.1)
+        # Mutations cannot be prevented without holding one snapshot for the
+        # whole replay — the vacuum-pinning trade this method rejects — but
+        # they must never pass silently: the settled set's size AND a
+        # whole-row content fingerprint are fixed here and re-taken at the
+        # end, so a delete or an update of any column, fetched or unfetched,
+        # turns the run into a loud failure instead of a replay whose
+        # manifest describes a dataset that no longer exists.
+        count_sql = """
+            SELECT count(*) AS remaining,
+                   coalesce(sum(hashtext(market_ticks::text)::bigint), 0)
+                       AS fingerprint
+            FROM market_ticks
+            WHERE symbol = %s AND event_time >= %s AND event_time < %s
+              AND id <= %s
+            """
+        expected_row = self._conn.execute(
+            count_sql, (symbol, start, end, ceiling)
+        ).fetchone()
+        self._conn.commit()
+        expected = expected_row["remaining"]
+        streamed = 0
+        last: tuple[datetime, int] | None = None
+        while True:
+            if last is None:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, symbol, bid, ask, event_time, received_at
+                    FROM market_ticks
+                    WHERE symbol = %s AND event_time >= %s AND event_time < %s
+                      AND id <= %s
+                    ORDER BY event_time, id
+                    LIMIT %s
+                    """,
+                    (symbol, start, end, ceiling, _STREAM_BATCH_ROWS),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, symbol, bid, ask, event_time, received_at
+                    FROM market_ticks
+                    WHERE symbol = %s AND (event_time, id) > (%s, %s)
+                      AND event_time < %s AND id <= %s
+                    ORDER BY event_time, id
+                    LIMIT %s
+                    """,
+                    (symbol, last[0], last[1], end, ceiling, _STREAM_BATCH_ROWS),
+                ).fetchall()
+            self._conn.commit()
+            if not rows:
+                final_row = self._conn.execute(
+                    count_sql, (symbol, start, end, ceiling)
+                ).fetchone()
+                self._conn.commit()
+                if (
+                    streamed != expected
+                    or final_row["remaining"] != expected
+                    or final_row["fingerprint"] != expected_row["fingerprint"]
+                ):
+                    raise RuntimeError(
+                        f"pinned dataset changed mid-stream: {expected} rows "
+                        f"at stream start, {streamed} streamed, "
+                        f"{final_row['remaining']} remaining, content "
+                        "fingerprint "
+                        + (
+                            "unchanged"
+                            if final_row["fingerprint"]
+                            == expected_row["fingerprint"]
+                            else "changed"
+                        )
+                        + " — rows were deleted or updated during the replay"
+                    )
+                return
+            for row in rows:
+                streamed += 1
+                yield _row_to_tick(row)
+            last = (rows[-1]["event_time"], rows[-1]["id"])
+
+    def bounds_between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> tuple[Tick, Tick] | None:
+        # One statement, one snapshot: two separate edge reads could straddle
+        # a concurrent delete and see a first row whose last row is gone.
+        rows = self._conn.execute(
+            """
+            SELECT *, 1 AS edge FROM (
+                SELECT symbol, bid, ask, event_time, received_at
+                FROM market_ticks
+                WHERE symbol = %(symbol)s
+                  AND event_time >= %(start)s AND event_time < %(end)s
+                ORDER BY event_time, id
+                LIMIT 1
+            ) AS first_row
+            UNION ALL
+            SELECT *, 2 AS edge FROM (
+                SELECT symbol, bid, ask, event_time, received_at
+                FROM market_ticks
+                WHERE symbol = %(symbol)s
+                  AND event_time >= %(start)s AND event_time < %(end)s
+                ORDER BY event_time DESC, id DESC
+                LIMIT 1
+            ) AS last_row
+            ORDER BY edge
+            """,
+            {"symbol": symbol, "start": start, "end": end},
+        ).fetchall()
+        if not rows:
+            return None
+        return _row_to_tick(rows[0]), _row_to_tick(rows[-1])
 
     def latest_known_before(self, symbol: str, t: datetime) -> Tick | None:
         # Ordered the same way known_before is, reversed: the tie-break decides

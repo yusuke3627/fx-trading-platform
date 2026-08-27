@@ -27,6 +27,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection
 from trading.domain.signal import StrategySignal
+from trading.indicators import DEFAULT_BAR_COUNT
 from trading.indicators.market_structure import detect_failed_breakout, rolling_high
 from trading.intelligence import features as f
 from trading.strategy.base import (
@@ -60,6 +61,14 @@ class PostEventFailedBreakoutStrategy(Strategy):
             (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf],
         )
         return market_span_to_calendar(span)
+
+    @classmethod
+    def bar_window(cls, config: StrategyConfig) -> int:
+        # IndicatorService reads max(its default window, period + 1); the
+        # direct structural read is the resistance lookback + 5.
+        lookback = int(config.param("resistance_lookback", 20))
+        atr_period = int(config.param("atr_period", 14))
+        return max(DEFAULT_BAR_COUNT, lookback + 5, atr_period + 1)
 
     async def on_event(
         self,

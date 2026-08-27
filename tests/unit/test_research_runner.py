@@ -106,50 +106,99 @@ def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
     from trading.backtest.research import ensure_period_covered
 
     read_from = START - timedelta(days=10)
-    covered = [
-        tick(read_from + timedelta(minutes=30), START),
-        tick(END - timedelta(minutes=30), START),
-    ]
-    ensure_period_covered(covered, read_from, START, END)
+    first = tick(read_from + timedelta(minutes=30), START)
+    last = tick(END - timedelta(minutes=30), START)
+    ensure_period_covered((first, last), read_from, START, END)
 
     # A weekend at an edge is closure, not missing data: Friday's last quote
     # against a Monday-morning --to passes, because the gap holds almost no
     # open-market time.
     weekend_end = datetime(2026, 8, 17, 0, 15, tzinfo=UTC)  # Monday
-    weekend_ticks = [
-        tick(read_from + timedelta(minutes=30), START),
-        tick(datetime(2026, 8, 14, 23, 45, tzinfo=UTC), START),  # Friday
-    ]
-    ensure_period_covered(weekend_ticks, read_from, START, weekend_end)
+    friday_last = tick(datetime(2026, 8, 14, 23, 45, tzinfo=UTC), START)
+    ensure_period_covered((first, friday_last), read_from, START, weekend_end)
 
     with pytest.raises(SystemExit):
-        ensure_period_covered([], read_from, START, END)
+        ensure_period_covered(None, read_from, START, END)
     # Only lead-in ticks: nothing would be evaluated.
     with pytest.raises(SystemExit):
-        ensure_period_covered(covered[:1], read_from, START, END)
+        ensure_period_covered((first, first), read_from, START, END)
     # History begins days into the requested warm-up: starved indicators.
-    late_history = [
-        tick(START - timedelta(days=2), START),
-        tick(END - timedelta(minutes=30), START),
-    ]
     with pytest.raises(SystemExit):
-        ensure_period_covered(late_history, read_from, START, END)
+        ensure_period_covered(
+            (tick(START - timedelta(days=2), START), last), read_from, START, END
+        )
     # A missing trading day at the tail of a WEEKDAY period is not excused
     # by any fixed calendar allowance.
     weekday_end = datetime(2026, 8, 19, 0, 0, tzinfo=UTC)  # Wednesday
-    weekday_truncated = [
+    with pytest.raises(SystemExit):
+        ensure_period_covered(
+            (first, tick(weekday_end - timedelta(days=1), START)),
+            read_from,
+            START,
+            weekday_end,
+        )
+
+
+def test_bar_window_follows_the_evaluated_configuration():
+    from trading.strategy.base import StrategyConfig
+    from trading.strategy.registry import STRATEGIES
+
+    intraday = STRATEGIES["post_event_failed_breakout"]
+    base_config = StrategyConfig(strategy_id=intraday.strategy_id, instruments=["USDJPY"])
+    widened = base_config.model_copy(
+        update={"parameters": {"resistance_lookback": 15000}}
+    )
+    # A lookback past the default retention must widen the declared window,
+    # so the engine retains it instead of refusing the read mid-replay.
+    assert intraday.bar_window(widened) >= 15005
+    assert intraday.bar_window(base_config) < intraday.bar_window(widened)
+
+
+def test_covered_stream_judges_the_ticks_it_actually_delivers():
+    from trading.backtest.data import TickDigest
+    from trading.backtest.research import covered_reconstructed_stream
+
+    read_from = START - timedelta(days=10)
+    anchor = timedelta(hours=7)
+
+    # Happy path: reconstruction and digest ride the pass; exhaustion passes
+    # the coverage verdict.
+    good = [
         tick(read_from + timedelta(minutes=30), START),
-        tick(weekday_end - timedelta(days=1), START),  # Tuesday 00:00
-    ]
-    with pytest.raises(SystemExit):
-        ensure_period_covered(weekday_truncated, read_from, START, weekday_end)
-    # History ends days before --to: a partial period reported as full.
-    truncated_tail = [
-        tick(read_from + timedelta(hours=1), START),
         tick(START + timedelta(hours=1), START),
+        tick(END - timedelta(minutes=30), START),
     ]
+    digest = TickDigest()
+    delivered = list(
+        covered_reconstructed_stream(iter(good), read_from, START, END, anchor, digest)
+    )
+    assert digest.count == 3
+    assert [t.time for t in delivered] == [t.time for t in good]
+    assert delivered[0].known_time != good[0].known_time
+
+    # A head gap fails on the FIRST tick — before hours of replay are spent.
+    late_head = [tick(START - timedelta(days=2), START)]
+    stream = covered_reconstructed_stream(
+        iter(late_head), read_from, START, END, anchor, TickDigest()
+    )
     with pytest.raises(SystemExit):
-        ensure_period_covered(truncated_tail, read_from, START, END)
+        next(stream)
+
+    # Only warm-up ticks fail at exhaustion, not silently.
+    warmup_only = [tick(read_from + timedelta(minutes=30), START)]
+    stream = covered_reconstructed_stream(
+        iter(warmup_only), read_from, START, END, anchor, TickDigest()
+    )
+    with pytest.raises(SystemExit):
+        list(stream)
+
+    # An empty stream fails with the coverage message, not a bare engine error.
+    with pytest.raises(SystemExit):
+        list(
+            covered_reconstructed_stream(
+                iter([]), read_from, START, END, anchor, TickDigest()
+            )
+        )
 
 
 def test_period_bounds_accept_only_utc_stamped_labels():

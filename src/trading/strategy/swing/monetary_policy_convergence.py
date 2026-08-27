@@ -23,6 +23,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection
 from trading.domain.signal import StrategySignal
+from trading.indicators import DEFAULT_BAR_COUNT
 from trading.indicators.market_structure import is_lower_high, rolling_low, swing_highs
 from trading.intelligence import features as f
 from trading.strategy.base import (
@@ -60,6 +61,16 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
             (atr_period + 1) * TIMEFRAME_SECONDS[trigger_tf],
         )
         return market_span_to_calendar(span)
+
+    @classmethod
+    def bar_window(cls, config: StrategyConfig) -> int:
+        # IndicatorService reads max(its default window, period + 1); the
+        # direct structural read is support_lookback + 10.
+        support_lookback = int(config.param("support_lookback", 30))
+        atr_period = int(config.param("atr_period", 14))
+        return max(
+            DEFAULT_BAR_COUNT, support_lookback + 10, cls.EMA_SLOW + 1, atr_period + 1
+        )
 
     async def on_event(
         self,

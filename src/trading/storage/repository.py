@@ -5,7 +5,7 @@ implementation lives in storage/postgres.py; strategies never see these.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -129,6 +129,20 @@ class MarketTickRepository(Protocol):
     def between(
         self, symbol: str, start: datetime, end: datetime
     ) -> Sequence[Tick]: ...
+
+    # between() as a stream: same rows and order, delivered without holding
+    # the period in memory — a months-long research replay reads tens of
+    # millions of rows, which no host here materializes twice.
+    def stream_between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> Iterator[Tick]: ...
+
+    # The first and last row between() would return, without the rows in
+    # between: the research runner's period-coverage checks need exactly the
+    # edges.
+    def bounds_between(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> tuple[Tick, Tick] | None: ...
 
 
 class MarketBarRepository(Protocol):

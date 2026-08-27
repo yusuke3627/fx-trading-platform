@@ -51,6 +51,19 @@ def test_a_window_wider_than_the_horizon_is_refused():
         market.ticks("USDJPY", 101)
 
 
+def test_bar_history_is_capped_and_over_capacity_reads_are_refused():
+    from tests.support import make_bar
+
+    market = ReplayMarketData(bar_capacity=10)
+    for i in range(25):
+        market.add_bar(make_bar("100", "101", "99", "100", start=T0 + timedelta(minutes=i)))
+
+    recent = market.bars("USDJPY", "1m", 10)
+    assert [b.start for b in recent] == [T0 + timedelta(minutes=i) for i in range(15, 25)]
+    with pytest.raises(ValueError):
+        market.bars("USDJPY", "1m", 11)
+
+
 def test_a_late_old_quote_neither_rewinds_latest_nor_breaks_the_window():
     # Reception order 0s, 60s, then a quote whose broker time is 30s — a
     # reconnect replaying an old tick. It has to slot into broker order.

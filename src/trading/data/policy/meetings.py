@@ -183,6 +183,12 @@ def load_schedule(path: Path | str = DEFAULT_MEETINGS_PATH) -> list[ScheduledMee
     return schedule
 
 
+# facts（meetings:）へ転記できる = 採点（scoring.EVENT_TYPES）が定義済みの
+# 行。PolicyMeeting.bank の Literal と同じ集合で、BOE/ECB の採点接続と
+# セットで広げる（ADR-017）。
+SCORABLE_BANKS: frozenset[str] = frozenset({"BOJ", "FED"})
+
+
 def untranscribed_overdue(
     meetings: Sequence[PolicyMeeting],
     schedule: Sequence[ScheduledMeeting],
@@ -191,11 +197,16 @@ def untranscribed_overdue(
     """Scheduled meetings whose publication bound has passed with no results
     transcribed. The statement exists by then, so a missing meetings: entry is
     a lapse to fail on, not a note — left alone, the meeting would silently
-    never score."""
+    never score.
+
+    採点対象外の行（BOE/ECB）は event window の材料としてのみ登録され、
+    facts への転記先が無い — overdue に含めると最初の会合後から collector
+    が恒久停止するため対象外とする。"""
     transcribed = {(m.bank, m.decision_date) for m in meetings}
     return [
         entry
         for entry in schedule
-        if entry.latest_published_at < now
+        if entry.bank in SCORABLE_BANKS
+        and entry.latest_published_at < now
         and (entry.bank, entry.decision_date) not in transcribed
     ]

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import openpyxl
@@ -62,10 +62,23 @@ def day_row(day: date, two_year: float | None) -> list:
     return [day, 3.9, 4.0, 4.1, two_year, 4.3, 4.4]
 
 
-def collect(archive: bytes, latest: bytes, years: list[int] = YEARS):
+def collect(archive: bytes, latest: bytes, years: list[int] = YEARS, clock=None):
     transport = FakeTransport([archive, latest])
-    batch = BOEYieldCurveCollector(transport, clock=FixedClock(RETRIEVED)).collect(years)
+    batch = BOEYieldCurveCollector(
+        transport, clock=clock or FixedClock(RETRIEVED)
+    ).collect(years)
     return batch, transport
+
+
+class TickingClock:
+    """now() を呼ぶたび 1 分進む。取得に時間が掛かる状況の再現。"""
+
+    def __init__(self, start: datetime) -> None:
+        self._now = start
+
+    def now(self) -> datetime:
+        self._now += timedelta(minutes=1)
+        return self._now
 
 
 def test_takes_the_two_year_point_from_the_spot_curve() -> None:
@@ -259,6 +272,20 @@ def test_the_series_is_pit_unverified_and_known_at_is_the_fetch_time() -> None:
     assert observation.known_at == RETRIEVED
     assert observation.retrieved_at == RETRIEVED
     assert observation.unit == "percent"
+
+
+def test_known_at_follows_the_fetch_that_delivered_the_day() -> None:
+    archive = zipped({ARCHIVE_RECENT: workbook([day_row(date(2026, 7, 31), 4.23)])})
+    latest = zipped({CURRENT_MONTH_MEMBER: workbook([day_row(date(2026, 8, 3), 4.16)])})
+
+    batch, _ = collect(archive, latest, clock=TickingClock(RETRIEVED))
+
+    by_period = {o.observation_period: o for o in batch.observations}
+    # 取得前に時刻を打つと、まだ受け取っていない当月ぶんへ過去の known_at が
+    # 付き、その間に置いた replay clock から見えてしまう。
+    assert by_period["2026-07-31"].known_at < by_period["2026-08-03"].known_at
+    assert by_period["2026-07-31"].known_at == RETRIEVED + timedelta(minutes=1)
+    assert by_period["2026-08-03"].known_at == RETRIEVED + timedelta(minutes=2)
 
 
 def test_the_workbook_itself_is_not_archived_but_its_digest_is() -> None:

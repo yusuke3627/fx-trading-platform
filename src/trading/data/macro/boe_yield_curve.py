@@ -20,7 +20,7 @@ import re
 import zipfile
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 import openpyxl
@@ -46,20 +46,32 @@ CURRENT_MONTH_MEMBER = "OIS daily data current month.xlsx"
 _ERA = re.compile(r"_(\d{4}) to (\d{4}|present)\.xlsx$", re.IGNORECASE)
 
 
+class _CurvePoint(NamedTuple):
+    value: Decimal
+    # その日を実際に載せていた配布ファイル。アーカイブ由来の日付へ当月
+    # ファイルの出所を付けると嘘になる。
+    source_uri: str
+    payload_hash: str
+    retrieved_at: datetime
+
+
 class BOEYieldCurveCollector:
     def __init__(self, transport: Any, *, clock: Clock | None = None) -> None:
         self._transport = transport
         self._clock = clock or SystemClock()
 
     def collect(self, years: list[int]) -> CollectionBatch:
-        now = self._clock.now()
         spec = INDICATORS[UK_OIS_2Y]
 
-        curve: dict[date, tuple[Decimal, str, str]] = {}
+        curve: dict[date, _CurvePoint] = {}
         raw_events = []
         # アーカイブが先、当月ファイルが後。両方に載る日付は新しい配布を採る。
         for url in (ARCHIVE_URL, LATEST_URL):
             raw = self._transport.get_bytes(url)
+            # 時刻は取得後に打つ。アーカイブ zip は 11MB あり、取得前に打つと
+            # まだ受け取っていない値へ過去の known_at が付いて、その間に置いた
+            # replay clock から見えてしまう。
+            retrieved_at = self._clock.now()
             fetched = _read_curve(raw, url, years)
             event = raw_event(
                 source=SOURCE_BOE,
@@ -75,11 +87,11 @@ class BOEYieldCurveCollector:
                         for day, value in sorted(fetched.items())
                     },
                 },
-                retrieved_at=now,
+                retrieved_at=retrieved_at,
             )
             raw_events.append(event)
             for day, value in fetched.items():
-                curve[day] = (value, url, event.payload_hash)
+                curve[day] = _CurvePoint(value, url, event.payload_hash, retrieved_at)
 
         if not curve:
             # シート構成が変わって 1 行も取れないのと、配信が止まっているのは
@@ -92,15 +104,15 @@ class BOEYieldCurveCollector:
                 observation_id=uuid4(),
                 series=UK_OIS_2Y,
                 observation_period=day.isoformat(),
-                value=value,
+                value=point.value,
                 unit=spec.unit,
                 source=SOURCE_BOE,
-                source_uri=source_uri,
-                payload_hash=page_hash,
-                retrieved_at=now,
-                known_at=now,
+                source_uri=point.source_uri,
+                payload_hash=point.payload_hash,
+                retrieved_at=point.retrieved_at,
+                known_at=point.retrieved_at,
             )
-            for day, (value, source_uri, page_hash) in sorted(curve.items())
+            for day, point in sorted(curve.items())
         )
         return CollectionBatch(observations=observations, raw_events=tuple(raw_events))
 

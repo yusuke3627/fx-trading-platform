@@ -17,14 +17,36 @@ from trading.data.policy.meetings import (
     load_meetings,
     load_schedule,
 )
-from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
+from trading.domain.money import Currency
+from trading.risk.event_risk import (
+    EventPropagationPolicy,
+    EventRiskCalendar,
+    EventRiskWindow,
+)
 
 if TYPE_CHECKING:
     from trading.config import AppConfig, EventRiskWindowSettings
 
-# The one window kind configured today. Named here because the settings are
-# keyed by it and the windows are labelled with it.
+# The one window kind configured today; the settings are keyed by it.
+# Windows themselves are labelled per bank (ADR-017).
 CENTRAL_BANK_CLUSTER = "dual_central_bank_cluster"
+
+BANK_CURRENCIES: dict[str, Currency] = {
+    "FED": Currency.USD,
+    "BOJ": Currency.JPY,
+    "BOE": Currency.GBP,
+    "ECB": Currency.EUR,
+}
+
+# FOMC の政策決定は synthetic cross（GBPJPY ≒ GBPUSD × USDJPY）経由で
+# 全ペアへ伝播するため GLOBAL_CRITICAL（設計書 §14.1A の initial safety
+# decision）。他行は direct leg のみ。
+BANK_PROPAGATION: dict[str, EventPropagationPolicy] = {
+    "FED": EventPropagationPolicy.GLOBAL_CRITICAL,
+    "BOJ": EventPropagationPolicy.DIRECT_LEGS,
+    "BOE": EventPropagationPolicy.DIRECT_LEGS,
+    "ECB": EventPropagationPolicy.DIRECT_LEGS,
+}
 
 
 def central_bank_calendar(config: AppConfig) -> EventRiskCalendar | None:
@@ -56,13 +78,17 @@ def central_bank_windows(
     schedule: Sequence[ScheduledMeeting],
     settings: EventRiskWindowSettings,
 ) -> list[EventRiskWindow]:
-    """One window per cluster of meetings whose risk periods run together.
+    """One window per bank per cluster of that bank's meetings.
 
     Consecutive central-bank decisions are one risk state rather than the sum
     of two (see risk/event_risk.py). What counts as consecutive is not a
-    configured number, and overlap answers it without introducing one: a Fed
-    and a BOJ decision two days apart sit inside each other's window and become
-    a single one, while decisions months apart stay separate.
+    configured number, and overlap answers it without introducing one — but
+    the clustering is per bank (ADR-017): a Fed and a BOJ decision two days
+    apart stay two windows whose spans overlap, and mode_for_instrument
+    grades the most severe active one. A pair whose legs span both decisions
+    sees no calm gap between them, while a pair holding only one of the legs
+    is gated only by its own bank's window — merging across banks would make
+    a BOE meeting halt USDJPY.
 
     Publication instants are what the windows hang off — a decision is risk
     from the moment it can move the market, not from the calendar date it is
@@ -88,38 +114,44 @@ def central_bank_windows(
     # widens its window rather than shifting it — and can never split it, no
     # matter how the span compares to pre + post.
     unscheduled = {(m.bank, m.decision_date): m for m in meetings}
-    spans: list[tuple[datetime, datetime]] = []
+    spans_by_bank: dict[str, list[tuple[datetime, datetime]]] = {}
     for entry in schedule:
         unscheduled.pop((entry.bank, entry.decision_date), None)
-        spans.append((entry.earliest_published_at, entry.latest_published_at))
+        spans_by_bank.setdefault(entry.bank, []).append(
+            (entry.earliest_published_at, entry.latest_published_at)
+        )
     # Backfilled meetings predate the schedule section; their one recorded
     # instant is all the file knows.
-    spans += [
-        (m.statement_published_at, m.statement_published_at) for m in unscheduled.values()
-    ]
-    spans.sort()
-    if not spans:
-        return []
+    for m in unscheduled.values():
+        spans_by_bank.setdefault(m.bank, []).append(
+            (m.statement_published_at, m.statement_published_at)
+        )
 
     pre = timedelta(hours=settings.pre_hours)
     post = timedelta(hours=settings.post_hours)
-    clusters: list[tuple[datetime, datetime]] = [spans[0]]
-    for start, end in spans[1:]:
-        first, last = clusters[-1]
-        if start - pre <= last + post:
-            clusters[-1] = (first, max(last, end))
-        else:
-            clusters.append((start, end))
-
     actions = settings.actions()
-    return [
-        EventRiskWindow(
-            name=CENTRAL_BANK_CLUSTER,
-            first_event_at=first,
-            last_event_at=last,
-            pre_hours=settings.pre_hours,
-            post_hours=settings.post_hours,
-            actions=actions,
-        )
-        for first, last in clusters
-    ]
+    windows: list[EventRiskWindow] = []
+    for bank in sorted(spans_by_bank):
+        spans = sorted(spans_by_bank[bank])
+        clusters: list[tuple[datetime, datetime]] = [spans[0]]
+        for start, end in spans[1:]:
+            first, last = clusters[-1]
+            if start - pre <= last + post:
+                clusters[-1] = (first, max(last, end))
+            else:
+                clusters.append((start, end))
+        windows += [
+            EventRiskWindow(
+                name=f"central_bank:{bank}",
+                first_event_at=first,
+                last_event_at=last,
+                pre_hours=settings.pre_hours,
+                post_hours=settings.post_hours,
+                actions=actions,
+                affected_currencies=frozenset({BANK_CURRENCIES[bank]}),
+                propagation=BANK_PROPAGATION[bank],
+            )
+            for first, last in clusters
+        ]
+    windows.sort(key=lambda w: (w.first_event_at, w.name))
+    return windows

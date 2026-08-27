@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from trading.config import EventRiskWindowSettings, load_config
 from trading.data.policy.meetings import PolicyMeeting, ScheduledMeeting
 from trading.data.policy.risk_windows import (
-    CENTRAL_BANK_CLUSTER,
     central_bank_calendar,
     central_bank_windows,
 )
@@ -153,22 +152,39 @@ def test_the_shipped_calendar_claims_nothing_beyond_its_coverage():
 def test_a_single_meeting_becomes_one_window():
     (window,) = central_bank_windows([meeting("FED", T0)], [], SETTINGS)
 
-    assert window.name == CENTRAL_BANK_CLUSTER
+    assert window.name == "central_bank:FED"
     assert window.first_event_at == window.last_event_at == T0
     assert window.pre_hours == 48
     assert window.post_hours == 24
 
 
-def test_decisions_close_together_become_one_window():
-    # A Fed decision and a BOJ decision two days apart are one risk state, not
-    # two: each sits inside the other's window, and grading them separately
-    # would let the gap between them read as calm.
-    boj = T0 + timedelta(days=2)
+def test_same_bank_decisions_close_together_become_one_window():
+    # 同一行の連続会合は 1 window（1 リスク状態）。
+    later = T0 + timedelta(days=2)
 
-    (window,) = central_bank_windows([meeting("FED", T0), meeting("BOJ", boj)], [], SETTINGS)
+    (window,) = central_bank_windows(
+        [meeting("BOJ", T0), meeting("BOJ", later)], [], SETTINGS
+    )
 
     assert window.first_event_at == T0
-    assert window.last_event_at == boj
+    assert window.last_event_at == later
+
+
+def test_cross_bank_decisions_stay_separate_windows_with_scopes():
+    # Fed と BOJ の近接会合は window を統合しない（pair-local、ADR-017）。
+    # span は重なるので、両 leg を持つペアの grading に切れ目は出ない
+    # （test_event_scope.py 側で固定）。片 leg のペアを他行の会合で
+    # 止めないために bank 単位で cluster する。
+    boj = T0 + timedelta(days=2)
+
+    windows = central_bank_windows([meeting("FED", T0), meeting("BOJ", boj)], [], SETTINGS)
+
+    assert [w.name for w in windows] == ["central_bank:FED", "central_bank:BOJ"]
+    fed, boj_window = windows
+    assert fed.propagation.value == "GLOBAL_CRITICAL"
+    assert boj_window.propagation.value == "DIRECT_LEGS"
+    assert {c.value for c in fed.affected_currencies} == {"USD"}
+    assert {c.value for c in boj_window.affected_currencies} == {"JPY"}
 
 
 def test_decisions_far_apart_stay_separate():
@@ -183,12 +199,14 @@ def test_decisions_far_apart_stay_separate():
 
 def test_meetings_out_of_order_still_cluster_by_time():
     # The file is edited by hand and need not be sorted.
-    boj = T0 + timedelta(days=2)
+    later = T0 + timedelta(days=2)
 
-    (window,) = central_bank_windows([meeting("BOJ", boj), meeting("FED", T0)], [], SETTINGS)
+    (window,) = central_bank_windows(
+        [meeting("BOJ", later), meeting("BOJ", T0)], [], SETTINGS
+    )
 
     assert window.first_event_at == T0
-    assert window.last_event_at == boj
+    assert window.last_event_at == later
 
 
 def test_each_horizon_carries_its_configured_action():

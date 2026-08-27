@@ -195,6 +195,15 @@ def test_an_overdue_meeting_without_results_is_flagged():
     assert untranscribed_overdue([], [entry], T0) == [entry]
 
 
+def test_a_non_scorable_bank_is_never_overdue():
+    # BOE/ECB の schedule は event window の材料としてのみ登録され、facts
+    # への転記先（採点）が無い。overdue に含めると最初の会合後から日次
+    # collector が恒久停止する（ADR-017）。
+    entry = scheduled_boj(bank="BOE")
+
+    assert untranscribed_overdue([], [entry], T0) == []
+
+
 def test_a_transcribed_meeting_is_not_overdue():
     # 転記後も schedule: に残るのが正しい状態（窓は予定区間に掛かり続ける）。
     # meetings: に対応エントリがあれば期限超過でも失敗にしない。

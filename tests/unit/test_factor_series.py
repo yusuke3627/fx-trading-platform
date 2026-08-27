@@ -1,12 +1,11 @@
 """MacroFactorSeries: PIT の vintage 連鎖から factor の観測列を作る。"""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 from tests.support import FakeObservationRepository
 from trading.data.factor_series import (
     DEFAULT_FACTOR_INPUTS,
-    FactorInput,
     MacroFactorSeries,
     SeriesTransform,
 )
@@ -27,8 +26,6 @@ CONFIG = NormalizationConfig()
 # 連鎖の最終観測期間。初報は月末の 40 日後に届くので、2026-07 の初報が
 # NOW の直前に入る。
 LAST_MONTH = 2026 * 12 + 6
-
-RATES_ONLY = {(Currency.USD, CurrencyFactor.RATES): FactorInput(US_TREASURY_2Y_YIELD, 1)}
 
 
 def month_label(month_index: int) -> str:
@@ -72,6 +69,19 @@ def monthly_chain(
     ]
 
 
+def daily_chain(
+    series: str, values: list[str], unit: str = "percent"
+) -> list[EconomicObservation]:
+    """日次の初報だけの連鎖。最後の値が NOW の前日の観測になる。"""
+    start = NOW.date() - timedelta(days=len(values))
+    rows = []
+    for offset, value in enumerate(values):
+        day = start + timedelta(days=offset)
+        known = datetime.combine(day, time(18, 0), UTC)
+        rows.append(observation(series, day.isoformat(), value, known, unit))
+    return rows
+
+
 def index_at(annual_rates: list[Decimal]) -> list[str]:
     """月次指数の水準列。各月は 12 か月前のちょうど `annual_rates[年]` 倍。
 
@@ -104,11 +114,12 @@ class RecordingObservations(FakeObservationRepository):
 
 
 def test_level_series_keeps_the_published_value() -> None:
-    rows = monthly_chain(US_TREASURY_2Y_YIELD, ["4.10", "4.25"], unit="percent")
+    # 英 CPI は公表時点で前年同月比。変換せず水準として渡す。
+    rows = monthly_chain(UK_CPI_HEADLINE_YOY_NSA, ["2.1", "3.4"], unit="percent")
 
-    series = source(rows, RATES_ONLY).series(Currency.USD, CurrencyFactor.RATES, NOW)
+    series = source(rows).series(Currency.GBP, CurrencyFactor.INFLATION, NOW)
 
-    assert [value for _, value in series] == [4.10, 4.25]
+    assert [value for _, value in series] == [2.1, 3.4]
 
 
 def test_unemployment_is_inverted_so_higher_means_a_stronger_currency() -> None:
@@ -147,39 +158,75 @@ def test_year_over_year_pairs_against_the_first_print_of_a_year_earlier() -> Non
 
 
 def test_a_revision_does_not_replace_the_first_print() -> None:
-    rows = monthly_chain(US_TREASURY_2Y_YIELD, ["4.10", "4.25"], unit="percent")
+    rows = monthly_chain(UK_CPI_HEADLINE_YOY_NSA, ["2.1", "3.4"], unit="percent")
     revision = observation(
-        US_TREASURY_2Y_YIELD,
+        UK_CPI_HEADLINE_YOY_NSA,
         rows[0].observation_period,
         "9.99",
         rows[-1].known_at + timedelta(days=1),
         unit="percent",
     )
 
-    series = source([*rows, revision], RATES_ONLY).series(
-        Currency.USD, CurrencyFactor.RATES, NOW
+    series = source([*rows, revision]).series(
+        Currency.GBP, CurrencyFactor.INFLATION, NOW
     )
 
     # 改定を採ると、古い期間の値が known_at 最新の点になり、正規化が
     # それを「直近値」として z を取る。
-    assert [value for _, value in series] == [4.10, 4.25]
+    assert [value for _, value in series] == [2.1, 3.4]
+
+
+def test_a_period_whose_first_print_predates_the_window_is_dropped() -> None:
+    rows = monthly_chain(UK_CPI_HEADLINE_YOY_NSA, ["2.1", "3.4"], unit="percent")
+    # 読み出し窓より遥かに古い期間への改定。初報は窓の外なので、この行が
+    # その期間の唯一の vintage として残る。
+    benchmark_revision = observation(
+        UK_CPI_HEADLINE_YOY_NSA, "2015-01", "9.99", NOW - timedelta(days=1), unit="percent"
+    )
+
+    series = source([*rows, benchmark_revision]).series(
+        Currency.GBP, CurrencyFactor.INFLATION, NOW
+    )
+
+    # 拾うと 2015 年の値が「改定が届いた時刻の観測」として窓に入る。
+    assert [value for _, value in series] == [2.1, 3.4]
+
+
+def test_a_backfill_sharing_one_known_at_is_ordered_by_observation_period() -> None:
+    # forward collector の初回収集は全履歴へ同じ取得時刻を付ける。
+    backfilled = datetime(2026, 8, 20, 9, 0, tzinfo=UTC)
+    rows = [
+        observation(
+            UK_CPI_HEADLINE_YOY_NSA,
+            month_label(LAST_MONTH - offset),
+            f"{2.0 + offset:.1f}",
+            backfilled,
+            unit="percent",
+        )
+        # リポジトリの UUID 順を模して、観測期間の新しい方から詰める。
+        for offset in range(3)
+    ]
+
+    series = source(rows).series(Currency.GBP, CurrencyFactor.INFLATION, NOW)
+
+    # normalize_series は同時刻の並びを供給順のまま「最新」とするので、
+    # ここで並べ替えないと任意の過去期間が直近値になる。
+    assert [value for _, value in series] == [4.0, 3.0, 2.0]
 
 
 def test_an_observation_known_after_now_is_not_visible() -> None:
-    rows = monthly_chain(US_TREASURY_2Y_YIELD, ["4.10"], unit="percent")
+    rows = monthly_chain(UK_CPI_HEADLINE_YOY_NSA, ["2.1"], unit="percent")
     future = observation(
-        US_TREASURY_2Y_YIELD,
+        UK_CPI_HEADLINE_YOY_NSA,
         month_label(LAST_MONTH + 1),
         "5.00",
         NOW + timedelta(days=1),
         unit="percent",
     )
 
-    series = source([*rows, future], RATES_ONLY).series(
-        Currency.USD, CurrencyFactor.RATES, NOW
-    )
+    series = source([*rows, future]).series(Currency.GBP, CurrencyFactor.INFLATION, NOW)
 
-    assert [value for _, value in series] == [4.10]
+    assert [value for _, value in series] == [2.1]
 
 
 def test_a_factor_without_a_series_is_absent_not_neutral() -> None:
@@ -296,13 +343,19 @@ def test_year_over_year_reacts_to_an_acceleration_in_the_last_year() -> None:
     assert score.observations == CONFIG.window
 
 
-def test_gbp_inflation_reads_the_published_year_over_year_series() -> None:
-    # 英 CPI は公表時点で前年同月比。変換せず水準として渡す。
-    rows = monthly_chain(UK_CPI_HEADLINE_YOY_NSA, ["2.1", "3.4"], unit="percent")
+def test_a_daily_series_bounds_the_window_with_daily_period_labels() -> None:
+    rows = daily_chain(US_TREASURY_2Y_YIELD, ["4.10", "4.25", "4.30"])
+    stale = observation(
+        US_TREASURY_2Y_YIELD,
+        "2019-03-04",
+        "9.99",
+        NOW - timedelta(days=1),
+        unit="percent",
+    )
 
-    series = source(rows).series(Currency.GBP, CurrencyFactor.INFLATION, NOW)
+    series = source([*rows, stale]).series(Currency.USD, CurrencyFactor.RATES, NOW)
 
-    assert [value for _, value in series] == [2.1, 3.4]
+    assert [value for _, value in series] == [4.10, 4.25, 4.30]
 
 
 def test_default_inputs_use_one_series_per_factor_across_currencies() -> None:

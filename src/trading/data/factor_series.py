@@ -16,8 +16,14 @@
 **vintage の畳み込み。** リポジトリが返すのは vintage 連鎖なので、1 観測
 期間につき初報 1 点へ畳む。改定を採ると古い期間の改定が known_at 最新の
 点になり、`normalize_series` がそれを「直近値」として z を取ってしまう。
-lookback は各期間の初報を必ず含む幅に取ってあるので、窓に入った改定が
-初報として拾われることはない。
+読み出し窓は known_at で切られるため、窓より前に初報が出た期間には改定
+しか残らない。そういう期間は落とす。
+
+**順序の明示。** forward collector は初回収集で全履歴へ同じ取得時刻を
+known_at として付ける。`normalize_series` は known_at で安定ソートし、
+同時刻の並びは供給側の順序をそのまま「最新」とするので、ここで観測期間順
+に並べておかないと、リポジトリが返す UUID 順の最後＝任意の過去期間が
+直近値になる。
 """
 from __future__ import annotations
 
@@ -143,17 +149,21 @@ class MacroFactorSeries:
         frequency = INDICATORS[factor_input.series].frequency
         since = now - self._lookback(frequency, factor_input.transform)
         first_prints = _first_print_per_period(
-            self._observations.known_before(factor_input.series, now, since)
+            self._observations.known_before(factor_input.series, now, since),
+            _period_at(frequency, since),
         )
         if factor_input.transform is SeriesTransform.YEAR_OVER_YEAR:
             points = _year_over_year(first_prints)
         else:
-            points = [
-                (row.known_at, float(row.value)) for row in first_prints.values()
-            ]
+            points = {
+                period: (row.known_at, float(row.value))
+                for period, row in first_prints.items()
+            }
         return [
-            (at, factor_input.sign * value)
-            for at, value in points
+            (known_at, factor_input.sign * value)
+            for _, (known_at, value) in sorted(
+                points.items(), key=lambda point: (point[1][0], point[0])
+            )
             if math.isfinite(value)
         ]
 
@@ -167,26 +177,43 @@ class MacroFactorSeries:
 
 
 def _first_print_per_period(
-    vintages: Sequence[EconomicObservation],
+    vintages: Sequence[EconomicObservation], oldest_period: str
 ) -> dict[str, EconomicObservation]:
-    """観測期間ごとの初報。リポジトリは known_at 昇順で返す。"""
+    """観測期間ごとの初報。リポジトリは known_at 昇順で返す。
+
+    `oldest_period` より古い期間は落とす。読み出し窓は known_at で切られる
+    ので、窓が開く前に初報が出た期間には改定しか残っていない。年次ベンチ
+    マーク改定のように古い期間へ遡る改定を初報として採ると、その古い値が
+    改定時刻の観測として正規化窓へ入る。
+    """
     first: dict[str, EconomicObservation] = {}
     for row in vintages:
+        if row.observation_period < oldest_period:
+            continue
         first.setdefault(row.observation_period, row)
     return first
 
 
 def _year_over_year(
     first_prints: Mapping[str, EconomicObservation],
-) -> list[tuple[datetime, float]]:
-    points: list[tuple[datetime, float]] = []
+) -> dict[str, tuple[datetime, float]]:
+    points: dict[str, tuple[datetime, float]] = {}
     for period, row in first_prints.items():
         # 1 年前の相手も初報なので、この点の known_at 時点で既知。
         base = first_prints.get(_previous_year(period))
         if base is None or base.value == 0:
             continue
-        points.append((row.known_at, float((row.value / base.value - 1) * 100)))
+        points[period] = (row.known_at, float((row.value / base.value - 1) * 100))
     return points
+
+
+def _period_at(frequency: str, moment: datetime) -> str:
+    """`moment` を含む観測期間のラベル。registry の頻度が形式を決める。"""
+    if frequency == "monthly":
+        return f"{moment.year:04d}-{moment.month:02d}"
+    if frequency == "quarterly":
+        return f"{moment.year:04d}Q{(moment.month - 1) // 3 + 1}"
+    return moment.strftime("%Y-%m-%d")
 
 
 def _previous_year(period: str) -> str:

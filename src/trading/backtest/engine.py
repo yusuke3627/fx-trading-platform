@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from itertools import chain
 from uuid import uuid4
@@ -46,7 +46,7 @@ from trading.backtest.rollover import (
     next_rollover_boundary,
     server_midnight_label,
 )
-from trading.backtest.simulator import ExecutionSimulator
+from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
 from trading.data.features import ReplayFeatureTimeline
 from trading.data.market.bars import BarBuilder
 from trading.domain.account import AccountMode, AccountSnapshot
@@ -212,6 +212,20 @@ class _Pending:
 
 
 @dataclass
+class _ChargedCarry:
+    """ある boundary で ticket に計上した carry の記録。
+
+    受信順 replay では broker ラベルの古い tick が後から届く（ADR-014）。
+    rollover より前の broker 時刻で決済されたと後から判明した数量の carry
+    を按分で戻すために、単価と数量を持つ。
+    """
+
+    midnight_label: datetime
+    per_unit: Decimal
+    quantity: Decimal
+
+
+@dataclass
 class _RunState:
     initial_equity: Decimal
     realized: Decimal = Decimal(0)
@@ -243,6 +257,10 @@ class _RunState:
     carry_total: Decimal = Decimal(0)
     unpriced_rollovers: int = 0
     next_rollover: datetime | None = None
+    # 処理済み boundary（昇順）と、boundary ごとの ticket 別計上記録。遅着
+    # tick が broker 時系列を訂正したときの遡及チャージ / 按分リバース用。
+    processed_boundaries: list[datetime] = field(default_factory=list)
+    carry_charged: dict[str, list[_ChargedCarry]] = field(default_factory=dict)
 
 
 def signed_pnl(
@@ -372,7 +390,7 @@ class BacktestEngine:
             # tick: the boundary lies before the tick instant, so the hourly
             # snapshot below (the loss-window baseline series) must already
             # include it.
-            self._accrue_carry(state, w, item)
+            self._accrue_carry(state, w)
             # Warm-up ticks build bars, indicators and features but leave no
             # trace in the outputs: the strategy is not asked, and the equity
             # curve, snapshots and metrics start at the period's opening
@@ -454,7 +472,7 @@ class BacktestEngine:
 
         return self._result(state, w.simulator)
 
-    def _accrue_carry(self, state: _RunState, w: _Wiring, item: Tick) -> None:
+    def _accrue_carry(self, state: _RunState, w: _Wiring) -> None:
         """Swap carry for every rollover boundary reached by the clock.
 
         The snapshot must be known AT the boundary (`known_at <= boundary`),
@@ -464,8 +482,11 @@ class BacktestEngine:
         priced at zero.
 
         「rollover 時点で broker の帳簿に載っていたか」は broker wall-clock
-        ラベル軸（tick.time / opened_at、ADR-014）で判定する。known-time 軸
-        の boundary と直接比較すると遅延受信 tick で判定がずれる。
+        ラベル軸（tick.time / opened_at、ADR-014）で判定する。受信順 replay
+        では broker ラベルの古い tick が後から届き得るため、ここでの計上は
+        確定ではない: 計上記録（carry_charged）を持ち、rollover より前の
+        broker 時刻の決済が後から届けば _settle_close が按分で戻し、遅着の
+        建玉には _retro_carry_for_open が遡って課す。
         """
         now = w.clock.now()
         if state.next_rollover is None:
@@ -476,14 +497,8 @@ class BacktestEngine:
             state.next_rollover = next_rollover_boundary(
                 boundary, self._server_ahead_hours
             )
+            state.processed_boundaries.append(boundary)
             midnight_label = server_midnight_label(boundary)
-            if item.time < midnight_label:
-                # この tick の broker ラベルは boundary より前 — 遅延受信。
-                # broker の帳簿ではこの tick の fill / 保護決済が rollover
-                # より先に起きているので、carry の対象を決める前に反映する
-                # （どちらも冪等で、handle() 側の再実行は no-op になる）。
-                self._apply_pending(state, w, item)
-                self._apply_protection(state, w, item)
             held = [
                 p
                 for p in w.simulator.open_positions(self._spec.symbol)
@@ -497,15 +512,78 @@ class BacktestEngine:
                 continue
             day = ended_server_day(boundary)
             for position in held:
-                carry = carry_amount(
-                    snapshot,
-                    spec=self._spec,
-                    direction=position.direction,
-                    quantity=position.quantity,
-                    day=day,
+                self._charge_carry(
+                    state, snapshot, position, midnight_label=midnight_label, day=day
                 )
-                state.realized += carry
-                state.carry_total += carry
+
+    def _charge_carry(
+        self,
+        state: _RunState,
+        snapshot: SwapSnapshot,
+        position: SimulatedPosition,
+        *,
+        midnight_label: datetime,
+        day: date,
+    ) -> None:
+        per_unit = carry_amount(
+            snapshot,
+            spec=self._spec,
+            direction=position.direction,
+            quantity=Decimal(1),
+            day=day,
+        )
+        carry = per_unit * position.quantity
+        state.realized += carry
+        state.carry_total += carry
+        state.carry_charged.setdefault(position.position_id, []).append(
+            _ChargedCarry(midnight_label, per_unit, position.quantity)
+        )
+
+    def _retro_carry_for_open(
+        self, state: _RunState, position: SimulatedPosition, opened_label: datetime
+    ) -> None:
+        """遅着 tick の建玉に、処理済み boundary の carry を遡って課す。
+
+        broker の帳簿では opened_label より後の server midnight を全て保有
+        で跨いでいるが、boundary 処理時にはまだ book に居なかった。"""
+        for boundary in reversed(state.processed_boundaries):
+            midnight_label = server_midnight_label(boundary)
+            if opened_label >= midnight_label:
+                break
+            snapshot = self._swap_timeline.latest_known_before(boundary)
+            if snapshot is None:
+                state.unpriced_rollovers += 1
+                continue
+            self._charge_carry(
+                state,
+                snapshot,
+                position,
+                midnight_label=midnight_label,
+                day=ended_server_day(boundary),
+            )
+
+    def _reverse_carry_for_close(
+        self, state: _RunState, ticket: str, quantity: Decimal, at: datetime
+    ) -> None:
+        """決済数量ぶんの計上記録を消し込み、broker 時刻が rollover より
+        前だった決済（遅着 tick で後から判明する）は carry を按分で戻す。"""
+        charged = state.carry_charged.get(ticket)
+        if not charged:
+            return
+        remaining: list[_ChargedCarry] = []
+        for entry in charged:
+            consumed = min(quantity, entry.quantity)
+            if consumed and at < entry.midnight_label:
+                reversal = entry.per_unit * consumed
+                state.realized -= reversal
+                state.carry_total -= reversal
+            entry.quantity -= consumed
+            if entry.quantity > 0:
+                remaining.append(entry)
+        if remaining:
+            state.carry_charged[ticket] = remaining
+        else:
+            state.carry_charged.pop(ticket, None)
 
     def _apply_protection(self, state: _RunState, w: _Wiring, tick: Tick) -> None:
         """Broker-side SL/TP sweep of the whole book at this tick's price.
@@ -790,6 +868,7 @@ class BacktestEngine:
         w.ledger.apply_fill(
             strategy_id, self._spec.symbol, fill.side, fill.quantity, fill.price
         )
+        self._retro_carry_for_open(state, result.position, fill.broker_time)
         state.fills.append(
             FillRecord(
                 at=fill.broker_time,
@@ -824,6 +903,7 @@ class BacktestEngine:
         strategy_id = state.ticket_owner[ticket]
         entry = state.entry_price[ticket]
         state.realized += signed_pnl(direction, entry, price, quantity)
+        self._reverse_carry_for_close(state, ticket, quantity, at)
         state.gross_mid_closed += signed_pnl(
             direction, state.entry_mid[ticket], mid, quantity
         )

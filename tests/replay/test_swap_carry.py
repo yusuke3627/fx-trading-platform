@@ -199,7 +199,7 @@ def test_late_tick_protection_before_midnight_label_skips_carry():
     result = _run([_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")], ticks)
 
     assert any(f.origin == "PROTECTION" for f in result.fills)
-    assert result.metrics["carry_total"] == "0"
+    assert Decimal(result.metrics["carry_total"]) == 0
     assert result.metrics["unpriced_rollovers"] == "0"
 
 
@@ -229,6 +229,97 @@ def test_protection_after_midnight_label_still_pays_carry():
     entry = result.fills[0]
     assert any(f.origin == "PROTECTION" for f in result.fills)
     expected = Decimal("-2.2") * Decimal("0.001") * entry.quantity
+    assert Decimal(result.metrics["carry_total"]) == expected
+
+
+def test_late_close_arriving_after_boundary_was_charged_reverses_carry():
+    # 「00:05 の tick で boundary を計上した後」に、midnight 前の broker
+    # ラベルを持つ遅着 tick が SL を発動する複数 tick の順序。broker の
+    # 帳簿では rollover 前に決済済みなので、計上済み carry は戻される。
+    label = timedelta(hours=3)
+    entry_times = [
+        datetime(2026, 8, 10, 20, 0, 0, tzinfo=UTC),
+        datetime(2026, 8, 10, 20, 0, 1, tzinfo=UTC),
+        datetime(2026, 8, 10, 20, 0, 2, tzinfo=UTC),
+    ]
+    ticks = [
+        make_tick("147.000", "147.004", time=t + label, received_at=t)
+        for t in entry_times
+    ]
+    ticks.append(
+        make_tick(
+            "147.000",
+            "147.004",
+            time=datetime(2026, 8, 11, 0, 5, tzinfo=UTC),
+            received_at=datetime(2026, 8, 10, 21, 5, tzinfo=UTC),
+        )
+    )
+    ticks.append(
+        make_tick(
+            "146.900",
+            "146.904",
+            time=datetime(2026, 8, 10, 23, 58, tzinfo=UTC),
+            received_at=datetime(2026, 8, 10, 21, 6, tzinfo=UTC),
+        )
+    )
+    result = _run([_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")], ticks)
+
+    assert any(f.origin == "PROTECTION" for f in result.fills)
+    assert Decimal(result.metrics["carry_total"]) == 0
+    assert result.metrics["unpriced_rollovers"] == "0"
+
+
+def test_late_entry_arriving_after_boundary_charges_carry():
+    # boundary 計上後に届いた遅着 tick で建った position（broker ラベルは
+    # midnight 前）は、broker の帳簿では rollover を保有で跨いでいるので
+    # 遡って carry が課される。
+    label = timedelta(hours=3)
+    ticks = [
+        make_tick(
+            "147.000",
+            "147.004",
+            time=datetime(2026, 8, 10, 20, 0, 0, tzinfo=UTC) + label,
+            received_at=datetime(2026, 8, 10, 20, 0, 0, tzinfo=UTC),
+        ),
+        make_tick(
+            "147.000",
+            "147.004",
+            time=datetime(2026, 8, 10, 20, 0, 1, tzinfo=UTC) + label,
+            received_at=datetime(2026, 8, 10, 20, 0, 1, tzinfo=UTC),
+        ),
+        # 3 tick 目（ordinal 2）で signal → 遅着の 4 tick 目で約定。
+        make_tick(
+            "147.000",
+            "147.004",
+            time=datetime(2026, 8, 11, 0, 5, 0, tzinfo=UTC),
+            received_at=datetime(2026, 8, 10, 21, 5, tzinfo=UTC),
+        ),
+        make_tick(
+            "147.000",
+            "147.004",
+            time=datetime(2026, 8, 10, 23, 59, 45, tzinfo=UTC),
+            received_at=datetime(2026, 8, 10, 21, 6, tzinfo=UTC),
+        ),
+    ]
+    engine = BacktestEngine(
+        risk_config=_risk_config(),
+        spec=usdjpy_spec(),
+        costs=CostModel(),
+        seed=7,
+        strategy_factory=lambda: ScriptedStrategy({2: PositionDirection.LONG}),
+        strategy_config=StrategyConfig(
+            strategy_id=ScriptedStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+        ),
+        swap_snapshots=[_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")],
+        broker_server_ahead_of_ny_hours=7.0,
+    )
+    result = engine.run(ticks)
+
+    (fill,) = result.fills
+    assert fill.at == datetime(2026, 8, 10, 23, 59, 45, tzinfo=UTC)
+    expected = Decimal("-2.2") * Decimal("0.001") * fill.quantity
     assert Decimal(result.metrics["carry_total"]) == expected
 
 

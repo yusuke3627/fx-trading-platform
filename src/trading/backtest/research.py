@@ -32,6 +32,11 @@ periods are a matter of runtime, not RAM.
 Such a run reports its position on stderr, one line per replay day, carrying
 the feature values the fundamental gates read at that point; stdout stays the
 manifest alone, so piping it to a file keeps the progress on the terminal.
+
+The candles it reconstructs are written to the run directory as
+`bars_<timeframe>.csv`, one file per timeframe the strategy declares. The
+stored bar series only reaches back to the bar service's first run, so this
+is the only record of what a replay of the archive actually saw.
 """
 from __future__ import annotations
 
@@ -42,6 +47,7 @@ import math
 import os
 import sys
 from collections.abc import Iterator, Sequence
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -57,6 +63,7 @@ from trading.backtest.rollover import swap_dataset_fingerprint
 from trading.backtest.run import git_state, synthetic_usdjpy_spec
 from trading.config import load_config
 from trading.data.features import ReplayFeatureTimeline, StoredFeatureSource
+from trading.data.market.bars import BarBuilder
 from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
@@ -277,6 +284,41 @@ def with_progress(
             )
 
 
+BAR_CSV_HEADER = "start,open,high,low,close,tick_volume\n"
+
+
+def capture_bars(
+    ticks: Iterator[Tick],
+    builders: Sequence[BarBuilder],
+    files: Sequence[TextIO],
+) -> Iterator[Tick]:
+    """Write the candles the replay reconstructs, one CSV per timeframe.
+
+    The stored bar series begins where the bar service was first run, not
+    where the tick archive does, so asking what a past replay's candles looked
+    like otherwise costs a second pass over tens of millions of ticks. The
+    replay folds them anyway; writing each one down as it closes turns the
+    next such question into a file read.
+
+    Timestamps are the broker labels the candles are bucketed on, the axis
+    --from/--to are given in.
+    """
+    for tick in ticks:
+        for builder, out in zip(builders, files, strict=True):
+            bar = builder.on_tick(tick)
+            if bar is not None:
+                out.write(
+                    f"{bar.start.isoformat()},{bar.open},{bar.high},"
+                    f"{bar.low},{bar.close},{bar.tick_volume}\n"
+                )
+                # Closed bars are rare enough for this to cost nothing, and
+                # both things the file is for — reading it while the run is
+                # still going, and keeping what a run that died got to —
+                # need the row on disk rather than in a buffer.
+                out.flush()
+        yield tick
+
+
 def warmup_days(value: str) -> float:
     """A finite, non-negative number of lead-in days.
 
@@ -429,23 +471,42 @@ def main() -> None:
     # record the code state it started under, not whatever the worktree
     # holds hours later when the manifest is written.
     repro = git_state()
-    result = engine.run_stream(
-        with_progress(
-            covered_reconstructed_stream(
-                repository.stream_between(symbol, read_from, args.end),
-                read_from,
-                args.start,
-                args.end,
-                anchor,
-                digest,
-            ),
-            timeline.store,
-            sys.stderr,
+    # The run directory exists before the replay so the candles can be written
+    # as they close; a run that dies hours in leaves the series it got to.
+    run_id = uuid4()
+    run_dir = Path(args.out) / str(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    timeframes = strategy_config.timeframes.all()
+    with ExitStack() as stack:
+        files = [
+            stack.enter_context(
+                (run_dir / f"bars_{timeframe}.csv").open("w", encoding="utf-8")
+            )
+            for timeframe in timeframes
+        ]
+        for out in files:
+            out.write(BAR_CSV_HEADER)
+        result = engine.run_stream(
+            capture_bars(
+                with_progress(
+                    covered_reconstructed_stream(
+                        repository.stream_between(symbol, read_from, args.end),
+                        read_from,
+                        args.start,
+                        args.end,
+                        anchor,
+                        digest,
+                    ),
+                    timeline.store,
+                    sys.stderr,
+                ),
+                [BarBuilder(symbol, timeframe) for timeframe in timeframes],
+                files,
+            )
         )
-    )
 
     manifest = {
-        "run_id": str(uuid4()),
+        "run_id": str(run_id),
         "created_at": datetime.now(UTC).isoformat(),
         **repro,
         "environment": args.env,

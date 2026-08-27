@@ -9,12 +9,14 @@ import pytest
 from tests.support import FakeEventRepository, FakeObservationRepository
 from trading.backtest.research import (
     broker_label_to_known,
+    capture_bars,
     reconstructed,
     with_progress,
 )
 from trading.data.features import US2Y_VINTAGE_LOOKBACK, StoredFeatureSource
 from trading.data.intervention.features import RECENCY_WINDOW_DAYS
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
+from trading.data.market.bars import BarBuilder
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope
 from trading.domain.market import Tick
@@ -394,6 +396,42 @@ def test_progress_reports_the_broker_label_axis_the_period_is_given_in():
     list(with_progress(iter([tick(label, label - timedelta(days=2))]), store, out))
 
     assert out.getvalue().startswith("2026-05-01")
+
+
+def test_captured_bars_are_the_closed_candles_on_the_broker_label_axis():
+    # The stored bar series starts at the bar service's first run, so a
+    # replay's own candles are the only record of what it saw.
+    minute = timedelta(minutes=1)
+    at = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    ticks = [tick(at + minute * i, at + minute * i) for i in range(3)]
+    out = io.StringIO()
+
+    consumed = list(capture_bars(iter(ticks), [BarBuilder("USDJPY", "1m")], [out]))
+
+    assert consumed == ticks
+    rows = out.getvalue().splitlines()
+    # The bucket the last tick opened has not closed, so it is not written.
+    assert len(rows) == 2
+    assert rows[0].startswith("2026-05-01T00:00:00+00:00,")
+    assert rows[1].startswith("2026-05-01T00:01:00+00:00,")
+
+
+def test_captured_bars_keep_each_timeframe_in_its_own_file():
+    minute = timedelta(minutes=1)
+    at = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    ticks = [tick(at + minute * i, at + minute * i) for i in range(6)]
+    one_minute, five_minute = io.StringIO(), io.StringIO()
+
+    list(
+        capture_bars(
+            iter(ticks),
+            [BarBuilder("USDJPY", "1m"), BarBuilder("USDJPY", "5m")],
+            [one_minute, five_minute],
+        )
+    )
+
+    assert len(one_minute.getvalue().splitlines()) == 5
+    assert len(five_minute.getvalue().splitlines()) == 1
 
 
 def test_progress_says_so_when_no_feature_is_visible():

@@ -115,3 +115,21 @@ def test_minimum_must_fit_inside_the_window():
     # 契約より少ない観測でスコアが出る。設定境界で弾く。
     with pytest.raises(ValueError, match="min_observations"):
         NormalizationConfig(window=3, min_observations=5)
+
+
+def test_non_finite_observations_are_not_counted():
+    # 欠測を NaN で表す供給元があり、そのまま通すと clip が最大側へ張り付き
+    # 「最も強い買いシグナル」に化ける。観測として数えない。
+    clean = series([1.0, 1.1, 0.9, 1.0, 1.05, 1.2])
+    polluted = [*clean, (T0 + timedelta(days=6), float("nan"))]
+    now = T0 + timedelta(days=6)
+
+    assert normalize_series(polluted, now, CONFIG) == normalize_series(
+        clean, now, CONFIG
+    )
+
+
+def test_all_non_finite_series_yields_no_score():
+    rows = series([float("nan")] * 10)
+
+    assert normalize_series(rows, rows[-1][0], CONFIG) is None

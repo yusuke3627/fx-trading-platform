@@ -13,6 +13,7 @@ confidence は score magnitude と独立の変数（設計書 §12.2A）。デ�
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -110,6 +111,9 @@ class CurrencyScoreConfig(BaseModel):
 
     @model_validator(mode="after")
     def _usable(self) -> CurrencyScoreConfig:
+        # NaN は合計・符号のどちらの比較もすり抜けるので、先に弾く。
+        if not all(math.isfinite(weight) for weight in self.weights.values()):
+            raise ValueError("factor weights must be finite")
         if sum(self.weights.values()) <= 0:
             raise ValueError("weights must sum to a positive value")
         if any(weight < 0 for weight in self.weights.values()):

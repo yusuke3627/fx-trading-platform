@@ -234,6 +234,12 @@ def test_state_and_config_mappings_are_read_only():
         CONFIG.weights[CurrencyFactor.POLICY] = -1.0
 
 
+def test_non_finite_weights_are_rejected():
+    # NaN は合計 > 0 と非負のどちらの検証もすり抜けるので、設定境界で弾く。
+    with pytest.raises(ValueError, match="finite"):
+        CurrencyScoreConfig(weights={CurrencyFactor.POLICY: float("nan")})
+
+
 def test_snapshot_currency_map_is_read_only():
     # strategy へ渡す snapshot を一つの読み手が書き換えられない。
     snapshot = RuleBasedCurrencyRegimeService(InMemoryFeatureStore()).snapshot(NOW)

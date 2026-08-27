@@ -76,9 +76,17 @@ def normalize_series(
     None を返すのは「尺度を語れない」場合 — 観測が足りない、または window
     内が定数（MAD = 0）で散らばりが無い。呼び出し側はこれを 0（中立）に
     潰さず、coverage 不足として confidence を下げる。
+
+    非有限値（NaN / Inf）は観測として数えない。欠測を NaN で表す供給元が
+    あり、そのまま通すと clip が最大側へ張り付いて「最も強い買いシグナル」
+    に化ける — 異常データが最大確信の売買判断になる経路を入口で断つ。
     """
     settings = config or NormalizationConfig()
-    visible = sorted((at, value) for at, value in series if at <= now)
+    visible = sorted(
+        (at, value)
+        for at, value in series
+        if at <= now and math.isfinite(value)
+    )
     if len(visible) < settings.min_observations:
         return None
 

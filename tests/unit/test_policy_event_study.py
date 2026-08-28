@@ -5,6 +5,7 @@ All prices and decisions here are fabricated.
 import math
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from trading.backtest.policy_event_study import (
     BOJ_LEG,
@@ -14,12 +15,16 @@ from trading.backtest.policy_event_study import (
     Observation,
     bootstrap_interval,
     classify,
+    current_version,
     divergence_slope,
     entry_bar,
+    measured_span,
     summarize,
     thin,
     window_outcome,
 )
+from trading.data.policy.scoring import SCORING_VERSION
+from trading.domain.event import EventEnvelope
 from trading.domain.market import Bar
 
 T0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
@@ -37,6 +42,17 @@ def bar(index: int, close: str, high: str | None = None, low: str | None = None)
         low=Decimal(low or close),
         close=Decimal(close),
         known_at=start + timedelta(days=1),
+    )
+
+
+def decision(version: str) -> EventEnvelope:
+    return EventEnvelope(
+        event_id=uuid4(),
+        event_type="BOJ_POLICY_SHIFT_SCORE",
+        source="TEST",
+        payload={"score": 1.0, "scoring_version": version},
+        retrieved_at=T0,
+        known_at=T0,
     )
 
 
@@ -81,6 +97,25 @@ def test_a_decision_after_the_series_ends_has_no_entry():
     bars = [bar(i, "150.00") for i in range(3)]
 
     assert entry_bar(bars, T0 + timedelta(days=30), ANCHOR) is None
+
+
+def test_a_decision_older_than_the_series_has_no_entry():
+    # The policy archive reaches back further than the prices do. Taking the
+    # first close of the series would enter a years-old decision at the
+    # series start and label that window its reaction.
+    bars = [bar(i, "150.00") for i in range(3)]
+
+    assert entry_bar(bars, T0 - timedelta(days=400), ANCHOR) is None
+
+
+def test_only_the_scoring_version_this_build_computes_is_observed():
+    # A re-tuned scorer re-ingests past meetings as new events, so one
+    # meeting can sit in the store under several versions sharing a known_at.
+    # Counting every version enters the same decision once per version.
+    meeting = decision(SCORING_VERSION)
+    superseded = decision("policy_shift_v0")
+
+    assert current_version([meeting, superseded]) == [meeting]
 
 
 def test_the_window_measures_a_short_and_its_excursions():
@@ -159,6 +194,22 @@ def test_the_slope_reads_negative_when_wider_divergence_precedes_a_lower_rate():
     ]
 
     assert divergence_slope(observations, 5) < 0
+
+
+def test_the_baseline_covers_the_stretch_the_decisions_reach_over():
+    # The price archive can outrun the policy one at either end, and a
+    # baseline over the whole of it compares the signal against years the
+    # signal was never measured in.
+    bars = [bar(i, "150.00") for i in range(100)]
+    observations = [observation(10, BOTH_LEGS, -0.01), observation(20, BOTH_LEGS, 0.01)]
+
+    span = measured_span(observations, bars, 5)
+
+    assert [b.start for b in span] == [b.start for b in bars[10:26]]
+
+
+def test_the_baseline_is_empty_without_a_decision_to_span():
+    assert measured_span([], [bar(i, "150.00") for i in range(10)], 5) == ()
 
 
 def test_the_slope_is_undefined_when_every_decision_carries_the_same_divergence():

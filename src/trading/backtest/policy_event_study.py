@@ -43,7 +43,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from trading.backtest.research import broker_label_to_known
-from trading.data.policy.scoring import EVENT_TYPES
+from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
+from trading.domain.event import EventEnvelope
 from trading.domain.market import Bar
 from trading.intelligence import features as f
 
@@ -61,6 +62,23 @@ BOJ_LEG = "BOJ>0 & Fed>=0"
 FED_LEG = "BOJ<=0 & Fed<0"
 NEITHER = "neither leg"
 GROUPS = (BOTH_LEGS, BOJ_LEG, FED_LEG, NEITHER)
+
+
+def current_version(decisions: Sequence[EventEnvelope]) -> list[EventEnvelope]:
+    """Only the meetings scored by the algorithm this build computes.
+
+    A re-tuned scorer re-ingests past meetings as new events rather than
+    rewriting them, so one meeting can sit in the store under several
+    versions sharing a known_at. The features read the current version
+    (StoredFeatureSource does the same filtering), so counting every version
+    here would enter the same decision once per version and weight it by how
+    often the scorer has been re-tuned.
+    """
+    return [
+        decision
+        for decision in decisions
+        if decision.payload.get("scoring_version") == SCORING_VERSION
+    ]
 
 
 def classify(boj: float, fed: float) -> str:
@@ -118,7 +136,14 @@ def entry_bar(bars: Sequence[Bar], known_at: datetime, anchor: timedelta) -> int
     Bars are bucketed on the broker's labels and the decision carries a real
     UTC instant (ADR-005), so the two are compared through the same
     reconstruction a replay uses (ADR-014).
+
+    A decision older than the series has no entry. The policy archive reaches
+    back further than the prices do, and taking the first close of the series
+    would enter one of them months or years after the announcement while
+    labelling the window as its reaction.
     """
+    if not bars or known_at < broker_label_to_known(bars[0].start, anchor):
+        return None
     for index, bar in enumerate(bars):
         if broker_label_to_known(bar.close_time, anchor) > known_at:
             return index
@@ -194,6 +219,22 @@ def summarize(observations: Sequence[Observation], horizon: int, seed: int) -> S
     )
 
 
+def measured_span(
+    observations: Sequence[Observation], bars: Sequence[Bar], horizon: int
+) -> Sequence[Bar]:
+    """The stretch of the series the decisions actually reach over.
+
+    The price archive can be longer than the policy one at either end, and a
+    baseline taken over the whole of it would compare the signal against
+    years the signal was never measured in.
+    """
+    if not observations:
+        return ()
+    first = min(o.entry_index for o in observations)
+    last = max(o.entry_index for o in observations)
+    return bars[first : last + horizon + 1]
+
+
 def unconditional(bars: Sequence[Bar], horizon: int, seed: int) -> Stats:
     """The same measurement on every non-overlapping window in the series.
 
@@ -264,6 +305,10 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
             "appreciation = short USD/JPY wins"
         ),
         "hit = share of windows that ended lower; CI = 90% bootstrap of the mean",
+        (
+            "unconditional covers the stretch the decisions reach over, not "
+            "the whole series"
+        ),
         "",
     ]
     quiet = [o for o in observations if not o.intervention]
@@ -278,7 +323,8 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
         for group in GROUPS:
             kept = thin([o for o in quiet if o.group == group], horizon)
             lines.append(_row(group, summarize(kept, horizon, seed)))
-        lines.append(_row("unconditional", unconditional(bars, horizon, seed)))
+        span = measured_span(observations, bars, horizon)
+        lines.append(_row("unconditional", unconditional(span, horizon, seed)))
         kept_active = thin(active, horizon)
         lines.append(_row("intervention active", summarize(kept_active, horizon, seed)))
         slope = divergence_slope(thin(quiet, horizon), horizon)
@@ -345,10 +391,12 @@ def main() -> None:
     anchor = timedelta(hours=config.market.broker_server_ahead_of_ny_hours)
 
     decisions = sorted(
-        (
-            event
-            for event_type in EVENT_TYPES.values()
-            for event in events_repository.known_before(now, event_type)
+        current_version(
+            [
+                event
+                for event_type in EVENT_TYPES.values()
+                for event in events_repository.known_before(now, event_type)
+            ]
         ),
         key=lambda event: event.known_at,
     )

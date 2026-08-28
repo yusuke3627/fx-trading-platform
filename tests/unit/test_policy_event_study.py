@@ -18,6 +18,7 @@ from trading.backtest.policy_event_study import (
     current_version,
     divergence_slope,
     entry_bar,
+    fold_daily,
     measured_span,
     summarize,
     thin,
@@ -25,7 +26,7 @@ from trading.backtest.policy_event_study import (
 )
 from trading.data.policy.scoring import SCORING_VERSION
 from trading.domain.event import EventEnvelope
-from trading.domain.market import Bar
+from trading.domain.market import Bar, Tick
 
 T0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
 ANCHOR = timedelta(hours=7)
@@ -67,6 +68,28 @@ def observation(index: int, group: str, ret: float, divergence: float = 0.0) -> 
         adverse={5: abs(ret)},
         favorable={5: -abs(ret)},
     )
+
+
+def test_candles_are_folded_from_the_quotes_not_read_from_the_live_series():
+    # market_bars holds the live series and never corrects a candle folded
+    # across a gap a later tick backfill repaired, so a study reading it
+    # would carry those candles into its returns.
+    quotes = [
+        Tick(
+            symbol="USDJPY",
+            bid=Decimal("150.00") + Decimal(i),
+            ask=Decimal("150.01") + Decimal(i),
+            time=T0 + timedelta(hours=6 * i),
+            received_at=T0 + timedelta(hours=6 * i),
+        )
+        for i in range(9)
+    ]
+
+    bars = fold_daily(iter(quotes), "USDJPY", None)
+
+    # Two whole days closed; the third is still open and is not a candle.
+    assert [b.start for b in bars] == [T0, T0 + timedelta(days=1)]
+    assert bars[0].timeframe == "1d"
 
 
 def test_the_groups_partition_the_states():

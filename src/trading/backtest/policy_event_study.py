@@ -30,6 +30,11 @@ Sample size is the binding constraint and no amount of method fixes it:
 thirty-odd meetings, of which any one horizon keeps a dozen. Read the sign,
 the effect size and whether the result survives dropping an episode — a p
 value computed here would be theatre.
+
+Candles are folded from the stored quotes rather than read from market_bars,
+which holds the live series and never corrects a candle folded across a gap
+that a later backfill repaired. That costs one pass over the archive, so the
+run takes minutes rather than seconds.
 """
 from __future__ import annotations
 
@@ -38,22 +43,30 @@ import math
 import os
 import random
 import statistics
-from collections.abc import Sequence
+import sys
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TextIO
 
 from trading.backtest.research import broker_label_to_known
+from trading.data.market.bars import BarBuilder
 from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
 from trading.domain.event import EventEnvelope
-from trading.domain.market import Bar
+from trading.domain.market import Bar, Tick
 from trading.intelligence import features as f
 
+# The thesis, the grouping and every label here are about the yen: a BOJ
+# minus Fed divergence says nothing about another pair.
+SYMBOL = "USDJPY"
 # Horizons are trading days, so the series has to be the daily one: on any
 # other the same numbers would silently mean hours.
 TIMEFRAME = "1d"
 HORIZONS = (5, 10, 20)
-# Daily bars of any archive this will ever read fit well inside one read.
-BAR_LIMIT = 100_000
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+# Broker labels run ahead of our clock (ADR-005), so the read's end bound
+# allows for the anchor.
+BROKER_CLOCK_MARGIN = timedelta(days=1)
 BOOTSTRAP_SAMPLES = 2_000
 BOOTSTRAP_LEVEL = 0.90
 BOOTSTRAP_SEED = 20260828
@@ -63,6 +76,38 @@ BOJ_LEG = "BOJ>0 & Fed>=0"
 FED_LEG = "BOJ<=0 & Fed<0"
 NEITHER = "neither leg"
 GROUPS = (BOTH_LEGS, BOJ_LEG, FED_LEG, NEITHER)
+
+
+def fold_daily(ticks: Iterator[Tick], symbol: str, progress: TextIO | None) -> list[Bar]:
+    """Daily candles folded from the stored quotes, not read from market_bars.
+
+    market_bars holds the LIVE series: each candle from the quotes that had
+    arrived when it closed, never corrected afterwards (bar_service says so
+    itself, and ON CONFLICT is what enforces it). A gap repaired by a later
+    tick backfill leaves the candle that was folded across it wrong for good,
+    and the share of the series built that way only grows. A study reading
+    them would carry those candles into its returns and excursions.
+
+    The archive is the durable series, so this folds from it the way a replay
+    does. It costs one pass over tens of millions of quotes; the measurement
+    is worth more than the minutes.
+    """
+    builder = BarBuilder(symbol, TIMEFRAME)
+    bars: list[Bar] = []
+    month: tuple[int, int] | None = None
+    for count, tick in enumerate(ticks, start=1):
+        bar = builder.on_tick(tick)
+        if bar is not None:
+            bars.append(bar)
+        if progress is not None and (tick.time.year, tick.time.month) != month:
+            month = (tick.time.year, tick.time.month)
+            print(
+                f"{month[0]}-{month[1]:02d} {count:>12,} ticks  "
+                f"{len(bars):>5} candles",
+                file=progress,
+                flush=True,
+            )
+    return bars
 
 
 def current_version(decisions: Sequence[EventEnvelope]) -> list[EventEnvelope]:
@@ -349,11 +394,15 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Policy signal event study")
     parser.add_argument("--env", default="backtest")
-    parser.add_argument("--symbol", default=None)
+    parser.add_argument("--symbol", default=SYMBOL)
     args = parser.parse_args()
 
     config = load_config(args.env)
-    symbol = args.symbol or config.market.primary_instruments[0]
+    symbol = args.symbol
+    if symbol != SYMBOL:
+        # Another pair's candles would be grouped by a BOJ minus Fed
+        # divergence and reported as yen appreciation.
+        raise SystemExit(f"this study is about {SYMBOL}, not {symbol}")
     dsn = os.environ.get(config.storage.dsn_env)
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")
@@ -361,21 +410,22 @@ def main() -> None:
     from trading.storage.postgres import (
         PostgresEventRepository,
         PostgresMacroObservationRepository,
-        PostgresMarketBarRepository,
+        PostgresMarketTickRepository,
         connect,
     )
 
     conn = connect(dsn)
     events_repository = PostgresEventRepository(conn)
     now = datetime.now(UTC)
-    bars = list(
-        PostgresMarketBarRepository(conn).known_before(symbol, TIMEFRAME, now, BAR_LIMIT)
+    bars = fold_daily(
+        PostgresMarketTickRepository(conn).stream_between(
+            symbol, EPOCH, now + BROKER_CLOCK_MARGIN
+        ),
+        symbol,
+        sys.stderr,
     )
     if not bars:
-        raise SystemExit(
-            f"no {TIMEFRAME} bars stored for {symbol}: run the bar service "
-            "with --backfill first"
-        )
+        raise SystemExit(f"no stored quotes for {symbol}")
 
     source = StoredFeatureSource(
         PostgresMacroObservationRepository(conn),

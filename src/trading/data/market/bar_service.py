@@ -55,7 +55,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, TextIO
 
 from trading.backtest.clock import Clock, SystemClock
-from trading.data.cli import aware_utc, poll_interval
+from trading.data.cli import poll_interval
 from trading.data.market.bars import BarBuilder, bucket_start
 from trading.domain.market import TIMEFRAME_SECONDS, Bar
 from trading.storage.repository import MarketBarRepository, MarketTickRepository
@@ -124,7 +124,6 @@ class BarService:
         self,
         symbol: str,
         timeframes: Sequence[str],
-        since: datetime | None = None,
         progress: TextIO | None = None,
     ) -> dict[str, int]:
         """Fold the stored tick series into candles in one read.
@@ -133,10 +132,14 @@ class BarService:
         of quotes, and reading it once per timeframe would multiply hours of
         work to produce rows a single fold already has in hand.
 
-        `since` is the resume point of a pass that died partway (the write is
-        idempotent, so a restart from the beginning is correct but pays for
-        the whole read again); without it the fold starts at the first stored
-        quote.
+        A pass that dies partway is restarted from the beginning, and there is
+        deliberately no way to resume from a later point. The timeframes do
+        not reach the same depth at the same moment — a minute candle is
+        written every few thousand bars while two years of daily ones are
+        still in hand — so a shared resume point would skip the long
+        timeframes over everything before it and report a complete run with
+        years missing from exactly the windows this exists to fill. Restarting
+        costs the read again; the idempotent write is what makes it correct.
 
         The bucket the first quote falls into is given up unless the quote
         opens it, for the reason a cold start gives one up: a candle missing
@@ -149,7 +152,7 @@ class BarService:
         end = now + BROKER_CLOCK_MARGIN
         # No stored quote predates the epoch, so this reads as "from the
         # beginning of the series" without a query for where that is.
-        start = since or datetime(1970, 1, 1, tzinfo=UTC)
+        start = datetime(1970, 1, 1, tzinfo=UTC)
         bounds = self._ticks.bounds_between(symbol, start, end)
         if bounds is None:
             return {timeframe: 0 for timeframe in timeframes}
@@ -283,16 +286,7 @@ def main() -> None:
         help="fold the whole stored tick series once, for the spans the live "
         "passes never covered, and exit",
     )
-    parser.add_argument(
-        "--since",
-        type=aware_utc,
-        default=None,
-        help="resume a --backfill that died partway, at this broker timestamp",
-    )
     args = parser.parse_args()
-
-    if args.since is not None and not args.backfill:
-        parser.error("--since applies to --backfill")
 
     config = load_config(args.env)
     symbol = args.symbol or config.market.primary_instruments[0]
@@ -319,7 +313,7 @@ def main() -> None:
     if args.backfill:
         # Progress goes to stderr: the read is hours long, and a run that
         # says nothing cannot be told from one that is stuck.
-        written = service.backfill(symbol, timeframes, args.since, sys.stderr)
+        written = service.backfill(symbol, timeframes, sys.stderr)
         for timeframe in timeframes:
             print(f"{timeframe}: stored {written[timeframe]} bars")
     elif args.once:

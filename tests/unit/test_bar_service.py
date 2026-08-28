@@ -321,13 +321,22 @@ def test_backfill_leaves_bars_the_live_passes_already_wrote_alone():
     assert service.backfill("USDJPY", ["1m"]) == {"1m": 0}
 
 
-def test_backfill_resumes_where_a_dead_pass_left_off():
+def test_backfill_rebuilds_the_long_timeframes_a_dead_pass_never_wrote():
+    # The timeframes do not reach the same depth at once: minute candles are
+    # written in batches while the daily ones are still in hand. A restart
+    # therefore has to fold the series from the beginning — resuming at the
+    # point the dead pass reached would skip the long timeframes over
+    # everything before it and report a complete run.
     ticks = minute_ticks(40)
     service, bars = make_service(ticks, clock=FixedClock(at(hours=2)))
+    service.backfill("USDJPY", ["1m"])
+    bars.bars = [b for b in bars.bars if b.start >= at(minutes=10)]
 
-    service.backfill("USDJPY", ["1m"], since=at(minutes=10))
+    service.backfill("USDJPY", ["1m"])
 
-    assert [b.start for b in bars.bars] == [at(minutes=10), at(minutes=11), at(minutes=12)]
+    assert [b.start for b in sorted(bars.bars, key=lambda b: b.start)] == [
+        at(minutes=i) for i in range(13)
+    ]
 
 
 def test_backfill_reads_quotes_stamped_ahead_of_our_clock():

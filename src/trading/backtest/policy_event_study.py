@@ -65,9 +65,12 @@ SYMBOL = "USDJPY"
 TIMEFRAME = "1d"
 HORIZONS = (5, 10, 20)
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-# A weekend closes the series for two days and a long holiday weekend for
-# three; anything wider is data the archive does not have.
-GAP_TOLERANCE = timedelta(days=5)
+# The steps between consecutive candles of an unbroken series: a day inside
+# the week, three across a weekend.
+TRADING_DAY_STEPS = (timedelta(days=1), timedelta(days=3))
+# Wider than any closure this market takes (it shuts for New Year and
+# Christmas, not for a working week), so a step this size is missing data.
+HOLE_MINIMUM = timedelta(days=5)
 # Broker labels run ahead of our clock (ADR-005), so the read's end bound
 # allows for the anchor.
 BROKER_CLOCK_MARGIN = timedelta(days=1)
@@ -200,19 +203,55 @@ def entry_bar(bars: Sequence[Bar], known_at: datetime, anchor: timedelta) -> int
     return None
 
 
-def gaps(bars: Sequence[Bar]) -> list[tuple[Bar, Bar]]:
-    """Consecutive candles the series jumps between, weekends aside.
+def irregular_steps(bars: Sequence[Bar]) -> list[tuple[Bar, Bar]]:
+    """Consecutive candles further apart than an unbroken week runs.
 
-    A missing stretch leaves no candles behind, so a horizon counted in bars
-    silently spans it: five bars across the archive's 2026 hole would be a
-    ten-week move reported as a week. Weekends and holidays are the series
-    closing, not missing, which is why the tolerance is days rather than one.
+    The broker's labels put a week's quotes on Monday to Friday, so candles
+    are one day apart inside the week and three across a weekend. A wider
+    step is either a day the market took off or one the archive is missing,
+    and the series alone cannot tell them apart — which is why every one of
+    them is reported rather than assumed.
     """
     return [
         (before, after)
         for before, after in pairwise(bars)
-        if after.start - before.start > GAP_TOLERANCE
+        if (after.start - before.start) not in TRADING_DAY_STEPS
     ]
+
+
+def gaps(bars: Sequence[Bar]) -> list[tuple[Bar, Bar]]:
+    """The steps too wide to be the market closing: data the archive lacks.
+
+    A horizon counted in candles spans one silently — five bars across the
+    archive's 2026 hole would be a ten-week move reported as a week — so
+    windows crossing these are not measured at all.
+
+    A market closure is left alone instead. The horizons are trading days,
+    and a day the market did not trade is not one of them, so a window either
+    side of New Year measures exactly what it claims. Dropping those windows
+    too would cost a third of the twenty-day sample to fix nothing.
+    """
+    return [
+        (before, after)
+        for before, after in irregular_steps(bars)
+        if after.start - before.start >= HOLE_MINIMUM
+    ]
+
+
+def collapse_same_entry(observations: Sequence[Observation]) -> list[Observation]:
+    """One observation per entry candle, carrying the latest state.
+
+    Both banks can publish before the same close — 2024-07-31 is one such day
+    — and that close prices in both. Keeping the earlier decision would pair
+    the entry with a policy state that was already superseded when the price
+    printed.
+    """
+    latest: dict[int, Observation] = {}
+    for observation in observations:
+        held = latest.get(observation.entry_index)
+        if held is None or observation.at > held.at:
+            latest[observation.entry_index] = observation
+    return sorted(latest.values(), key=lambda o: o.entry_index)
 
 
 def window_outcome(
@@ -386,15 +425,20 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
         ),
         "",
     ]
-    for before, after in gaps(bars):
+    holes = gaps(bars)
+    for before, after in irregular_steps(bars):
+        skipped = (after.start - before.start).days - 1
+        kind = (
+            "missing data, windows crossing it are not measured"
+            if (before, after) in holes
+            else "market closed, windows spanning it are still trading days"
+        )
         lines.append(
-            f"series gap: {before.start.date()} -> {after.start.date()}; "
-            "windows crossing it are not measured"
+            f"{before.start.date()} -> {after.start.date()} "
+            f"({skipped}d): {kind}"
         )
     lines.append("")
 
-    quiet = [o for o in observations if not o.intervention]
-    active = [o for o in observations if o.intervention]
     for horizon in HORIZONS:
         seed = BOOTSTRAP_SEED + horizon
         lines.append(f"horizon {horizon} trading days (non-overlapping)")
@@ -402,21 +446,30 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
             f"  {'':<22} {'n':>6} {'mean':>8} {'median':>8} {'hit':>6} "
             f"{'adverse':>7} {'favour':>7}  CI90"
         )
-        # Thinned across the groups rather than inside each: a BOJ and a Fed
+        # Thinned across every row rather than inside each: a BOJ and a Fed
         # decision days apart fall in different groups but share nearly all
-        # of their forward window, and thinning per group would report one
-        # price move as evidence for two of them. The cost is that the
-        # earlier decision of such a pair is the one kept.
-        kept = thin(quiet, horizon)
+        # of their forward window, and thinning per row would report one
+        # price move as evidence for two of them. So no price window appears
+        # twice anywhere in the table — at the cost that the earlier decision
+        # of such a pair is the one kept.
+        kept = thin(observations, horizon)
+        quiet = [o for o in kept if not o.intervention]
         for group in GROUPS:
             lines.append(
-                _row(group, summarize([o for o in kept if o.group == group], horizon, seed))
+                _row(
+                    group,
+                    summarize([o for o in quiet if o.group == group], horizon, seed),
+                )
             )
         span = measured_span(kept, bars, horizon)
         lines.append(_row("unconditional", unconditional(span, horizon, seed)))
-        kept_active = thin(active, horizon)
-        lines.append(_row("intervention active", summarize(kept_active, horizon, seed)))
-        slope = divergence_slope(kept, horizon)
+        lines.append(
+            _row(
+                "intervention active",
+                summarize([o for o in kept if o.intervention], horizon, seed),
+            )
+        )
+        slope = divergence_slope(quiet, horizon)
         lines.append(f"  divergence slope: {slope * 100:>+7.3f} % per point")
         lines.append("")
     return "\n".join(lines)
@@ -520,7 +573,7 @@ def main() -> None:
             )
         )
 
-    print(report(observations, bars))
+    print(report(collapse_same_entry(observations), bars))
 
 
 if __name__ == "__main__":

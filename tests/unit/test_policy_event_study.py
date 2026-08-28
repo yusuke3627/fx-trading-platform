@@ -15,11 +15,13 @@ from trading.backtest.policy_event_study import (
     Observation,
     bootstrap_interval,
     classify,
+    collapse_same_entry,
     current_version,
     divergence_slope,
     entry_bar,
     fold_daily,
     gaps,
+    irregular_steps,
     measured_span,
     summarize,
     thin,
@@ -163,20 +165,54 @@ def test_a_window_that_jumps_a_hole_in_the_series_is_not_measured():
     # A missing stretch leaves no candles, so a horizon counted in bars would
     # span it: five bars across the archive's 2026 hole is a ten-week move
     # reported as a week.
-    across_a_hole = [bar(0, "150.00"), bar(1, "150.50"), bar(40, "158.00")]
+    # T0 is a Friday, so 0 -> 3 is a weekend and 3 -> 4 the next weekday.
+    across_a_hole = [bar(0, "150.00"), bar(3, "150.50"), bar(40, "158.00")]
 
     assert window_outcome(across_a_hole, 0, 2) is None
     # A weekend is the series closing, not missing.
-    over_a_weekend = [bar(0, "150.00"), bar(1, "150.50"), bar(4, "150.80")]
+    over_a_weekend = [bar(0, "150.00"), bar(3, "150.50"), bar(4, "150.80")]
     assert window_outcome(over_a_weekend, 0, 2) is not None
 
 
 def test_gaps_names_the_stretch_the_series_jumps():
-    series = [bar(0, "150.00"), bar(1, "150.50"), bar(40, "158.00")]
+    series = [bar(0, "150.00"), bar(3, "150.50"), bar(40, "158.00")]
 
     assert [(b.start.date(), a.start.date()) for b, a in gaps(series)] == [
-        (bar(1, "0").start.date(), bar(40, "0").start.date())
+        (bar(3, "0").start.date(), bar(40, "0").start.date())
     ]
+
+
+def test_a_days_closure_is_reported_but_still_measured():
+    # The horizons are trading days, so a day the market did not trade is not
+    # one of them: the window either side of New Year measures what it
+    # claims. It is still reported, because the series cannot tell a closure
+    # from a day the archive lost.
+    # T0 is a Friday, so index 0 -> 3 is a weekend and 3 -> 4 a weekday.
+    unbroken = [bar(0, "150.00"), bar(3, "150.10"), bar(4, "150.20")]
+    assert irregular_steps(unbroken) == []
+
+    one_day_shut = [bar(3, "150.00"), bar(5, "150.10"), bar(6, "150.20")]
+    assert len(irregular_steps(one_day_shut)) == 1
+    assert gaps(one_day_shut) == []
+    assert window_outcome(one_day_shut, 0, 2) is not None
+
+
+def test_two_decisions_priced_by_one_close_keep_the_later_state():
+    # Both banks can publish before the same close — 2024-07-31 was such a
+    # day — and that close prices in both, so the earlier state is stale.
+    earlier = observation(4, BOJ_LEG, -0.01)
+    later = Observation(
+        at=earlier.at + timedelta(hours=6),
+        entry_index=4,
+        group=BOTH_LEGS,
+        divergence=2.0,
+        intervention=False,
+        returns={5: -0.01},
+        adverse={5: 0.01},
+        favorable={5: -0.02},
+    )
+
+    assert collapse_same_entry([earlier, later]) == [later]
 
 
 def test_a_window_running_past_the_series_is_not_measured():

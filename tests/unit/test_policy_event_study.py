@@ -154,6 +154,25 @@ def test_thinning_keeps_windows_that_do_not_share_days():
     assert [o.entry_index for o in thin(crowded, 5)] == [0, 6]
 
 
+def test_a_decision_the_series_outruns_at_one_horizon_survives_at_the_others():
+    # The newest meetings have five days of prices behind them but not
+    # twenty; dropping them everywhere would thin the recent sample out of
+    # the short horizons for no reason.
+    recent = Observation(
+        at=T0,
+        entry_index=0,
+        group=BOTH_LEGS,
+        divergence=1.0,
+        intervention=False,
+        returns={5: -0.01},
+        adverse={5: 0.01},
+        favorable={5: -0.02},
+    )
+
+    assert thin([recent], 5) == [recent]
+    assert thin([recent], 20) == []
+
+
 def test_summary_counts_only_the_windows_that_ended_lower():
     stats = summarize(
         [

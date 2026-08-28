@@ -48,10 +48,11 @@ from trading.domain.event import EventEnvelope
 from trading.domain.market import Bar
 from trading.intelligence import features as f
 
+# Horizons are trading days, so the series has to be the daily one: on any
+# other the same numbers would silently mean hours.
+TIMEFRAME = "1d"
 HORIZONS = (5, 10, 20)
-# Daily bars of the whole archive fit well inside this; a minute series does
-# not, and reading its tail would study a different window than the one asked
-# for.
+# Daily bars of any archive this will ever read fit well inside one read.
 BAR_LIMIT = 100_000
 BOOTSTRAP_SAMPLES = 2_000
 BOOTSTRAP_LEVEL = 0.90
@@ -175,10 +176,15 @@ def thin(observations: Sequence[Observation], horizon: int) -> list[Observation]
     Two meetings inside one horizon share almost all of their forward days;
     keeping both would average the same price move twice and make a handful
     of episodes look like an independent sample.
+
+    Decisions the series does not reach this far past are not observations at
+    this horizon — but they remain observations at the shorter ones, which is
+    why the horizons are filtered here rather than when they are built.
     """
     kept: list[Observation] = []
     free_from = -1
-    for observation in sorted(observations, key=lambda o: o.entry_index):
+    with_horizon = (o for o in observations if horizon in o.returns)
+    for observation in sorted(with_horizon, key=lambda o: o.entry_index):
         if observation.entry_index >= free_from:
             kept.append(observation)
             free_from = observation.entry_index + horizon
@@ -315,7 +321,7 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
     active = [o for o in observations if o.intervention]
     for horizon in HORIZONS:
         seed = BOOTSTRAP_SEED + horizon
-        lines.append(f"horizon {horizon} bars (non-overlapping)")
+        lines.append(f"horizon {horizon} trading days (non-overlapping)")
         lines.append(
             f"  {'':<22} {'n':>6} {'mean':>8} {'median':>8} {'hit':>6} "
             f"{'adverse':>7} {'favour':>7}  CI90"
@@ -323,7 +329,9 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
         for group in GROUPS:
             kept = thin([o for o in quiet if o.group == group], horizon)
             lines.append(_row(group, summarize(kept, horizon, seed)))
-        span = measured_span(observations, bars, horizon)
+        span = measured_span(
+            [o for o in observations if horizon in o.returns], bars, horizon
+        )
         lines.append(_row("unconditional", unconditional(span, horizon, seed)))
         kept_active = thin(active, horizon)
         lines.append(_row("intervention active", summarize(kept_active, horizon, seed)))
@@ -342,7 +350,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Policy signal event study")
     parser.add_argument("--env", default="backtest")
     parser.add_argument("--symbol", default=None)
-    parser.add_argument("--timeframe", default="1d")
     args = parser.parse_args()
 
     config = load_config(args.env)
@@ -362,21 +369,12 @@ def main() -> None:
     events_repository = PostgresEventRepository(conn)
     now = datetime.now(UTC)
     bars = list(
-        PostgresMarketBarRepository(conn).known_before(
-            symbol, args.timeframe, now, BAR_LIMIT
-        )
+        PostgresMarketBarRepository(conn).known_before(symbol, TIMEFRAME, now, BAR_LIMIT)
     )
     if not bars:
         raise SystemExit(
-            f"no {args.timeframe} bars stored for {symbol}: run the bar "
-            "service with --backfill first"
-        )
-    if len(bars) == BAR_LIMIT:
-        # Reading the tail of a longer series would silently study a window
-        # that is not the one the operator asked about.
-        raise SystemExit(
-            f"{args.timeframe} has at least {BAR_LIMIT} bars, more than this "
-            "reads at once; study a coarser timeframe"
+            f"no {TIMEFRAME} bars stored for {symbol}: run the bar service "
+            "with --backfill first"
         )
 
     source = StoredFeatureSource(
@@ -413,10 +411,15 @@ def main() -> None:
         entry = entry_bar(bars, decision.known_at, anchor)
         if entry is None:
             continue
+        # A decision the series does not reach twenty bars past is still an
+        # observation at five: dropping it from every horizon would thin the
+        # most recent meetings out of the short ones for no reason.
         outcomes = {
-            horizon: window_outcome(bars, entry, horizon) for horizon in HORIZONS
+            horizon: outcome
+            for horizon in HORIZONS
+            if (outcome := window_outcome(bars, entry, horizon)) is not None
         }
-        if any(outcome is None for outcome in outcomes.values()):
+        if not outcomes:
             continue
         observations.append(
             Observation(
@@ -425,9 +428,9 @@ def main() -> None:
                 group=classify(boj, fed),
                 divergence=boj - fed,
                 intervention=values.get(f.INTERVENTION_RISK) is not None,
-                returns={h: outcomes[h][0] for h in HORIZONS},
-                adverse={h: outcomes[h][1] for h in HORIZONS},
-                favorable={h: outcomes[h][2] for h in HORIZONS},
+                returns={h: outcome[0] for h, outcome in outcomes.items()},
+                adverse={h: outcome[1] for h, outcome in outcomes.items()},
+                favorable={h: outcome[2] for h, outcome in outcomes.items()},
             )
         )
 

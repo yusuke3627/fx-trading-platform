@@ -33,6 +33,11 @@ CONFIG = CurrencyScoreConfig(
 )
 
 
+# POLICY は通貨横断で校正済みの尺度に載るので正規化を掛けない（ADR-021）。
+# 「同じ系列なら同じ値」を前提にする検証は残りの factor で行う。
+NORMALIZED_FACTORS = tuple(f for f in CurrencyFactor if f is not CurrencyFactor.POLICY)
+
+
 def rising(start: datetime = T0) -> list[tuple[datetime, float]]:
     return [(start + timedelta(days=i), v) for i, v in enumerate([1.0, 1.1, 0.9, 1.0, 1.05, 1.6])]
 
@@ -52,9 +57,16 @@ def service(series: dict, config: CurrencyScoreConfig = CONFIG) -> CurrencyState
 
 def test_missing_factors_lower_confidence_not_the_score():
     # 設計書 §12.2A: coverage 不足で score を膨らませず confidence を下げる。
-    one_factor = service({(Currency.USD, CurrencyFactor.POLICY): rising()})
+    # POLICY だけは尺度が違い（正規化せず上限で割る）、同じ系列を与えても値が
+    # 揃わない。ここで見たいのは「factor が増えても値が薄まらない」ことなので、
+    # 同じ尺度の factor だけで比べる。
+    config = CurrencyScoreConfig(
+        weights={factor: 1.0 for factor in NORMALIZED_FACTORS},
+        normalization=NormalizationConfig(window=20, min_observations=5),
+    )
+    one_factor = service({(Currency.USD, CurrencyFactor.GROWTH): rising()}, config)
     all_factors = service(
-        {(Currency.USD, factor): rising() for factor in CurrencyFactor}
+        {(Currency.USD, factor): rising() for factor in NORMALIZED_FACTORS}, config
     )
 
     sparse = one_factor.state(Currency.USD, NOW)
@@ -66,12 +78,12 @@ def test_missing_factors_lower_confidence_not_the_score():
 
 
 def test_absent_factor_scores_stay_none_not_zero():
-    state = service({(Currency.USD, CurrencyFactor.POLICY): rising()}).state(
+    state = service({(Currency.USD, CurrencyFactor.GROWTH): rising()}).state(
         Currency.USD, NOW
     )
 
-    assert state.score(CurrencyFactor.POLICY) is not None
-    assert state.score(CurrencyFactor.GROWTH) is None
+    assert state.score(CurrencyFactor.GROWTH) is not None
+    assert state.score(CurrencyFactor.INFLATION) is None
 
 
 def test_no_data_yields_neutral_score_with_zero_confidence():
@@ -83,8 +95,8 @@ def test_no_data_yields_neutral_score_with_zero_confidence():
 
 
 def test_stale_observations_decay_confidence():
-    fresh = service({(Currency.USD, CurrencyFactor.POLICY): rising()})
-    old = service({(Currency.USD, CurrencyFactor.POLICY): rising(T0 - timedelta(days=8))})
+    fresh = service({(Currency.USD, CurrencyFactor.GROWTH): rising()})
+    old = service({(Currency.USD, CurrencyFactor.GROWTH): rising(T0 - timedelta(days=8))})
 
     fresh_state = fresh.state(Currency.USD, T0 + timedelta(days=5, hours=1))
     stale_state = old.state(Currency.USD, T0 + timedelta(days=5, hours=1))
@@ -95,18 +107,18 @@ def test_stale_observations_decay_confidence():
 
 def test_directional_score_weights_available_factors():
     weighted = CurrencyScoreConfig(
-        weights={CurrencyFactor.POLICY: 3.0, CurrencyFactor.RATES: 1.0},
+        weights={CurrencyFactor.GROWTH: 3.0, CurrencyFactor.RATES: 1.0},
         normalization=NormalizationConfig(window=20, min_observations=5),
     )
     states = service(
         {
-            (Currency.USD, CurrencyFactor.POLICY): rising(),
+            (Currency.USD, CurrencyFactor.GROWTH): rising(),
             (Currency.USD, CurrencyFactor.RATES): falling(),
         },
         weighted,
     ).state(Currency.USD, NOW)
 
-    policy = states.score(CurrencyFactor.POLICY)
+    policy = states.score(CurrencyFactor.GROWTH)
     rates = states.score(CurrencyFactor.RATES)
     assert policy is not None and rates is not None
     expected = (policy * 3 + rates) / 4
@@ -121,8 +133,8 @@ def test_directional_score_weights_available_factors():
 def test_pair_score_is_base_minus_quote():
     states = service(
         {
-            (Currency.USD, CurrencyFactor.POLICY): rising(),
-            (Currency.JPY, CurrencyFactor.POLICY): falling(),
+            (Currency.USD, CurrencyFactor.GROWTH): rising(),
+            (Currency.JPY, CurrencyFactor.GROWTH): falling(),
         }
     )
 
@@ -152,14 +164,14 @@ def test_conflicting_legs_lower_pair_confidence():
     # 引き算で、同じ差でも相対的な不確かさが大きい（設計書 §12.2）。
     aligned = service(
         {
-            (Currency.USD, CurrencyFactor.POLICY): rising(),
-            (Currency.JPY, CurrencyFactor.POLICY): rising(),
+            (Currency.USD, CurrencyFactor.GROWTH): rising(),
+            (Currency.JPY, CurrencyFactor.GROWTH): rising(),
         }
     ).pair_state(usdjpy_spec(), NOW)
     opposed = service(
         {
-            (Currency.USD, CurrencyFactor.POLICY): rising(),
-            (Currency.JPY, CurrencyFactor.POLICY): falling(),
+            (Currency.USD, CurrencyFactor.GROWTH): rising(),
+            (Currency.JPY, CurrencyFactor.GROWTH): falling(),
         }
     ).pair_state(usdjpy_spec(), NOW)
 
@@ -172,8 +184,8 @@ def test_pair_known_at_follows_the_later_leg():
     # すると、known_at 順の replay でその時点にはまだ無い情報が見える。
     states = service(
         {
-            (Currency.USD, CurrencyFactor.POLICY): rising(),
-            (Currency.JPY, CurrencyFactor.POLICY): rising(),
+            (Currency.USD, CurrencyFactor.GROWTH): rising(),
+            (Currency.JPY, CurrencyFactor.GROWTH): rising(),
         }
     )
     base = states.state(Currency.USD, NOW)
@@ -227,20 +239,20 @@ def test_state_and_config_mappings_are_read_only():
     # frozen=True はフィールド再代入しか止めない。共有された state / config
     # の中身を書き換えられると、作成時に確定した directional_score や
     # 検証済みの重みと食い違う。
-    state = service({(Currency.USD, CurrencyFactor.POLICY): rising()}).state(
+    state = service({(Currency.USD, CurrencyFactor.GROWTH): rising()}).state(
         Currency.USD, NOW
     )
 
     with pytest.raises(TypeError):
         state.factor_scores[CurrencyFactor.GROWTH] = Decimal(1)
     with pytest.raises(TypeError):
-        CONFIG.weights[CurrencyFactor.POLICY] = -1.0
+        CONFIG.weights[CurrencyFactor.GROWTH] = -1.0
 
 
 def test_non_finite_weights_are_rejected():
     # NaN は合計 > 0 と非負のどちらの検証もすり抜けるので、設定境界で弾く。
     with pytest.raises(ValueError, match="finite"):
-        CurrencyScoreConfig(weights={CurrencyFactor.POLICY: float("nan")})
+        CurrencyScoreConfig(weights={CurrencyFactor.GROWTH: float("nan")})
 
 
 def test_overflowing_weight_sum_is_rejected():
@@ -249,7 +261,7 @@ def test_overflowing_weight_sum_is_rejected():
     with pytest.raises(ValueError, match="finite"):
         CurrencyScoreConfig(
             weights={
-                CurrencyFactor.POLICY: 1e308,
+                CurrencyFactor.GROWTH: 1e308,
                 CurrencyFactor.RATES: 1e308,
             }
         )
@@ -291,7 +303,7 @@ def test_missing_features_activate_no_regime():
 
 
 def test_regimes_ride_along_on_the_state():
-    states = service({(Currency.USD, CurrencyFactor.POLICY): rising()})
+    states = service({(Currency.USD, CurrencyFactor.GROWTH): rising()})
 
     state = states.state(
         Currency.USD,

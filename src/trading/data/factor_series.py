@@ -34,12 +34,10 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from trading.data.macro.registry import (
-    EA_DEPOSIT_FACILITY_RATE,
     EA_HICP_HEADLINE_YOY_NSA,
     EA_UNEMPLOYMENT_RATE_SA,
     EA_YIELD_CURVE_2Y,
     INDICATORS,
-    UK_BANK_RATE,
     UK_CPI_HEADLINE_YOY_NSA,
     UK_OIS_2Y,
     UK_UNEMPLOYMENT_RATE_SA,
@@ -47,12 +45,14 @@ from trading.data.macro.registry import (
     US_TREASURY_2Y_YIELD,
     US_UNEMPLOYMENT_RATE_SA,
 )
+from trading.data.policy.risk_windows import BANK_CURRENCIES
+from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
 from trading.domain.economic import EconomicObservation
 from trading.domain.money import Currency
 from trading.intelligence.currency import CurrencyFactor
 from trading.intelligence.immutable import freeze_mapping
 from trading.intelligence.normalization import NormalizationConfig
-from trading.storage.repository import MacroObservationRepository
+from trading.storage.repository import EventRepository, MacroObservationRepository
 
 
 class SeriesTransform(StrEnum):
@@ -75,10 +75,13 @@ class FactorInput:
 # factor ごとに系列は 1 本。複数系列の合成は単位の違う値を 1 つの分布へ
 # 混ぜることになり、正規化が意味を失う。
 #
-# 埋まっていない組み合わせは意図的な欠測で、供給側は空列を返す:
-#   - JPY は macro 系列を持たない（BOJ 政策スコアと介入リスクが担う）
-#   - USD / JPY の POLICY は中銀声明スコア（EventRepository 側）
-# CurrencyState 側で欠測 factor は合成から外れ、coverage の減点になる。
+# POLICY はここに載せない。中銀の声明スコアが正本で、供給元は
+# PolicyScoreFactorSeries（ADR-021）。政策金利の水準を代わりに置くと、
+# 据え置き期間は窓が同値で埋まって正規化が語れなくなるうえ、金利パスの
+# 情報は RATES の 2 年点が既に持っている。
+#
+# JPY は macro 系列を持たない（BOJ 声明スコアと介入リスクが担う）。
+# 欠測 factor は CurrencyState 側で合成から外れ、coverage の減点になる。
 #
 # RATES は 3 通貨とも 2 年点で揃える。年限が違う点どうしを引き算しても
 # 金利差にならない（ADR-020）。
@@ -92,7 +95,6 @@ DEFAULT_FACTOR_INPUTS: Mapping[tuple[Currency, CurrencyFactor], FactorInput] = (
                 US_UNEMPLOYMENT_RATE_SA, -1
             ),
             (Currency.USD, CurrencyFactor.RATES): FactorInput(US_TREASURY_2Y_YIELD, 1),
-            (Currency.GBP, CurrencyFactor.POLICY): FactorInput(UK_BANK_RATE, 1),
             (Currency.GBP, CurrencyFactor.INFLATION): FactorInput(
                 UK_CPI_HEADLINE_YOY_NSA, 1
             ),
@@ -100,9 +102,6 @@ DEFAULT_FACTOR_INPUTS: Mapping[tuple[Currency, CurrencyFactor], FactorInput] = (
                 UK_UNEMPLOYMENT_RATE_SA, -1
             ),
             (Currency.GBP, CurrencyFactor.RATES): FactorInput(UK_OIS_2Y, 1),
-            (Currency.EUR, CurrencyFactor.POLICY): FactorInput(
-                EA_DEPOSIT_FACILITY_RATE, 1
-            ),
             (Currency.EUR, CurrencyFactor.INFLATION): FactorInput(
                 EA_HICP_HEADLINE_YOY_NSA, 1
             ),
@@ -225,3 +224,45 @@ def _period_at(frequency: str, moment: datetime) -> str:
 def _previous_year(period: str) -> str:
     """`YYYY-MM` / `YYYYQn` / `YYYY-MM-DD` の年だけを 1 つ戻す。"""
     return f"{int(period[:4]) - 1:04d}{period[4:]}"
+
+
+# 中銀声明スコアの採点が定義されているのは FED / BOJ だけ。BOE / ECB は
+# 採点対象外なので、GBP / EUR の POLICY は欠測になる。
+EVENT_TYPE_BY_CURRENCY: Mapping[Currency, str] = freeze_mapping(
+    {BANK_CURRENCIES[bank]: event_type for bank, event_type in EVENT_TYPES.items()}
+)
+
+# 会合は年 8 回なので 1 年ぶんでも複数回入る。転記の遅れを吸収する余裕を
+# 見て 400 日。最新の 1 件しか使わないため窓を広く取る意味は薄い。
+POLICY_LOOKBACK = timedelta(days=400)
+
+
+class PolicyScoreFactorSeries:
+    """中銀の声明スコアを POLICY factor の観測列として供給する。
+
+    値は `data/policy/scoring.py` の配点表で採った [-2, +2] のスコアで、
+    中銀をまたいで同じ尺度に載っている。`CurrencyStateService` はこの
+    factor を正規化せず上限で割るだけにする（ADR-021）。
+    """
+
+    def __init__(self, events: EventRepository) -> None:
+        self._events = events
+
+    def series(
+        self, currency: Currency, factor: CurrencyFactor, now: datetime
+    ) -> Sequence[tuple[datetime, float]]:
+        event_type = EVENT_TYPE_BY_CURRENCY.get(currency)
+        if factor is not CurrencyFactor.POLICY or event_type is None:
+            return ()
+        # 配点を見直すと、scoring.py は過去会合を書き換えずに新しい版の
+        # イベントとして再投入する。同じ会合が複数の版で、同じ known_at の
+        # まま store に並ぶ。読み手が版を選ばないと、同時刻の並び順（events
+        # の ORDER BY は known_at だけ）次第で旧版が「直近」になり、政策の
+        # 向きが反転しうる。このビルドが計算する版だけを採る。
+        return [
+            (event.known_at, float(event.payload["score"]))
+            for event in self._events.known_before(
+                now, event_type=event_type, since=now - POLICY_LOOKBACK
+            )
+            if event.payload.get("scoring_version") == SCORING_VERSION
+        ]

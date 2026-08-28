@@ -47,6 +47,7 @@ import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import TextIO
 
 from trading.backtest.research import broker_label_to_known
@@ -64,6 +65,9 @@ SYMBOL = "USDJPY"
 TIMEFRAME = "1d"
 HORIZONS = (5, 10, 20)
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+# A weekend closes the series for two days and a long holiday weekend for
+# three; anything wider is data the archive does not have.
+GAP_TOLERANCE = timedelta(days=5)
 # Broker labels run ahead of our clock (ADR-005), so the read's end bound
 # allows for the anchor.
 BROKER_CLOCK_MARGIN = timedelta(days=1)
@@ -196,6 +200,21 @@ def entry_bar(bars: Sequence[Bar], known_at: datetime, anchor: timedelta) -> int
     return None
 
 
+def gaps(bars: Sequence[Bar]) -> list[tuple[Bar, Bar]]:
+    """Consecutive candles the series jumps between, weekends aside.
+
+    A missing stretch leaves no candles behind, so a horizon counted in bars
+    silently spans it: five bars across the archive's 2026 hole would be a
+    ten-week move reported as a week. Weekends and holidays are the series
+    closing, not missing, which is why the tolerance is days rather than one.
+    """
+    return [
+        (before, after)
+        for before, after in pairwise(bars)
+        if after.start - before.start > GAP_TOLERANCE
+    ]
+
+
 def window_outcome(
     bars: Sequence[Bar], entry: int, horizon: int
 ) -> tuple[float, float, float] | None:
@@ -203,9 +222,14 @@ def window_outcome(
 
     Negative is yen appreciation, which is the direction the policy thesis
     predicts.
+
+    A window that jumps a hole in the series is not measured: its bars are a
+    horizon apart in count but not in time.
     """
     exit_index = entry + horizon
     if exit_index >= len(bars):
+        return None
+    if gaps(bars[entry : exit_index + 1]):
         return None
     open_price = float(bars[entry].close)
     window = bars[entry + 1 : exit_index + 1]
@@ -362,6 +386,13 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
         ),
         "",
     ]
+    for before, after in gaps(bars):
+        lines.append(
+            f"series gap: {before.start.date()} -> {after.start.date()}; "
+            "windows crossing it are not measured"
+        )
+    lines.append("")
+
     quiet = [o for o in observations if not o.intervention]
     active = [o for o in observations if o.intervention]
     for horizon in HORIZONS:
@@ -371,16 +402,21 @@ def report(observations: Sequence[Observation], bars: Sequence[Bar]) -> str:
             f"  {'':<22} {'n':>6} {'mean':>8} {'median':>8} {'hit':>6} "
             f"{'adverse':>7} {'favour':>7}  CI90"
         )
+        # Thinned across the groups rather than inside each: a BOJ and a Fed
+        # decision days apart fall in different groups but share nearly all
+        # of their forward window, and thinning per group would report one
+        # price move as evidence for two of them. The cost is that the
+        # earlier decision of such a pair is the one kept.
+        kept = thin(quiet, horizon)
         for group in GROUPS:
-            kept = thin([o for o in quiet if o.group == group], horizon)
-            lines.append(_row(group, summarize(kept, horizon, seed)))
-        span = measured_span(
-            [o for o in observations if horizon in o.returns], bars, horizon
-        )
+            lines.append(
+                _row(group, summarize([o for o in kept if o.group == group], horizon, seed))
+            )
+        span = measured_span(kept, bars, horizon)
         lines.append(_row("unconditional", unconditional(span, horizon, seed)))
         kept_active = thin(active, horizon)
         lines.append(_row("intervention active", summarize(kept_active, horizon, seed)))
-        slope = divergence_slope(thin(quiet, horizon), horizon)
+        slope = divergence_slope(kept, horizon)
         lines.append(f"  divergence slope: {slope * 100:>+7.3f} % per point")
         lines.append("")
     return "\n".join(lines)

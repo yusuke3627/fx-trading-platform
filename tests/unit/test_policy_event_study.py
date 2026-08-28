@@ -19,6 +19,7 @@ from trading.backtest.policy_event_study import (
     divergence_slope,
     entry_bar,
     fold_daily,
+    gaps,
     measured_span,
     summarize,
     thin,
@@ -156,6 +157,26 @@ def test_the_window_measures_a_short_and_its_excursions():
     # return alone would hide.
     assert adverse > 0
     assert favorable < 0
+
+
+def test_a_window_that_jumps_a_hole_in_the_series_is_not_measured():
+    # A missing stretch leaves no candles, so a horizon counted in bars would
+    # span it: five bars across the archive's 2026 hole is a ten-week move
+    # reported as a week.
+    across_a_hole = [bar(0, "150.00"), bar(1, "150.50"), bar(40, "158.00")]
+
+    assert window_outcome(across_a_hole, 0, 2) is None
+    # A weekend is the series closing, not missing.
+    over_a_weekend = [bar(0, "150.00"), bar(1, "150.50"), bar(4, "150.80")]
+    assert window_outcome(over_a_weekend, 0, 2) is not None
+
+
+def test_gaps_names_the_stretch_the_series_jumps():
+    series = [bar(0, "150.00"), bar(1, "150.50"), bar(40, "158.00")]
+
+    assert [(b.start.date(), a.start.date()) for b, a in gaps(series)] == [
+        (bar(1, "0").start.date(), bar(40, "0").start.date())
+    ]
 
 
 def test_a_window_running_past_the_series_is_not_measured():

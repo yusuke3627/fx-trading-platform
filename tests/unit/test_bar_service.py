@@ -273,3 +273,91 @@ def test_every_timeframe_lands_on_its_own_grid(timeframe):
     assert bars.bars
     for bar in bars.bars:
         assert int(bar.start.timestamp()) % seconds == 0
+
+
+def test_backfill_folds_every_timeframe_in_one_read_of_the_series():
+    # The live passes only build forward, so a host that started folding
+    # after its ticks were backfilled has none of that history. Reading the
+    # archive once per timeframe would multiply hours of work.
+    ticks = minute_ticks(40)
+    service, bars = make_service(ticks, clock=FixedClock(at(hours=2)))
+
+    written = service.backfill("USDJPY", ["1m", "5m"])
+
+    assert written == {"1m": 13, "5m": 2}
+    minutes = [b.start for b in bars.bars if b.timeframe == "1m"]
+    assert minutes == [at(minutes=i) for i in range(13)]
+    assert [b.start for b in bars.bars if b.timeframe == "5m"] == [
+        T0,
+        at(minutes=5),
+    ]
+
+
+def test_backfill_gives_up_the_bucket_the_series_opens_midway_through():
+    # Same reason a cold start does: a candle missing its opening looks like
+    # any other once written, and the write can never be corrected.
+    # The series opens 40 seconds into the first minute, so that candle would
+    # be missing its opening quotes.
+    ticks = minute_ticks(10)[2:]
+    service, bars = make_service(ticks, clock=FixedClock(at(hours=2)))
+
+    service.backfill("USDJPY", ["1m"])
+
+    assert [b.start for b in bars.bars] == [at(minutes=1), at(minutes=2)]
+
+
+def test_backfill_leaves_bars_the_live_passes_already_wrote_alone():
+    # A candle a strategy may have traded on is never rewritten underneath
+    # it, so re-running is a no-op rather than an overwrite of history.
+    ticks = minute_ticks(20)
+    service, bars = make_service(ticks, clock=FixedClock(at(hours=2)))
+    service.build_once("USDJPY", "1m")
+    already = list(bars.bars)
+
+    written = service.backfill("USDJPY", ["1m"])
+
+    assert written["1m"] == len(bars.bars) - len(already)
+    assert bars.bars[: len(already)] == already
+    assert service.backfill("USDJPY", ["1m"]) == {"1m": 0}
+
+
+def test_backfill_rebuilds_the_long_timeframes_a_dead_pass_never_wrote():
+    # The timeframes do not reach the same depth at once: minute candles are
+    # written in batches while the daily ones are still in hand. A restart
+    # therefore has to fold the series from the beginning — resuming at the
+    # point the dead pass reached would skip the long timeframes over
+    # everything before it and report a complete run.
+    ticks = minute_ticks(40)
+    service, bars = make_service(ticks, clock=FixedClock(at(hours=2)))
+    service.backfill("USDJPY", ["1m"])
+    bars.bars = [b for b in bars.bars if b.start >= at(minutes=10)]
+
+    service.backfill("USDJPY", ["1m"])
+
+    assert [b.start for b in sorted(bars.bars, key=lambda b: b.start)] == [
+        at(minutes=i) for i in range(13)
+    ]
+
+
+def test_backfill_reads_quotes_stamped_ahead_of_our_clock():
+    # Broker labels run ahead of ours (ADR-005), so a read bounded by a real
+    # UTC now would drop the newest candles.
+    ticks = minute_ticks(20, offset=timedelta(hours=3))
+    service, bars = make_service(ticks, clock=FixedClock(at(minutes=7)))
+
+    service.backfill("USDJPY", ["1m"])
+
+    assert len(bars.bars) == 6
+
+
+def test_backfill_reports_where_it_has_reached():
+    import io
+
+    out = io.StringIO()
+    service, _ = make_service(minute_ticks(10), clock=FixedClock(at(hours=2)))
+
+    service.backfill("USDJPY", ["1m"], progress=out)
+
+    assert out.getvalue().count("\n") == 1
+    assert out.getvalue().startswith(str(T0.date()))
+    assert "1m:" in out.getvalue()

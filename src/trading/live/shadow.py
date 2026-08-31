@@ -424,7 +424,12 @@ def main() -> None:
     )
     runner = ShadowRunner(
         runner=build_runner(
-            config, market=market, clock=clock, ledger=ledger, features=store
+            config,
+            market=market,
+            clock=clock,
+            ledger=ledger,
+            features=store,
+            currency_states=features.currency_states,
         ),
         portfolio=PortfolioManager(ledger, clock, conversion),
         ledger=ledger,

@@ -95,6 +95,16 @@ class CurrencyRegimeSnapshot(BaseModel):
         return self.by_currency.get(currency, frozenset()) | self.global_regimes
 
 
+class CurrencyRegimeService(Protocol):
+    """通貨別 + global の regime を、呼ばれた時点の値から組む。
+
+    `RegimeService.active()` と違って `now` を取るのは、snapshot が
+    `known_at` を持つため（strategy は自分の clock を渡す）。
+    """
+
+    def snapshot(self, now: datetime) -> CurrencyRegimeSnapshot: ...
+
+
 def default_currency_rules(
     thresholds: dict[str, float] | None = None,
 ) -> dict[Currency, dict[RegimeLabel, RegimeRule]]:

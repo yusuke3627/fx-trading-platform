@@ -6,8 +6,12 @@ from typing import TYPE_CHECKING
 from trading.backtest.clock import Clock
 from trading.data.market import MarketDataService
 from trading.indicators import IndicatorService
+from trading.intelligence.currency import CurrencyStateStore
 from trading.intelligence.features import InMemoryFeatureStore
-from trading.intelligence.regime import RuleBasedRegimeService
+from trading.intelligence.regime import (
+    RuleBasedCurrencyRegimeService,
+    RuleBasedRegimeService,
+)
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.runner import StrategyBinding, StrategyRunner
 from trading.strategy.base import StrategyContext
@@ -43,6 +47,7 @@ def build_runner(
     clock: Clock,
     ledger: VirtualPositionLedger,
     features: InMemoryFeatureStore | None = None,
+    currency_states: CurrencyStateStore | None = None,
 ) -> StrategyRunner:
     """One binding per configured strategy, sharing the read-only services.
 
@@ -54,11 +59,16 @@ def build_runner(
     the operator switched on and that then never trades is worse than a
     process that refuses to start.
 
-    The caller that wants strategies to see features passes the store it
-    refreshes; the default is an empty store that stays empty.
+    The caller that wants strategies to see features and currency state
+    passes the stores it refreshes; the defaults are empty stores that
+    stay empty.
     """
     features = features if features is not None else InMemoryFeatureStore()
+    currency_states = (
+        currency_states if currency_states is not None else CurrencyStateStore()
+    )
     regime = RuleBasedRegimeService(features)
+    currency_regime = RuleBasedCurrencyRegimeService(features)
     indicators = IndicatorService(market)
 
     bindings: list[StrategyBinding] = []
@@ -75,6 +85,8 @@ def build_runner(
                     indicators=indicators,
                     features=features,
                     regime=regime,
+                    currency_states=currency_states,
+                    currency_regime=currency_regime,
                     portfolio=ledger,
                     config=strategy_config,
                 ),

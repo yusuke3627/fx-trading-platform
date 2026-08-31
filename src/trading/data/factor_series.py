@@ -172,6 +172,20 @@ class MacroFactorSeries:
             if math.isfinite(value)
         ]
 
+    def read_windows(self) -> dict[str, timedelta]:
+        """系列ごとの読み出し幅。
+
+        replay 用に行を 1 回で凍結する側（`data/features.py`）が同じ窓を
+        張るために要る。窓が狭いと、凍結した行の集合が実際の snapshot が
+        読む範囲より小さくなり、replay だけ factor が欠測する。
+        """
+        return {
+            factor_input.series: self._lookback(
+                INDICATORS[factor_input.series].frequency, factor_input.transform
+            )
+            for factor_input in self._inputs.values()
+        }
+
     def _lookback(self, frequency: str, transform: SeriesTransform) -> timedelta:
         per_year = _PERIODS_PER_YEAR[frequency]
         periods = self._normalization.window + _LOOKBACK_MARGIN_PERIODS

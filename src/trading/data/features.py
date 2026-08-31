@@ -1,9 +1,16 @@
-"""Feature store refresh from the point-in-time series.
+"""Feature store and currency state refresh from the point-in-time series.
 
 The bridge the feature pipeline was missing: policy, intervention and macro
 each compute features as pure functions over already-visible rows, and the
 strategies read a FeatureStore — but nothing connected the two, so every run
 evaluated against an empty store.
+
+strategy が見る PIT スナップショットはここが唯一の作り手で、feature store
+（数値の特徴量）と通貨 state（CurrencyState）の両方を供給する。分けないのは
+どちらも同じ行を読み、同じ時刻で入れ替わらなければならないため — 別々に
+refresh すると、feature は新しい会合を見ているのに通貨 state はまだ見て
+いない、という不整合が replay に出る。frozen() / change_instants() /
+dataset_fingerprint() も 1 つの行の集合から答える（ADR-022）。
 
 Features are derived values, so nothing here persists: the store is
 recomputed from the PIT repositories before each evaluation, and a process
@@ -22,6 +29,10 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from hashlib import sha256
 
+from trading.data.factor_series import (
+    MacroFactorSeries,
+    PolicyScoreFactorSeries,
+)
 from trading.data.intervention.features import (
     KIND_TO_STATUS,
     RECENCY_WINDOW_DAYS,
@@ -32,7 +43,15 @@ from trading.data.policy.features import latest_policy_score, us2y_features
 from trading.data.policy.scoring import EVENT_TYPES, SCORING_VERSION
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope
+from trading.domain.money import Currency
 from trading.intelligence import features as f
+from trading.intelligence.currency import (
+    ChainedFactorSeries,
+    CurrencyScoreConfig,
+    CurrencyState,
+    CurrencyStateService,
+    CurrencyStateStore,
+)
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig, intervention_risk_score
 from trading.storage.repository import EventRepository, MacroObservationRepository
@@ -48,11 +67,11 @@ US2Y_VINTAGE_LOOKBACK = timedelta(days=90)
 
 
 class StoredFeatureSource:
-    """Keeps a FeatureStore current from the stored PIT series.
+    """Keeps a FeatureStore and a CurrencyStateStore current from the PIT series.
 
-    Holds the store it feeds: refresh() swaps the store's whole contents, so a
-    feature whose inputs disappeared goes absent instead of surviving as a
-    stale value from an earlier cycle.
+    Holds the stores it feeds: refresh() swaps their whole contents, so an
+    input that disappeared goes absent instead of surviving as a stale value
+    from an earlier cycle.
     """
 
     def __init__(
@@ -61,11 +80,26 @@ class StoredFeatureSource:
         events: EventRepository,
         intervention: InterventionRiskConfig,
         store: InMemoryFeatureStore,
+        currency: CurrencyScoreConfig | None = None,
+        currency_states: CurrencyStateStore | None = None,
     ) -> None:
         self._observations = observations
         self._events = events
         self._intervention = intervention
         self._store = store
+        # store は設定を内側で持つ。呼び出し側が別々に組むと、正規化の窓と
+        # 読み出し幅が食い違っても静かに通ってしまう。
+        self._currency_config = currency or CurrencyScoreConfig()
+        self._currency_states = currency_states or CurrencyStateStore(self._currency_config)
+        self._macro_factors = MacroFactorSeries(
+            observations, self._currency_config.normalization
+        )
+        self._currency = CurrencyStateService(
+            ChainedFactorSeries(
+                self._macro_factors, PolicyScoreFactorSeries(events)
+            ),
+            self._currency_config,
+        )
 
     @property
     def store(self) -> InMemoryFeatureStore:
@@ -73,8 +107,33 @@ class StoredFeatureSource:
         strategies to see what was refreshed."""
         return self._store
 
+    @property
+    def currency_states(self) -> CurrencyStateStore:
+        """The store refresh() feeds with per-currency state — the one a
+        StrategyContext must hold for strategies to see it."""
+        return self._currency_states
+
     def refresh(self, now: datetime) -> None:
         self._store.replace(self.snapshot(now))
+        self._currency_states.replace(self.currency_snapshot(now))
+
+    def currency_snapshot(self, now: datetime) -> dict[Currency, CurrencyState]:
+        """`now` 時点で観測が 1 つでもある通貨の state。
+
+        1 つも観測が無い通貨は directional_score も confidence も 0 になる
+        が、それは「方向感が無い」ではなく「何も見えていない」。store へ
+        入れると PairState が射影できてしまうので落とす。
+
+        freshness ではなく観測の有無で判定する。公表間隔の長い factor は
+        次の公表を待つ間 freshness が 0 になるが（#89）、値そのものは
+        依然として最新の事実であり、方向感は語れる。
+        """
+        states: dict[Currency, CurrencyState] = {}
+        for currency in Currency:
+            state = self._currency.state(currency, now)
+            if any(score is not None for score in state.factor_scores.values()):
+                states[currency] = state
+        return states
 
     def snapshot(self, now: datetime) -> dict[str, float]:
         """Every feature computable from the series visible at `now`."""
@@ -173,16 +232,22 @@ class StoredFeatureSource:
             _FrozenEvents(events),
             self._intervention,
             self._store,
+            self._currency_config,
+            # 同じ store を引き継ぐ: strategy が参照で持っているのはこの
+            # インスタンスで、凍結した側が別の器を作ると refresh が届かない。
+            self._currency_states,
         )
 
     def _replay_rows(self, start: datetime, end: datetime):
         """The rows any snapshot inside [start, end] can read, window by
-        window: US2Y inside its lookback, policy unbounded, intervention
-        inside the recency bound taken at `start` (a superset of every later
-        instant's bound)."""
-        observations = self._observations.known_before(
-            US_TREASURY_2Y_YIELD, end, start - US2Y_VINTAGE_LOOKBACK
-        )
+        window: each macro series inside the widest lookback that reads it,
+        policy unbounded, intervention inside the recency bound taken at
+        `start` (a superset of every later instant's bound)."""
+        observations: list[EconomicObservation] = []
+        for series, lookback in self.observation_windows().items():
+            observations.extend(
+                self._observations.known_before(series, end, start - lookback)
+            )
         events: list = []
         for event_type in (EVENT_TYPES["BOJ"], EVENT_TYPES["FED"]):
             events.extend(self._events.known_before(end, event_type))
@@ -190,6 +255,19 @@ class StoredFeatureSource:
         for kind in KIND_TO_STATUS:
             events.extend(self._events.known_before(end, kind, since=recency))
         return observations, events
+
+    def observation_windows(self) -> dict[str, timedelta]:
+        """系列ごとの読み出し幅。同じ系列を 2 つの用途が読むときは広い方。
+
+        US2Y は feature（20 営業日の z）と RATES factor（正規化の窓）の
+        両方が読む。狭い方で凍結すると、片方の読み手だけが replay で
+        欠測する。
+        """
+        windows = dict(self._macro_factors.read_windows())
+        windows[US_TREASURY_2Y_YIELD] = max(
+            windows.get(US_TREASURY_2Y_YIELD, timedelta(0)), US2Y_VINTAGE_LOOKBACK
+        )
+        return windows
 
     def _policy_score(self, now: datetime, event_type: str) -> float | None:
         # A re-tuned scoring algorithm re-ingests past meetings as NEW events
@@ -279,6 +357,10 @@ class ReplayFeatureTimeline:
     @property
     def store(self) -> InMemoryFeatureStore:
         return self._source.store
+
+    @property
+    def currency_states(self) -> CurrencyStateStore:
+        return self._source.currency_states
 
     def reset(self, start: datetime) -> None:
         """Position the timeline at the replay's opening instant.

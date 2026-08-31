@@ -23,8 +23,12 @@ from trading.domain.risk import EventRiskMode
 from trading.execution.mt5.adapter import MT5ConnectionError
 from trading.execution.mt5.mapper import account_key_from_info
 from trading.indicators import IndicatorService
+from trading.intelligence.currency import CurrencyStateStore
 from trading.intelligence.features import InMemoryFeatureStore
-from trading.intelligence.regime import RuleBasedRegimeService
+from trading.intelligence.regime import (
+    RuleBasedCurrencyRegimeService,
+    RuleBasedRegimeService,
+)
 from trading.live.clock import CycleClock
 from trading.live.shadow import ShadowRunner, broker_identity, describe
 from trading.portfolio.exposure import CurrencyExposureService
@@ -141,6 +145,8 @@ def _context(clock, market, ledger, enabled):
         indicators=IndicatorService(market),
         features=features,
         regime=RuleBasedRegimeService(features),
+        currency_states=CurrencyStateStore(),
+        currency_regime=RuleBasedCurrencyRegimeService(features),
         portfolio=ledger,
         config=StrategyConfig(
             strategy_id="test_signaller",

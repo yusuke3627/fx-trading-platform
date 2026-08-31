@@ -49,6 +49,8 @@ def test_strategy_context_exposes_no_execution_surface():
         "indicators",
         "features",
         "regime",
+        "currency_states",
+        "currency_regime",
         "portfolio",
         "config",
     }

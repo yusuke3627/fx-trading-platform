@@ -266,17 +266,7 @@ class CurrencyStateService:
     def project(
         self, spec: InstrumentSpec, base: CurrencyState, quote: CurrencyState
     ) -> PairState:
-        return PairState(
-            symbol=spec.symbol,
-            base=base,
-            quote=quote,
-            directional_score=base.directional_score - quote.directional_score,
-            confidence=self._pair_confidence(base, quote),
-            # 両 leg が揃う時刻。directional_score は新しい方の leg の情報も
-            # 含むので、古い方を known_at にすると known_at 順の replay で
-            # 未来の情報が混入する。データの鮮度は confidence が持つ。
-            known_at=max(base.known_at, quote.known_at),
-        )
+        return project_pair(spec, base, quote, self._config)
 
     def _directional(self, normalized: Mapping[CurrencyFactor, NormalizedScore]) -> Decimal:
         """利用可能な factor の加重平均。
@@ -324,19 +314,79 @@ class CurrencyStateService:
             return 0.0
         return (zero - age_hours) / (zero - full)
 
-    def _pair_confidence(self, base: CurrencyState, quote: CurrencyState) -> Decimal:
-        """両 leg の弱い方を起点に、打ち消し合いの分だけ減点する。
 
-        単純平均にしないのは、片方の leg が観測不足なら pair の差もその
-        不確かさを引き継ぐため。加えて、両 leg が同方向に強いときの差
-        （例: 双方 hawkish で net が小さい）は大きな値どうしの引き算で、
-        同じ絶対値の差でも相対的な不確かさが大きい — その分を減点する。
+
+def project_pair(
+    spec: InstrumentSpec,
+    base: CurrencyState,
+    quote: CurrencyState,
+    config: CurrencyScoreConfig,
+) -> PairState:
+    """通貨 state 2 つをペアへ射影する。
+
+    サービスの外（strategy へ渡す store）でも同じ射影が要るので、
+    リポジトリを持たない純関数として置く。
+    """
+    return PairState(
+        symbol=spec.symbol,
+        base=base,
+        quote=quote,
+        directional_score=base.directional_score - quote.directional_score,
+        confidence=_pair_confidence(base, quote, config),
+        # 両 leg が揃う時刻。directional_score は新しい方の leg の情報も
+        # 含むので、古い方を known_at にすると known_at 順の replay で
+        # 未来の情報が混入する。データの鮮度は confidence が持つ。
+        known_at=max(base.known_at, quote.known_at),
+    )
+
+
+def _pair_confidence(
+    base: CurrencyState, quote: CurrencyState, config: CurrencyScoreConfig
+) -> Decimal:
+    """両 leg の弱い方を起点に、打ち消し合いの分だけ減点する。
+
+    単純平均にしないのは、片方の leg が観測不足なら pair の差もその
+    不確かさを引き継ぐため。加えて、両 leg が同方向に強いときの差
+    （例: 双方 hawkish で net が小さい）は大きな値どうしの引き算で、
+    同じ絶対値の差でも相対的な不確かさが大きい — その分を減点する。
+    """
+    floor = min(base.confidence, quote.confidence)
+    magnitude = abs(base.directional_score) + abs(quote.directional_score)
+    if magnitude == 0:
+        return floor
+    spread = abs(base.directional_score - quote.directional_score)
+    cancellation = (magnitude - spread) / magnitude
+    penalty = Decimal(str(config.pair_cancellation_penalty)) * cancellation
+    return (floor * (Decimal(1) - penalty)).quantize(_SCORE_EXPONENT)
+
+
+class CurrencyStateStore:
+    """strategy が参照で持つ通貨 state の受け皿。
+
+    FeatureStore と同じ扱いにする（features.py）。リポジトリを触る供給側は
+    外に置き、strategy へ渡すのは refresh のたびに中身が入れ替わる
+    read-only の器だけ。入れ替えなので、供給が途切れた通貨は前回値のまま
+    残らず消える — 古い方向感で売買し続けるより欠測のほうがよい。
+    """
+
+    def __init__(self, config: CurrencyScoreConfig | None = None) -> None:
+        self._config = config or CurrencyScoreConfig()
+        self._states: dict[Currency, CurrencyState] = {}
+
+    def replace(self, states: Mapping[Currency, CurrencyState]) -> None:
+        self._states = dict(states)
+
+    def get(self, currency: Currency) -> CurrencyState | None:
+        return self._states.get(currency)
+
+    def pair(self, spec: InstrumentSpec) -> PairState | None:
+        """両 leg が揃っているときだけペアを射影する。
+
+        片方でも欠けていれば差が取れない。0 を返すと「方向感が無い」と
+        区別できなくなるので None。
         """
-        floor = min(base.confidence, quote.confidence)
-        magnitude = abs(base.directional_score) + abs(quote.directional_score)
-        if magnitude == 0:
-            return floor
-        spread = abs(base.directional_score - quote.directional_score)
-        cancellation = (magnitude - spread) / magnitude
-        penalty = Decimal(str(self._config.pair_cancellation_penalty)) * cancellation
-        return (floor * (Decimal(1) - penalty)).quantize(_SCORE_EXPONENT)
+        base = self._states.get(spec.base_currency)
+        quote = self._states.get(spec.quote_currency)
+        if base is None or quote is None:
+            return None
+        return project_pair(spec, base, quote, self._config)

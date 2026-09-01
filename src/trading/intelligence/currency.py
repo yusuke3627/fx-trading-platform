@@ -360,13 +360,26 @@ def _pair_confidence(
     return (floor * (Decimal(1) - penalty)).quantize(_SCORE_EXPONENT)
 
 
+class CurrencyStateView(Protocol):
+    """strategy に見せる読み取り専用の面（FeatureStore と同じ扱い）。
+
+    複数 strategy が同じ store を共有するので、更新 API（`replace`）が
+    strategy から見えると先に評価された strategy が state を消せてしまう。
+    """
+
+    def get(self, currency: Currency) -> CurrencyState | None: ...
+
+    def pair(self, spec: InstrumentSpec) -> PairState | None: ...
+
+
 class CurrencyStateStore:
     """strategy が参照で持つ通貨 state の受け皿。
 
     FeatureStore と同じ扱いにする（features.py）。リポジトリを触る供給側は
     外に置き、strategy へ渡すのは refresh のたびに中身が入れ替わる
-    read-only の器だけ。入れ替えなので、供給が途切れた通貨は前回値のまま
-    残らず消える — 古い方向感で売買し続けるより欠測のほうがよい。
+    read-only の器（`CurrencyStateView`）だけ。入れ替えなので、供給が
+    途切れた通貨は前回値のまま残らず消える — 古い方向感で売買し続けるより
+    欠測のほうがよい。
     """
 
     def __init__(self, config: CurrencyScoreConfig | None = None) -> None:

@@ -18,8 +18,12 @@ ADR-018 / 020 / 021 で `CurrencyState` とその供給元は揃ったが、stra
 ### 1. 供給側は外、strategy には入れ替わる器だけ渡す
 
 feature store と同じ形にする。リポジトリを触る `StoredFeatureSource` は
-外に置き、strategy が参照で持つのは `CurrencyStateStore` ——
-`replace()` で中身ごと入れ替わる read-only の器だけ。
+外に置き、strategy が参照で持つのは refresh のたびに `replace()` で中身
+ごと入れ替わる器だけ。strategy に見せる型は `CurrencyStateView`
+（`get` / `pair` のみの Protocol）で、更新 API は供給側だけが知る具象
+`CurrencyStateStore` に閉じる。複数 strategy が同じ store を共有するので、
+`replace()` が strategy から見えると先に評価された strategy が state を
+消せてしまう。
 
 入れ替えであって更新ではないので、供給が途切れた通貨は前回値のまま残らず
 消える。古い方向感で売買を続けるより、欠測のほうがよい。
@@ -28,7 +32,7 @@ feature store と同じ形にする。リポジトリを触る `StoredFeatureSou
 
 | フィールド | 中身 |
 | --- | --- |
-| `currency_states` | `CurrencyStateStore`（通貨 state + ペア射影） |
+| `currency_states` | `CurrencyStateView`（通貨 state + ペア射影） |
 | `currency_regime` | `CurrencyRegimeService`（`snapshot(now)`） |
 
 `currency_regime` はサービスのまま渡す。判定は feature store の現在値を

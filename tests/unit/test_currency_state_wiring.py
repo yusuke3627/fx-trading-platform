@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import get_type_hints
 from uuid import uuid4
 
 from tests.support import FakeEventRepository, FakeObservationRepository, usdjpy_spec
@@ -23,6 +24,7 @@ from trading.intelligence.currency import (
     CurrencyFactor,
     CurrencyScoreConfig,
     CurrencyStateStore,
+    CurrencyStateView,
 )
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
@@ -142,6 +144,15 @@ def test_the_pair_is_the_difference_of_the_legs() -> None:
 
     assert pair is not None
     assert pair.directional_score == usd.directional_score - Decimal("-0.5")
+
+
+def test_the_strategy_holds_the_read_only_view_not_the_store() -> None:
+    from trading.strategy.base import StrategyContext
+
+    # 複数 strategy が同じ store を共有する。更新 API が strategy から
+    # 見えると、先に評価された strategy が後続の state を消せてしまう。
+    assert get_type_hints(StrategyContext)["currency_states"] is CurrencyStateView
+    assert not hasattr(CurrencyStateView, "replace")
 
 
 def test_the_frozen_source_feeds_the_same_store() -> None:

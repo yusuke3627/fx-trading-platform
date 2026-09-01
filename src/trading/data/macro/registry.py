@@ -26,6 +26,11 @@ US_RETAIL_SALES_ADVANCE_SA = "us_retail_sales_advance_sa"
 # 2026-08-15), so the series is named for what it is.
 US_TREASURY_2Y_YIELD = "us_treasury_2y_yield"
 
+# US_TREASURY_2Y_YIELD の円側対。同じ年限にしてあるのは、通貨間の減算が
+# 同じ年限どうしでしか意味を持たないため（uk_ois_2y と同じ理屈）。
+# ソースは財務省「国債金利情報」の複利利回り CSV（ADR-022）。
+JP_JGB_2Y_YIELD = "jp_jgb_2y_yield"
+
 UK_BANK_RATE = "uk_bank_rate"
 # CPI/HICP は指数でなく前年比を正本にする: 指数は基準改定で系列が切れる
 # （HICP は 2026-01 の 2025=100 移行で全 geo の指数系列が 2025-12 終端 —
@@ -154,6 +159,18 @@ INDICATORS: dict[str, IndicatorSpec] = {
             # vintage date is the publication day or FRED's ingestion day.
             release_time=time(18, 0),
             release_timezone=_ET,
+        ),
+        IndicatorSpec(
+            series=JP_JGB_2Y_YIELD,
+            unit="percent",
+            frequency="daily",
+            pit_classification=PIT_UNVERIFIED,
+            # 公表は基準日の翌営業日 09:30 頃（財務省 FAQ・実測 2026-09-01）。
+            # release_instant は「公表日の朝」を指す参考値で、collector は
+            # known_at を基準日の次の基準日 15:00 JST として自前で計算する
+            # （祝日込みの翌営業日を CSV の基準日列から導く — ADR-022）。
+            release_time=time(9, 30),
+            release_timezone="Asia/Tokyo",
         ),
         IndicatorSpec(
             series=UK_BANK_RATE,

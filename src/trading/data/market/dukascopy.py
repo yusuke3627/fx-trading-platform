@@ -126,8 +126,16 @@ class DukascopyTickImporter:
             day_end = day_start + _ONE_DAY
             day_window_start = max(day_start, since)
             day_window_end = min(day_end, until)
+            day_check_start = max(
+                day_start,
+                day_window_start.replace(minute=0, second=0, microsecond=0),
+            )
+            day_check_end = day_window_end.replace(minute=0, second=0, microsecond=0)
+            if day_check_end < day_window_end:
+                day_check_end = min(day_end, day_check_end + _ONE_HOUR)
+            # 部分時間の要求でも、同じ時間帯に別ソースがあれば日次先行照会で見落とさない。
             check_each_hour = (
-                self._repository.bounds_between(symbol, day_window_start, day_window_end)
+                self._repository.bounds_between(symbol, day_check_start, day_check_end)
                 is not None
             )
             day_fetched = 0
@@ -144,7 +152,7 @@ class DukascopyTickImporter:
                     continue
                 if (
                     check_each_hour
-                    and self._repository.bounds_between(symbol, window_start, window_end)
+                    and self._repository.bounds_between(symbol, hour_start, hour_end)
                     is not None
                 ):
                     hour_start = hour_end

@@ -194,6 +194,34 @@ def test_partially_stored_day_fetches_only_missing_hours() -> None:
     assert fetch.calls == [hour_url(SYMBOL, hour) for hour in expected_hours]
 
 
+def test_partial_start_skips_hour_with_existing_tick_before_since() -> None:
+    since = T0 + timedelta(minutes=30)
+    until = T0 + timedelta(hours=1)
+    repository = FakeTickRepository([tick_at(T0 + timedelta(minutes=15))])
+    fetch = FakeFetch({hour_url(SYMBOL, T0): bi5_payload((30 * 60 * 1000, 150004, 150001))})
+    importer = make_importer(repository, fetch)
+
+    result = importer.import_range(SYMBOL, since, until)
+
+    assert result == (0, 0)
+    assert fetch.calls == []
+    assert repository.calls == []
+
+
+def test_partial_end_skips_hour_with_existing_tick_after_until() -> None:
+    since = T0
+    until = T0 + timedelta(minutes=30)
+    repository = FakeTickRepository([tick_at(T0 + timedelta(minutes=45))])
+    fetch = FakeFetch({hour_url(SYMBOL, T0): bi5_payload((0, 150004, 150001))})
+    importer = make_importer(repository, fetch)
+
+    result = importer.import_range(SYMBOL, since, until)
+
+    assert result == (0, 0)
+    assert fetch.calls == []
+    assert repository.calls == []
+
+
 def test_transient_fetch_errors_are_retried() -> None:
     repository = FakeTickRepository()
     calls: list[str] = []

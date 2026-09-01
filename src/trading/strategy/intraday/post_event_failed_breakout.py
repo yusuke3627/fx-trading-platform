@@ -54,8 +54,9 @@ class PostEventFailedBreakoutStrategy(Strategy):
         # inside it under any sane configuration but is kept in the max.
         setup_tf = config.timeframes.role("setup", "15m")
         entry_tf = config.timeframes.role("entry", "5m")
-        lookback = int(config.param("resistance_lookback", 20))
-        atr_period = int(config.param("atr_period", 14))
+        params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        lookback = max(int(item.param("resistance_lookback", 20)) for item in params)
+        atr_period = max(int(item.param("atr_period", 14)) for item in params)
         span = max(
             (lookback + 5) * TIMEFRAME_SECONDS[setup_tf],
             (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf],
@@ -66,8 +67,9 @@ class PostEventFailedBreakoutStrategy(Strategy):
     def bar_window(cls, config: StrategyConfig) -> int:
         # IndicatorService reads max(its default window, period + 1); the
         # direct structural read is the resistance lookback + 5.
-        lookback = int(config.param("resistance_lookback", 20))
-        atr_period = int(config.param("atr_period", 14))
+        params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        lookback = max(int(item.param("resistance_lookback", 20)) for item in params)
+        atr_period = max(int(item.param("atr_period", 14)) for item in params)
         return max(DEFAULT_BAR_COUNT, lookback + 5, atr_period + 1)
 
     async def on_event(
@@ -86,14 +88,17 @@ class PostEventFailedBreakoutStrategy(Strategy):
 
     def _evaluate(self, symbol: str, ctx: StrategyContext) -> StrategySignal | None:
         cfg = ctx.config
+        params = cfg.params_for(symbol)
         setup_tf = cfg.timeframes.role("setup", "15m")
         entry_tf = cfg.timeframes.role("entry", "5m")
-        lookback = int(cfg.param("resistance_lookback", 20))
-        atr_period = int(cfg.param("atr_period", 14))
-        stop_buffer_atr = float(cfg.param("stop_buffer_atr", 0.5))
-        gate_eps = float(cfg.param("macro_gate_threshold", 0.0))
-        intervention_max_for_long = float(cfg.param("intervention_risk_max_for_long", 0.5))
-        horizon_seconds = int(cfg.param("expected_horizon_seconds", 21600))
+        lookback = int(params.param("resistance_lookback", 20))
+        atr_period = int(params.param("atr_period", 14))
+        stop_buffer_atr = float(params.param("stop_buffer_atr", 0.5))
+        gate_eps = float(params.param("macro_gate_threshold", 0.0))
+        intervention_max_for_long = float(
+            params.param("intervention_risk_max_for_long", 0.5)
+        )
+        horizon_seconds = int(params.param("expected_horizon_seconds", 21600))
 
         spec = ctx.market.instrument(symbol)
         if spec is None:

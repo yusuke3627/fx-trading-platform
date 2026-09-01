@@ -66,7 +66,7 @@ class RiskConfig(BaseModel):
     rolling_24h_loss_halt_pct: Decimal = Decimal("1.00")
     high_water_mark_drawdown_halt_pct: Decimal = Decimal("3.00")
 
-    max_spread_pips: Decimal = Decimal("2.0")
+    absolute_max_spread_pips: dict[str, Decimal] = Field(default_factory=dict)
     quote_max_age_seconds: float = 5.0
     min_margin_level_pct: Decimal = Decimal(300)
 
@@ -205,9 +205,16 @@ class RiskEngine:
                 quote_age is not None and 0 <= quote_age <= cfg.quote_max_age_seconds
             )
             check("QUOTE_FRESH", quote_fresh)
+            ceiling = cfg.absolute_max_spread_pips.get(intent.symbol)
+            check(
+                "SPREAD_CEILING_CONFIGURED",
+                ceiling is not None,
+                f"absolute_max_spread_pips missing for {intent.symbol}",
+            )
             spread_ok = (
-                ctx.quote is not None
-                and ctx.quote.spread <= cfg.max_spread_pips * ctx.instrument.pip_size
+                ceiling is not None
+                and ctx.quote is not None
+                and ctx.quote.spread <= ceiling * ctx.instrument.pip_size
             )
             check("SPREAD_ACCEPTABLE", spread_ok)
 

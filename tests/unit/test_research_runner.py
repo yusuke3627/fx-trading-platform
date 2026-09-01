@@ -153,12 +153,17 @@ def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():
 
 def test_bar_window_follows_the_evaluated_configuration():
     from trading.strategy.base import StrategyConfig
+    from trading.strategy.parameters import StrategyParameters
     from trading.strategy.registry import STRATEGIES
 
     intraday = STRATEGIES["post_event_failed_breakout"]
     base_config = StrategyConfig(strategy_id=intraday.strategy_id, instruments=["USDJPY"])
     widened = base_config.model_copy(
-        update={"parameters": {"resistance_lookback": 15000}}
+        update={
+            "parameters": StrategyParameters.model_validate(
+                {"resistance_lookback": 15000}
+            )
+        }
     )
     # A lookback past the default retention must widen the declared window,
     # so the engine retains it instead of refusing the read mid-replay.
@@ -348,6 +353,7 @@ def test_every_registered_strategy_computes_a_positive_warmup():
 
 def test_warmup_follows_the_evaluated_configuration():
     from trading.strategy.base import StrategyConfig
+    from trading.strategy.parameters import StrategyParameters
     from trading.strategy.registry import STRATEGIES
 
     swing = STRATEGIES["monetary_policy_convergence"]
@@ -358,7 +364,11 @@ def test_warmup_follows_the_evaluated_configuration():
     intraday = STRATEGIES["post_event_failed_breakout"]
     base_config = StrategyConfig(strategy_id=intraday.strategy_id, instruments=["USDJPY"])
     widened = base_config.model_copy(
-        update={"parameters": {"resistance_lookback": 500}}
+        update={
+            "parameters": StrategyParameters.model_validate(
+                {"resistance_lookback": 500}
+            )
+        }
     )
     assert intraday.warmup(widened) > intraday.warmup(base_config)
 

@@ -53,8 +53,11 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
         # period must widen the lead-in, not starve it.
         trend_tf = config.timeframes.role("trend", "1d")
         trigger_tf = config.timeframes.role("trigger", "4h")
-        support_lookback = int(config.param("support_lookback", 30))
-        atr_period = int(config.param("atr_period", 14))
+        params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        support_lookback = max(
+            int(item.param("support_lookback", 30)) for item in params
+        )
+        atr_period = max(int(item.param("atr_period", 14)) for item in params)
         span = max(
             cls.EMA_SLOW * TIMEFRAME_SECONDS[trend_tf],
             (support_lookback + 10) * TIMEFRAME_SECONDS[trigger_tf],
@@ -66,8 +69,11 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
     def bar_window(cls, config: StrategyConfig) -> int:
         # IndicatorService reads max(its default window, period + 1); the
         # direct structural read is support_lookback + 10.
-        support_lookback = int(config.param("support_lookback", 30))
-        atr_period = int(config.param("atr_period", 14))
+        params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        support_lookback = max(
+            int(item.param("support_lookback", 30)) for item in params
+        )
+        atr_period = max(int(item.param("atr_period", 14)) for item in params)
         return max(
             DEFAULT_BAR_COUNT, support_lookback + 10, cls.EMA_SLOW + 1, atr_period + 1
         )
@@ -88,15 +94,18 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
 
     def _evaluate(self, symbol: str, ctx: StrategyContext) -> StrategySignal | None:
         cfg = ctx.config
+        params = cfg.params_for(symbol)
         trigger_tf = cfg.timeframes.role("trigger", "4h")
         trend_tf = cfg.timeframes.role("trend", "1d")
-        left = int(cfg.param("swing_left", 2))
-        right = int(cfg.param("swing_right", 2))
-        support_lookback = int(cfg.param("support_lookback", 30))
-        atr_period = int(cfg.param("atr_period", 14))
-        stop_buffer_atr = float(cfg.param("stop_buffer_atr", 1.0))
-        intervention_min_for_short = float(cfg.param("intervention_risk_min_for_short", 0.2))
-        horizon_seconds = int(cfg.param("expected_horizon_seconds", 432000))
+        left = int(params.param("swing_left", 2))
+        right = int(params.param("swing_right", 2))
+        support_lookback = int(params.param("support_lookback", 30))
+        atr_period = int(params.param("atr_period", 14))
+        stop_buffer_atr = float(params.param("stop_buffer_atr", 1.0))
+        intervention_min_for_short = float(
+            params.param("intervention_risk_min_for_short", 0.2)
+        )
+        horizon_seconds = int(params.param("expected_horizon_seconds", 432000))
 
         spec = ctx.market.instrument(symbol)
         if spec is None:

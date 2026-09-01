@@ -59,7 +59,12 @@ risk:
   rolling_24h_loss_halt_pct: 1.00
   high_water_mark_drawdown_halt_pct: 3.00
 
-  max_spread_pips: 2.0
+  # USDJPY は従来値を維持。他ペアは保守的な仮置きで、各ペアの昇格 Gate で校正する。
+  absolute_max_spread_pips:
+    USDJPY: 2.0
+    EURUSD: 2.0
+    GBPUSD: 2.5
+    GBPJPY: 4.0
   quote_max_age_seconds: 5
   min_margin_level_pct: 300
 
@@ -96,6 +101,24 @@ simulator:
   seed: 42
   latency_ms: 150
 
+session_profiles:
+  usdjpy_core:
+    tokyo: ALLOWED
+    london: ALLOWED
+    new_york: PREFERRED
+  london_ny_major:
+    tokyo: DISABLED
+    london: PREFERRED
+    new_york: PREFERRED
+  gbpjpy_cross:
+    tokyo: SHADOW_ONLY
+    london: PREFERRED
+    new_york: ALLOWED
+  usdjpy_scalp_research:
+    tokyo: SHADOW_ONLY
+    london: SHADOW_ONLY
+    new_york: SHADOW_ONLY
+
 strategies:
   failed_spike_reversal:
     enabled: false
@@ -104,13 +127,19 @@ strategies:
     timeframes:
       entry: 1m
     parameters:
-      spike_atr_multiple: 3.0
-      spike_window_seconds: 60
-      atr_period: 14
-      stop_buffer_atr: 0.5
-      max_spread_pips: 1.5
-      long_side_enabled: false
-      expected_horizon_seconds: 300
+      defaults:
+        spike_atr_multiple: 3.0
+        spike_window_seconds: 60
+        atr_period: 14
+        stop_buffer_atr: 0.5
+        long_side_enabled: false
+        expected_horizon_seconds: 300
+        spread_gate:
+          max_spread_to_atr: "0.5"
+      instruments:
+        USDJPY:
+          absolute_max_spread_pips: "1.5"
+          session_profile: usdjpy_scalp_research
 
   post_event_failed_breakout:
     enabled: false
@@ -136,10 +165,14 @@ strategies:
       trigger: 4h
       trend: 1d
     parameters:
-      swing_left: 2
-      swing_right: 2
-      support_lookback: 30
-      atr_period: 14
-      stop_buffer_atr: 1.0
-      intervention_risk_min_for_short: 0.2
-      expected_horizon_seconds: 432000
+      defaults:
+        swing_left: 2
+        swing_right: 2
+        support_lookback: 30
+        atr_period: 14
+        stop_buffer_atr: 1.0
+        intervention_risk_min_for_short: 0.2
+        expected_horizon_seconds: 432000
+      instruments:
+        USDJPY:
+          session_profile: usdjpy_core

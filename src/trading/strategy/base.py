@@ -27,6 +27,11 @@ from trading.indicators import IndicatorService
 from trading.intelligence.currency import CurrencyStateView
 from trading.intelligence.features import FeatureStore
 from trading.intelligence.regime import CurrencyRegimeService, RegimeService
+from trading.strategy.parameters import (
+    ResolvedStrategyParameters,
+    StrategyParameterResolver,
+    StrategyParameters,
+)
 
 
 class StrategyStatus(StrEnum):
@@ -85,10 +90,12 @@ class StrategyConfig(BaseModel):
 
     instruments: list[str] = Field(default_factory=list)
     timeframes: TimeframeMap = Field(default_factory=TimeframeMap)
-    parameters: dict[str, float | int | str | bool] = Field(default_factory=dict)
+    parameters: StrategyParameters = Field(default_factory=StrategyParameters)
 
-    def param(self, name: str, default: float | str | bool):
-        return self.parameters.get(name, default)
+    def params_for(self, symbol: str) -> ResolvedStrategyParameters:
+        # model_copy(update=...) は validator を通らないため、parameters を
+        # 差し替える呼び出し側は StrategyParameters を渡す（raw dict 不可）。
+        return StrategyParameterResolver(self.parameters).resolve(symbol)
 
     @property
     def runs(self) -> bool:

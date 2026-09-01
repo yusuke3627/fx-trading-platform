@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
+from statistics import median
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -67,6 +69,7 @@ class NormalizedScore(BaseModel):
     observations: int
     # 統計に使った最新 known_at。freshness 判定の起点。
     fitted_through: datetime
+    cadence: timedelta | None = None
 
 
 def normalize_series(
@@ -121,6 +124,7 @@ def normalize_series(
         value=Decimal(str(bounded)).quantize(_SCORE_EXPONENT),
         observations=len(window),
         fitted_through=latest_at,
+        cadence=_cadence(window),
     )
 
 
@@ -154,7 +158,15 @@ def bounded_score(
         value=Decimal(str(scaled)).quantize(_SCORE_EXPONENT),
         observations=len(visible),
         fitted_through=latest_at,
+        cadence=_cadence(visible),
     )
+
+
+def _cadence(series: Sequence[tuple[datetime, float]]) -> timedelta | None:
+    instants = sorted({at for at, _ in series})
+    if len(instants) < 2:
+        return None
+    return median(later - earlier for earlier, later in pairwise(instants))
 
 
 def _median(values: list[float]) -> float:

@@ -116,6 +116,7 @@ class StoredFeatureSource:
     def refresh(self, now: datetime) -> None:
         self._store.replace(self.snapshot(now))
         self._currency_states.replace(self.currency_snapshot(now))
+        self._currency_states.retime(now)
 
     def currency_snapshot(self, now: datetime) -> dict[Currency, CurrencyState]:
         """`now` 時点で観測が 1 つでもある通貨の state。
@@ -124,9 +125,8 @@ class StoredFeatureSource:
         が、それは「方向感が無い」ではなく「何も見えていない」。store へ
         入れると PairState が射影できてしまうので落とす。
 
-        freshness ではなく観測の有無で判定する。公表間隔の長い factor は
-        次の公表を待つ間 freshness が 0 になるが（#89）、値そのものは
-        依然として最新の事実であり、方向感は語れる。
+        freshness ではなく観測の有無で判定する。公表間隔の長い factor も
+        次の公表までは最新の事実であり、方向感を語れる。
         """
         states: dict[Currency, CurrencyState] = {}
         for currency in Currency:
@@ -379,6 +379,8 @@ class ReplayFeatureTimeline:
             crossed = True
         if crossed or self._refreshed_at is None or now.date() != self._refreshed_at.date():
             self._refresh(now)
+        else:
+            self._source.currency_states.retime(now)
 
     def _refresh(self, now: datetime) -> None:
         self._source.refresh(now)

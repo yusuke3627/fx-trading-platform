@@ -34,6 +34,7 @@ from trading.intelligence.normalization import (
 from trading.intelligence.regime import RegimeLabel
 
 _SCORE_EXPONENT = Decimal("0.000001")
+_FRESHNESS_ZERO_INTERVALS = 3.0
 
 
 class CurrencyFactor(StrEnum):
@@ -132,9 +133,9 @@ class CurrencyScoreConfig(BaseModel):
     ] = Field(
         default_factory=lambda: freeze_mapping({CurrencyFactor.POLICY: 2.0})
     )
-    # これより古い観測しか無い factor は freshness 減点を受ける。
+    # cadence の floor。cadence 不明時は freshness 満点期間にも使う。
     freshness_full_hours: float = Field(default=48.0, gt=0, allow_inf_nan=False)
-    # 減点が底を打つまでの経過（ここに達した factor の freshness は 0）。
+    # cadence 不明時に freshness が 0 へ達するまでの経過。
     freshness_zero_hours: float = Field(default=336.0, gt=0, allow_inf_nan=False)
     # 両 leg の打ち消し合いに掛ける confidence 減点の強さ（0 で無効）。
     pair_cancellation_penalty: float = Field(
@@ -167,6 +168,13 @@ class CurrencyScoreConfig(BaseModel):
         return self
 
 
+class FactorFreshness(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    fitted_through: datetime
+    cadence: timedelta | None = None
+
+
 class CurrencyState(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -179,6 +187,9 @@ class CurrencyState(BaseModel):
         Mapping[CurrencyFactor, Decimal | None], AfterValidator(freeze_mapping)
     ]
     confidence: Decimal
+    freshness_basis: Annotated[
+        Mapping[CurrencyFactor, FactorFreshness], AfterValidator(freeze_mapping)
+    ] = Field(default_factory=lambda: freeze_mapping({}))
     regimes: frozenset[RegimeLabel] = frozenset()
     intervention_risk: Decimal | None = None
     known_at: datetime
@@ -244,11 +255,19 @@ class CurrencyStateService:
             if result is not None:
                 normalized[factor] = result
 
+        basis = {
+            factor: FactorFreshness(
+                fitted_through=score.fitted_through,
+                cadence=score.cadence,
+            )
+            for factor, score in normalized.items()
+        }
         return CurrencyState(
             currency=currency,
             directional_score=self._directional(normalized),
             factor_scores=scores,
-            confidence=self._confidence(normalized, now),
+            confidence=confidence_at(basis, self._config, now),
+            freshness_basis=basis,
             regimes=regimes,
             intervention_risk=intervention_risk,
             known_at=now,
@@ -287,33 +306,49 @@ class CurrencyStateService:
         )
         return (weighted / Decimal(str(total))).quantize(_SCORE_EXPONENT)
 
-    def _confidence(
-        self, normalized: Mapping[CurrencyFactor, NormalizedScore], now: datetime
-    ) -> Decimal:
-        """coverage × freshness。score magnitude とは独立（設計書 §12.2A）。
 
-        coverage は「重みつきでどれだけの factor が観測できたか」、
-        freshness は「その観測がどれだけ新しいか」。片方でも欠ければ
-        confidence は下がるが、directional_score は動かない。
-        """
-        weights = self._config.weights
-        expected = sum(weights.values())
-        covered = 0.0
-        for factor, score in normalized.items():
-            weight = weights.get(factor, 0.0)
-            covered += weight * self._freshness(score.fitted_through, now)
-        return (Decimal(str(covered)) / Decimal(str(expected))).quantize(_SCORE_EXPONENT)
+def _freshness(
+    basis: FactorFreshness, config: CurrencyScoreConfig, now: datetime
+) -> float:
+    age_hours = max((now - basis.fitted_through) / timedelta(hours=1), 0.0)
+    if basis.cadence is None:
+        full = config.freshness_full_hours
+        zero = config.freshness_zero_hours
+    else:
+        cadence_hours = basis.cadence / timedelta(hours=1)
+        full = max(cadence_hours, config.freshness_full_hours)
+        zero = full * _FRESHNESS_ZERO_INTERVALS
+    if age_hours <= full:
+        return 1.0
+    if age_hours >= zero:
+        return 0.0
+    return (zero - age_hours) / (zero - full)
 
-    def _freshness(self, fitted_through: datetime, now: datetime) -> float:
-        age_hours = max((now - fitted_through) / timedelta(hours=1), 0.0)
-        full = self._config.freshness_full_hours
-        zero = self._config.freshness_zero_hours
-        if age_hours <= full:
-            return 1.0
-        if age_hours >= zero:
-            return 0.0
-        return (zero - age_hours) / (zero - full)
 
+def confidence_at(
+    freshness_basis: Mapping[CurrencyFactor, FactorFreshness],
+    config: CurrencyScoreConfig,
+    now: datetime,
+) -> Decimal:
+    """coverage × freshness。score magnitude とは独立（設計書 §12.2A）。"""
+    weights = config.weights
+    expected = sum(weights.values())
+    covered = sum(
+        weights.get(factor, 0.0) * _freshness(basis, config, now)
+        for factor, basis in freshness_basis.items()
+    )
+    return (Decimal(str(covered)) / Decimal(str(expected))).quantize(_SCORE_EXPONENT)
+
+
+def state_at(
+    state: CurrencyState, config: CurrencyScoreConfig, now: datetime
+) -> CurrencyState:
+    return state.model_copy(
+        update={
+            "confidence": confidence_at(state.freshness_basis, config, now),
+            "known_at": now,
+        }
+    )
 
 
 def project_pair(
@@ -385,12 +420,19 @@ class CurrencyStateStore:
     def __init__(self, config: CurrencyScoreConfig | None = None) -> None:
         self._config = config or CurrencyScoreConfig()
         self._states: dict[Currency, CurrencyState] = {}
+        self._now: datetime | None = None
 
     def replace(self, states: Mapping[Currency, CurrencyState]) -> None:
         self._states = dict(states)
 
+    def retime(self, now: datetime) -> None:
+        self._now = now
+
     def get(self, currency: Currency) -> CurrencyState | None:
-        return self._states.get(currency)
+        state = self._states.get(currency)
+        if state is None or self._now is None:
+            return state
+        return state_at(state, self._config, self._now)
 
     def pair(self, spec: InstrumentSpec) -> PairState | None:
         """両 leg が揃っているときだけペアを射影する。
@@ -398,8 +440,8 @@ class CurrencyStateStore:
         片方でも欠けていれば差が取れない。0 を返すと「方向感が無い」と
         区別できなくなるので None。
         """
-        base = self._states.get(spec.base_currency)
-        quote = self._states.get(spec.quote_currency)
+        base = self.get(spec.base_currency)
+        quote = self.get(spec.quote_currency)
         if base is None or quote is None:
             return None
         return project_pair(spec, base, quote, self._config)

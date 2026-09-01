@@ -61,8 +61,12 @@ from trading.domain.risk import EventRiskMode, KillSwitchLevel
 from trading.domain.signal import StrategySignal
 from trading.domain.swap import SwapSnapshot, carry_amount
 from trading.indicators import IndicatorService
+from trading.intelligence.currency import CurrencyStateStore
 from trading.intelligence.features import InMemoryFeatureStore
-from trading.intelligence.regime import RuleBasedRegimeService
+from trading.intelligence.regime import (
+    RuleBasedCurrencyRegimeService,
+    RuleBasedRegimeService,
+)
 from trading.oms.service import OMSService
 from trading.portfolio.exposure import CurrencyExposureService
 from trading.portfolio.manager import PortfolioManager, SizingInput
@@ -716,8 +720,10 @@ class BacktestEngine:
         if self._features is not None:
             self._features.reset(start)
             features = self._features.store
+            currency_states = self._features.currency_states
         else:
             features = InMemoryFeatureStore()
+            currency_states = CurrencyStateStore()
         return _Wiring(
             clock=clock,
             market=market,
@@ -741,6 +747,8 @@ class BacktestEngine:
                 indicators=IndicatorService(market),
                 features=features,
                 regime=RuleBasedRegimeService(features),
+                currency_states=currency_states,
+                currency_regime=RuleBasedCurrencyRegimeService(features),
                 portfolio=ledger,
                 config=self._strategy_config,
             ),

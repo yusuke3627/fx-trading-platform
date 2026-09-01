@@ -24,8 +24,9 @@ from trading.domain.market import TIMEFRAME_SECONDS
 from trading.domain.position import PositionDirection, VirtualPosition
 from trading.domain.signal import StrategySignal
 from trading.indicators import IndicatorService
+from trading.intelligence.currency import CurrencyStateView
 from trading.intelligence.features import FeatureStore
-from trading.intelligence.regime import RegimeService
+from trading.intelligence.regime import CurrencyRegimeService, RegimeService
 
 
 class StrategyStatus(StrEnum):
@@ -114,6 +115,10 @@ class StrategyContext:
     indicators: IndicatorService
     features: FeatureStore
     regime: RegimeService
+    # 通貨単位の方向感と regime（ADR-018 / 021 / 022）。どちらも refresh の
+    # たびに中身が入れ替わる read-only の器で、リポジトリは持たない。
+    currency_states: CurrencyStateView
+    currency_regime: CurrencyRegimeService
     portfolio: PortfolioView
     config: StrategyConfig
 

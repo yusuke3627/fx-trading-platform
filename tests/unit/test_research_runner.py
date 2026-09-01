@@ -13,7 +13,7 @@ from trading.backtest.research import (
     reconstructed,
     with_progress,
 )
-from trading.data.features import US2Y_VINTAGE_LOOKBACK, StoredFeatureSource
+from trading.data.features import StoredFeatureSource
 from trading.data.intervention.features import RECENCY_WINDOW_DAYS
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
 from trading.data.market.bars import BarBuilder
@@ -68,6 +68,11 @@ def make_source(observations=(), events=()) -> StoredFeatureSource:
         InterventionRiskConfig(version="test", weights={}),
         InMemoryFeatureStore(),
     )
+
+
+def us2y_window() -> timedelta:
+    """replay が US2Y を読む最も広い窓。"""
+    return make_source().observation_windows()[US_TREASURY_2Y_YIELD]
 
 
 def test_reconstructed_rewrites_known_time_from_the_broker_stamp():
@@ -240,9 +245,12 @@ def test_a_label_inside_the_dst_transition_hour_is_refused():
 
 
 def test_change_instants_mirror_the_snapshot_windows():
-    inside_lookback = observation(START - US2Y_VINTAGE_LOOKBACK + timedelta(days=1))
+    # US2Y は feature（20 営業日の z）と RATES factor（正規化の窓）の両方が
+    # 読む。窓は広い方で決まるので、定数ではなく実装から引く。
+    window = us2y_window()
+    inside_lookback = observation(START - window + timedelta(days=1))
     during = observation(START + timedelta(days=5))
-    beyond_lookback = observation(START - US2Y_VINTAGE_LOOKBACK - timedelta(days=10))
+    beyond_lookback = observation(START - window - timedelta(days=10))
 
     # The policy read is unbounded, so an old score's arrival is an instant
     # even when only its lookback expiry could fall inside the replay.
@@ -294,7 +302,7 @@ def test_dataset_fingerprint_changes_only_with_rows_a_replay_can_read():
     out_of_window = make_source(
         observations=[
             *observations,
-            observation(START - US2Y_VINTAGE_LOOKBACK - timedelta(days=10)),
+            observation(START - us2y_window() - timedelta(days=10)),
         ],
     ).dataset_fingerprint(START, END)
 

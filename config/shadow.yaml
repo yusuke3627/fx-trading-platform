@@ -10,6 +10,7 @@ strategies:
   post_event_failed_breakout:
     enabled: true
     status: SHADOW
+  # E′/B′ の前提検証で予測力が確認できず凍結（docs/research/2026-09-02-monetary-policy-convergence-verdict.md）
   monetary_policy_convergence:
-    enabled: true
-    status: SHADOW
+    enabled: false
+    status: RESEARCH_ONLY

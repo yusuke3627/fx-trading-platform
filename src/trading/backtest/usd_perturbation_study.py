@@ -253,6 +253,8 @@ def main() -> None:
 
     conn = connect(dsn)
     currency_config = CurrencyScoreConfig()
+    # 走査中に collector が同じ DB へ挿入しても、全ての日次照会が同じ行の
+    # 集合から答えるよう凍結する（research.py と同じ理由）。
     source = StoredFeatureSource(
         PostgresMacroObservationRepository(conn),
         PostgresEventRepository(conn),
@@ -262,7 +264,7 @@ def main() -> None:
         ),
         InMemoryFeatureStore(),
         currency=currency_config,
-    )
+    ).frozen(start, end)
 
     # 日次グリッド（UTC 00:00 = その日に入った時点の state）。replay と同じ
     # PIT 経路（known_at <= t）で読む。

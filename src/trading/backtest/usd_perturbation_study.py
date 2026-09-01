@@ -237,7 +237,7 @@ def main() -> None:
         if args.start
         else end - timedelta(days=365)
     )
-    if start >= end:
+    if start > end:
         raise SystemExit(f"empty window: {start:%Y-%m-%d} .. {end:%Y-%m-%d}")
 
     config = load_config(args.env)

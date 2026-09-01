@@ -7,6 +7,8 @@ Usage:
 
     python -m trading.data.market.dukascopy --env demo --symbol USDJPY \
         --since 2022-01-01T00:00:00Z --until 2024-07-23T00:00:00Z
+
+`--since` / `--until` は実 UTC。保存する tick.time は ADR-005 の broker ラベル軸へ変換する。
 """
 from __future__ import annotations
 
@@ -19,9 +21,10 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from trading.backtest.clock import Clock, SystemClock
 from trading.data.cli import aware_utc
@@ -40,9 +43,20 @@ USER_AGENT = "fx-trading-platform-collector/1.0"
 FETCH_ATTEMPTS = 3
 RETRY_WAIT_SECONDS = 5.0
 REQUEST_INTERVAL_SECONDS = 0.1
+NEW_YORK = ZoneInfo("America/New_York")
 
 _ONE_HOUR = timedelta(hours=1)
 _ONE_DAY = timedelta(days=1)
+
+
+def known_to_broker_label(known: datetime, server_ahead_of_ny: timedelta) -> datetime:
+    """実 UTC を broker ラベルへ変換する。
+
+    broker_label_to_known の逆写像。この方向は実在する UTC 時刻から New York
+    ローカル時刻へ写すため、DST の fold / gap による未定義点がなく全域で定義できる。
+    """
+    naive_ny = known.astimezone(NEW_YORK).replace(tzinfo=None)
+    return (naive_ny + server_ahead_of_ny).replace(tzinfo=UTC)
 
 
 def hour_url(symbol: str, hour_start: datetime) -> str:
@@ -104,11 +118,13 @@ class DukascopyTickImporter:
         self,
         repository: MarketTickRepository,
         *,
+        server_ahead_of_ny: timedelta,
         fetch: Callable[[str], bytes | None] = default_fetch,
         clock: Clock | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._repository = repository
+        self._server_ahead_of_ny = server_ahead_of_ny
         self._fetch = fetch
         self._clock = clock or SystemClock()
         self._sleep = sleep
@@ -135,7 +151,11 @@ class DukascopyTickImporter:
                 day_check_end = min(day_end, day_check_end + _ONE_HOUR)
             # 部分時間の要求でも、同じ時間帯に別ソースがあれば日次先行照会で見落とさない。
             check_each_hour = (
-                self._repository.bounds_between(symbol, day_check_start, day_check_end)
+                self._repository.bounds_between(
+                    symbol,
+                    known_to_broker_label(day_check_start, self._server_ahead_of_ny),
+                    known_to_broker_label(day_check_end, self._server_ahead_of_ny),
+                )
                 is not None
             )
             day_fetched = 0
@@ -152,7 +172,11 @@ class DukascopyTickImporter:
                     continue
                 if (
                     check_each_hour
-                    and self._repository.bounds_between(symbol, hour_start, hour_end)
+                    and self._repository.bounds_between(
+                        symbol,
+                        known_to_broker_label(hour_start, self._server_ahead_of_ny),
+                        known_to_broker_label(hour_end, self._server_ahead_of_ny),
+                    )
                     is not None
                 ):
                     hour_start = hour_end
@@ -191,8 +215,18 @@ class DukascopyTickImporter:
                 day_fetched += len(ticks)
                 ticks_in_range = [tick for tick in ticks if since <= tick.time < until]
                 if ticks_in_range:
+                    ticks_to_store = [
+                        tick.model_copy(
+                            update={
+                                "time": known_to_broker_label(
+                                    tick.time, self._server_ahead_of_ny
+                                )
+                            }
+                        )
+                        for tick in ticks_in_range
+                    ]
                     stored = self._repository.insert_many(
-                        ticks_in_range,
+                        ticks_to_store,
                         source=SOURCE_DUKASCOPY,
                         ingestion_run=self._ingestion_run,
                     )
@@ -244,7 +278,12 @@ def main() -> None:
     # DB extra がない環境でもデコーダーと取り込み処理をテスト可能に保つ。
     from trading.storage.postgres import PostgresMarketTickRepository, connect
 
-    importer = DukascopyTickImporter(PostgresMarketTickRepository(connect(dsn)))
+    importer = DukascopyTickImporter(
+        PostgresMarketTickRepository(connect(dsn)),
+        server_ahead_of_ny=timedelta(
+            hours=config.market.broker_server_ahead_of_ny_hours
+        ),
+    )
     stored, failed = importer.import_range(symbol, args.since, args.until)
     if failed:
         print(f"imported {stored} ticks; {failed} hourly downloads failed")

@@ -17,12 +17,14 @@ from trading.data.market.dukascopy import (
     DukascopyTickImporter,
     decode_bi5,
     hour_url,
+    known_to_broker_label,
 )
 from trading.domain.market import Tick
 
 SYMBOL = "USDJPY"
 T0 = datetime(2024, 7, 11, 12, 0, tzinfo=UTC)
 RECEIVED_AT = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+SERVER_AHEAD_OF_NY = timedelta(hours=7)
 
 
 def tick_at(when: datetime) -> Tick:
@@ -30,7 +32,7 @@ def tick_at(when: datetime) -> Tick:
         symbol=SYMBOL,
         bid=Decimal("150.001"),
         ask=Decimal("150.004"),
-        time=when,
+        time=known_to_broker_label(when, SERVER_AHEAD_OF_NY),
         received_at=when,
     )
 
@@ -86,6 +88,7 @@ def make_importer(
 ) -> DukascopyTickImporter:
     return DukascopyTickImporter(
         repository,
+        server_ahead_of_ny=SERVER_AHEAD_OF_NY,
         fetch=fetch,
         clock=FixedClock(RECEIVED_AT),
         sleep=sleep,
@@ -152,6 +155,22 @@ def test_empty_body_and_not_found_do_not_insert_or_fail() -> None:
         hour_url(SYMBOL, T0),
         hour_url(SYMBOL, T0 + timedelta(hours=1)),
     ]
+
+
+def test_stored_tick_time_uses_broker_label_axis() -> None:
+    winter_hour = datetime(2026, 1, 23, 12, 0, tzinfo=UTC)
+    repository = FakeTickRepository()
+    fetch = FakeFetch(
+        {hour_url(SYMBOL, winter_hour): bi5_payload((0, 150004, 150001))}
+    )
+    importer = make_importer(repository, fetch)
+
+    result = importer.import_range(
+        SYMBOL, winter_hour, winter_hour + timedelta(hours=1)
+    )
+
+    assert result == (1, 0)
+    assert repository.ticks[0].time == datetime(2026, 1, 23, 14, 0, tzinfo=UTC)
 
 
 def test_existing_mt5_day_is_not_fetched_at_source_boundary() -> None:
@@ -282,8 +301,8 @@ def test_ticks_outside_requested_half_open_range_are_filtered() -> None:
 
     assert result == (2, 0)
     assert [tick.time for tick in repository.ticks] == [
-        T0 + timedelta(minutes=30),
-        T0 + timedelta(minutes=44, seconds=59, milliseconds=999),
+        T0 + timedelta(hours=3, minutes=30),
+        T0 + timedelta(hours=3, minutes=44, seconds=59, milliseconds=999),
     ]
 
 

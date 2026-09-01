@@ -23,7 +23,7 @@ from __future__ import annotations
 import csv
 import io
 import re
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
 from typing import Any
@@ -45,6 +45,14 @@ MATURITY_HEADER = "2年"
 # 公表 09:30 頃への余裕（モジュール docstring 参照）。
 PUBLICATION_TIME_JST = time(15, 0)
 _JST = ZoneInfo("Asia/Tokyo")
+
+# 連続する基準日の実在し得る最大間隔。実測の最長は 2019 年 GW の 10 連休
+# （4/26 -> 5/7 の 11 暦日）。これを超える間隔は営業日の並びではなく
+# ファイル境界の空白（全期間ファイルの月次更新が当月ファイルの切り替わり
+# より遅れた状態）とみなし、翌営業日の代理に使わない — 使うと前月末の値に
+# 翌月の known_at が付き、空白が埋まった後の再収集で同値の重複 vintage が
+# できる。
+MAX_SUCCESSOR_GAP = timedelta(days=14)
 
 # S49.9.24 / H1.1.9 / R8.8.31 — 元号1文字 + 年.月.日（ゼロ埋めなし）。
 # 介入 CSV の「令和8年6月29日」形式とは別物なので専用に持つ。
@@ -132,6 +140,10 @@ class JGBYieldCollector:
         for day, next_day in pairwise(sorted(merged)):
             value, url, page_hash, retrieved_at = merged[day]
             if value is None:
+                continue
+            # ファイル境界の空白は翌営業日ではない。真の後続基準日が
+            # 現れる（全期間ファイルの月次更新）まで繰り延べる。
+            if next_day - day > MAX_SUCCESSOR_GAP:
                 continue
             known_at = datetime.combine(next_day, PUBLICATION_TIME_JST, _JST).astimezone(UTC)
             observations.append(

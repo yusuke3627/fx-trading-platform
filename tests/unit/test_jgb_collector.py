@@ -101,9 +101,14 @@ def test_the_newest_row_waits_for_its_successor() -> None:
 
 def test_a_missing_value_is_skipped_but_its_date_still_bounds_the_predecessor() -> None:
     history = jgb_csv(
-        ["S49.9.24,10.3,9.362,8.8", "S49.9.25,10.3,-,8.8", "S49.9.26,10.3,9.366,8.8"]
+        [
+            "S49.9.24,10.3,9.362,8.8",
+            "S49.9.25,10.3,-,8.8",
+            "S49.9.26,10.3,9.366,8.8",
+            "S49.9.27,10.3,9.368,8.8",
+        ]
     )
-    current = jgb_csv(["R8.8.31,1.1,1.750,1.9"])
+    current = jgb_csv(["R8.8.28,1.1,1.743,1.9", "R8.8.31,1.1,1.750,1.9"])
 
     batch, _ = collect(history, current)
 
@@ -111,7 +116,35 @@ def test_a_missing_value_is_skipped_but_its_date_still_bounds_the_predecessor() 
     # 9/25 は値なしなので emit されないが、9/24 の公表 bound にはなる。
     assert "1974-09-25" not in emitted
     assert emitted["1974-09-24"].known_at == jst_1500_as_utc(date(1974, 9, 25))
-    assert emitted["1974-09-26"].known_at == jst_1500_as_utc(date(2026, 8, 31))
+    assert emitted["1974-09-26"].known_at == jst_1500_as_utc(date(1974, 9, 27))
+
+
+def test_a_file_boundary_hole_is_not_a_successor() -> None:
+    # 全期間ファイルの月次更新が当月ファイルの切り替わりより遅れると、
+    # 前月末と当月初日の間に空白ができる。7月末の値に9月の known_at を
+    # 付けると、空白が埋まった後の再収集で同値の重複 vintage ができるので、
+    # 真の翌営業日が現れるまで繰り延べる。
+    history = jgb_csv(["R8.7.30,1.2,1.497,1.6", "R8.7.31,1.2,1.507,1.6"])
+    current = jgb_csv(["R8.9.1,1.5,1.760,1.9", "R8.9.2,1.5,1.765,1.9"])
+
+    batch, _ = collect(history, current)
+
+    assert [o.observation_period for o in batch.observations] == [
+        "2026-07-30",
+        "2026-09-01",
+    ]
+
+
+def test_a_long_holiday_run_is_still_a_valid_successor() -> None:
+    # 実測の最長間隔: 2019 年 GW の 10 連休（4/26 -> 5/7、11 暦日）は
+    # 営業日の並びであって空白ではない。
+    history = jgb_csv(["H31.4.26,0.0,-0.155,0.0", "R1.5.7,0.0,-0.161,0.0"])
+    current = jgb_csv(["R8.8.28,1.1,1.743,1.9", "R8.8.31,1.1,1.750,1.9"])
+
+    batch, _ = collect(history, current)
+
+    emitted = {o.observation_period: o for o in batch.observations}
+    assert emitted["2019-04-26"].known_at == jst_1500_as_utc(date(2019, 5, 7))
 
 
 def test_the_current_month_file_wins_where_the_two_overlap() -> None:

@@ -211,6 +211,12 @@ def test_shock_anchor_rejects_a_search_window_with_an_archive_gap() -> None:
     assert shock_anchors(bars, [episode()])[T0.date()] is None
 
 
+def test_shock_anchor_rejects_an_archive_gap_crossing_the_window_start() -> None:
+    bars = [m5(-1440, "150"), m5(12, "148", open="150"), m5(432, "150")]
+
+    assert shock_anchors(bars, [episode()])[T0.date()] is None
+
+
 @pytest.mark.parametrize(
     ("known_at", "expected_label"),
     [

@@ -21,6 +21,7 @@ from trading.data.market.stored import StoredMarketData
 from trading.domain.account import AccountMode
 from trading.domain.arbitration import REJECTED_REDUNDANT_FACTOR_EXPOSURE
 from trading.domain.money import Currency
+from trading.domain.order import ExecutionSide
 from trading.domain.position import PositionAction, PositionDirection, VirtualPosition
 from trading.domain.risk import EventRiskMode
 from trading.execution.mt5.adapter import MT5ConnectionError
@@ -132,6 +133,31 @@ class RedundantSignallingStrategy(SignallingStrategy):
         ]
 
 
+class NettingIncreaseStrategy(SignallingStrategy):
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol="USDJPY",
+                direction=PositionDirection.SHORT,
+                conviction=0.9,
+                expected_edge_r=Decimal(2),
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            ),
+            self.make_signal(
+                context,
+                symbol="EURUSD",
+                direction=PositionDirection.SHORT,
+                conviction=0.7,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            ),
+        ]
+
+
 class OutOfScopeSignallingStrategy(SignallingStrategy):
     async def on_event(self, event, context):
         return [
@@ -162,6 +188,7 @@ def build(
     features=None,
     instruments=None,
     arbitrator=None,
+    account_mode=AccountMode.HEDGING,
 ):
     instruments = (
         list(instruments)
@@ -203,7 +230,7 @@ def build(
         event_risk=event_risk,
         clock=clock,
         account_id=ACCOUNT,
-        account_mode=AccountMode.HEDGING,
+        account_mode=account_mode,
         instruments=instruments,
         exposure=CurrencyExposureService(
             MarketQuoteConversionService(market, specs)
@@ -565,6 +592,30 @@ def test_portfolio_position_count_is_recomputed_after_each_arbitrator_accept():
 
     assert "MAX_OPEN_POSITIONS_PORTFOLIO" not in results["EURUSD"].decision.reject_codes
     assert "MAX_OPEN_POSITIONS_PORTFOLIO" in results["USDJPY"].decision.reject_codes
+
+
+def test_netting_increase_does_not_consume_a_second_portfolio_position_slot():
+    runner = build(
+        **{**two_pairs(), "strategy": NettingIncreaseStrategy},
+        account_mode=AccountMode.NETTING,
+        risk_overrides={
+            "max_open_positions_portfolio": 2,
+            "max_units_per_symbol": {"USDJPY": 100000, "EURUSD": 100000},
+        },
+    )
+    runner._ledger.apply_fill(
+        "test_signaller",
+        "USDJPY",
+        ExecutionSide.SELL,
+        Decimal(1000),
+        Decimal("158.84"),
+    )
+
+    results = by_symbol(runner.evaluate_once())
+
+    assert results["USDJPY"].intent.action is PositionAction.INCREASE
+    assert results["USDJPY"].arbitration.rank == 1
+    assert "MAX_OPEN_POSITIONS_PORTFOLIO" not in results["EURUSD"].decision.reject_codes
 
 
 def test_redundant_factor_keeps_the_strongest_and_records_both_candidates():

@@ -455,6 +455,35 @@ class ShadowRunner:
     ) -> PreTradeContext:
         symbol = signal.symbol
         instrument = self._instruments[symbol]
+        # book は ledger の仮想 position（fill は届かないため通常空）と、
+        # 当 cycle で Arbitrator が先に受理した候補を含む。
+        symbol_exposure_units = sum(
+            (
+                exposure.signed_units
+                for exposure in book
+                if exposure.spec.symbol == symbol
+            ),
+            Decimal(0),
+        )
+        if self._account_mode is AccountMode.NETTING:
+            net_by_symbol: dict[str, Decimal] = {}
+            for exposure in book:
+                held_symbol = exposure.spec.symbol
+                net_by_symbol[held_symbol] = (
+                    net_by_symbol.get(held_symbol, Decimal(0))
+                    + exposure.signed_units
+                )
+            # NETTING の broker position は strategy 数ではなく、net が残る symbol
+            # ごとに 1 件。HEDGING では各 exposure が別 ticket を表す。
+            symbol_open_positions_count = int(symbol_exposure_units != 0)
+            portfolio_open_positions_count = sum(
+                1 for units in net_by_symbol.values() if units != 0
+            )
+        else:
+            symbol_open_positions_count = sum(
+                1 for exposure in book if exposure.spec.symbol == symbol
+            )
+            portfolio_open_positions_count = len(book)
         return PreTradeContext(
             now=now,
             # Nothing here has exercised the order path, so reporting it as
@@ -468,20 +497,9 @@ class ShadowRunner:
             instrument=instrument.spec,
             account=account,
             snapshots=history,
-            # book は ledger の仮想 position（fill は届かないため通常空）と、
-            # 当 cycle で Arbitrator が先に受理した候補を含む。
-            symbol_open_positions_count=sum(
-                1 for exposure in book if exposure.spec.symbol == symbol
-            ),
-            portfolio_open_positions_count=len(book),
-            symbol_exposure_units=sum(
-                (
-                    exposure.signed_units
-                    for exposure in book
-                    if exposure.spec.symbol == symbol
-                ),
-                Decimal(0),
-            ),
+            symbol_open_positions_count=symbol_open_positions_count,
+            portfolio_open_positions_count=portfolio_open_positions_count,
+            symbol_exposure_units=symbol_exposure_units,
             event_mode=self._event_mode(instrument.spec, horizon, now),
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,

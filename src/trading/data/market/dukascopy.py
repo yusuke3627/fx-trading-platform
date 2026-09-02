@@ -2,6 +2,7 @@
 
 対象期間に既存 tick がある時間帯は取得せず、MT5 由来の系列との混在を防ぐ。
 時間単位で保存するため、中断後は同じコマンドを再実行すれば未取得時間から再開できる。
+連続で失敗が続いたときはサーバー障害とみなして一定時間待避し、同じ時間帯から取り直す。
 
 Usage:
 
@@ -40,13 +41,27 @@ POINT_SCALES: dict[str, Decimal] = {"USDJPY": Decimal("0.001")}
 
 SOURCE_DUKASCOPY = "DUKASCOPY"
 USER_AGENT = "fx-trading-platform-collector/1.0"
-FETCH_ATTEMPTS = 3
-RETRY_WAIT_SECONDS = 5.0
+# 単発の接続リセットは数秒で回復するが、サーバー側の過負荷は数十秒続くため、待ちを
+# 3 倍ずつ伸ばして計 65 秒まで粘る（4 回試行、待ちは 3 回）。
+RETRY_WAITS = (5.0, 15.0, 45.0)
 REQUEST_INTERVAL_SECONDS = 0.1
+# 1 時間帯だけの失敗はそのファイル固有の問題でもあり得るが、休場でも 404 / 空ボディが
+# 正常に返る以上、3 時間帯連続で全試行が尽きるのはサーバー障害しか説明がつかない。
+OUTAGE_THRESHOLD = 3
+# 障害中に 30 秒タイムアウト × 4 を時間帯ごとに空費して範囲を消費するより、5 分待って
+# 同じ時間帯を 1 回だけ確かめるほうが取りこぼしも帯域の浪費も少ない。
+OUTAGE_PAUSE_SECONDS = 300.0
+# 5 分 × 12 回 = 1 時間待っても回復しない障害は長期化しているので、無人で待ち続けるより
+# 人が回復を確認してから同じコマンドで再開するほうがよい。
+OUTAGE_MAX_PAUSES = 12
 NEW_YORK = ZoneInfo("America/New_York")
 
 _ONE_HOUR = timedelta(hours=1)
 _ONE_DAY = timedelta(days=1)
+
+
+class ServerOutageError(RuntimeError):
+    """待避を繰り返しても Dukascopy が回復しなかった。取得済みの時間帯は保存されている。"""
 
 
 def known_to_broker_label(known: datetime, server_ahead_of_ny: timedelta) -> datetime:
@@ -136,6 +151,8 @@ class DukascopyTickImporter:
         """指定した半開区間を取り込み、保存件数と失敗時間帯数を返す。"""
         total_stored = 0
         total_failed = 0
+        consecutive_failures = 0
+        consecutive_pauses = 0
         day_start = since.replace(hour=0, minute=0, second=0, microsecond=0)
 
         while day_start < until:
@@ -186,7 +203,8 @@ class DukascopyTickImporter:
                 url = hour_url(symbol, hour_start)
                 payload: bytes | None = None
                 fetch_failed = False
-                for attempt in range(1, FETCH_ATTEMPTS + 1):
+                attempts = len(RETRY_WAITS) + 1
+                for attempt in range(1, attempts + 1):
                     try:
                         payload = self._fetch(url)
                         break
@@ -194,20 +212,43 @@ class DukascopyTickImporter:
                     # OSError ではない）になるため、OSError だけでは transient を
                     # 拾い切れない。
                     except (OSError, http.client.HTTPException) as exc:
-                        if attempt == FETCH_ATTEMPTS:
+                        if attempt == attempts:
                             print(
                                 f"{hour_start:%Y-%m-%d %H:%M}: fetch failed after "
-                                f"{FETCH_ATTEMPTS} attempts: {exc}",
+                                f"{attempts} attempts: {exc}",
                                 file=sys.stderr,
                                 flush=True,
                             )
                             fetch_failed = True
-                            total_failed += 1
                         else:
-                            self._sleep(RETRY_WAIT_SECONDS)
+                            self._sleep(RETRY_WAITS[attempt - 1])
 
                 self._sleep(REQUEST_INTERVAL_SECONDS)
-                if fetch_failed or payload is None:
+                if fetch_failed:
+                    # 閾値に届かない失敗はその時間帯固有の問題として諦め、次へ進む。
+                    if consecutive_failures + 1 < OUTAGE_THRESHOLD:
+                        consecutive_failures += 1
+                        total_failed += 1
+                        hour_start = hour_end
+                        continue
+                    consecutive_pauses += 1
+                    if consecutive_pauses > OUTAGE_MAX_PAUSES:
+                        raise ServerOutageError(
+                            f"server outage: giving up after {OUTAGE_MAX_PAUSES} pauses; "
+                            "rerun the same command after recovery"
+                        )
+                    print(
+                        f"server outage suspected: {OUTAGE_THRESHOLD} consecutive hours failed, "
+                        f"pausing {OUTAGE_PAUSE_SECONDS:.0f}s "
+                        f"({consecutive_pauses}/{OUTAGE_MAX_PAUSES})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self._sleep(OUTAGE_PAUSE_SECONDS)
+                    continue
+                consecutive_failures = 0
+                consecutive_pauses = 0
+                if payload is None:
                     hour_start = hour_end
                     continue
 
@@ -284,7 +325,10 @@ def main() -> None:
             hours=config.market.broker_server_ahead_of_ny_hours
         ),
     )
-    stored, failed = importer.import_range(symbol, args.since, args.until)
+    try:
+        stored, failed = importer.import_range(symbol, args.since, args.until)
+    except ServerOutageError as exc:
+        raise SystemExit(str(exc)) from exc
     if failed:
         print(f"imported {stored} ticks; {failed} hourly downloads failed")
         raise SystemExit(1)

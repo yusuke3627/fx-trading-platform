@@ -157,20 +157,6 @@ class AppConfig(BaseModel):
     session_profiles: dict[str, SessionProfile] = Field(default_factory=dict)
     strategies: dict[str, StrategyConfig] = Field(default_factory=dict)
 
-    @model_validator(mode="after")
-    def _session_profile_references_exist(self) -> AppConfig:
-        for strategy_id, strategy in self.strategies.items():
-            scopes = [strategy.parameters.defaults, *strategy.parameters.instruments.values()]
-            for values in scopes:
-                profile_name = values.get("session_profile")
-                if profile_name is None:
-                    continue
-                if not isinstance(profile_name, str) or profile_name not in self.session_profiles:
-                    raise ValueError(
-                        f"unknown session_profile {profile_name!r} for {strategy_id}"
-                    )
-        return self
-
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
@@ -199,9 +185,16 @@ def load_config(environment: str, config_dir: Path | str = "config") -> AppConfi
     raw["environment"] = environment
 
     # Fill strategy_id from mapping keys so YAML stays non-repetitive.
+    # session profile の catalogue は top-level に 1 つ。参照解決は
+    # StrategyConfig 側で行うので、全 strategy へ同じものを渡す。
+    profiles = raw.get("session_profiles") or {}
     strategies = {}
     for strategy_id, entry in (raw.get("strategies") or {}).items():
-        strategies[strategy_id] = {"strategy_id": strategy_id, **(entry or {})}
+        strategies[strategy_id] = {
+            "strategy_id": strategy_id,
+            **(entry or {}),
+            "session_profiles": profiles,
+        }
     raw["strategies"] = strategies
 
     return AppConfig.model_validate(raw)

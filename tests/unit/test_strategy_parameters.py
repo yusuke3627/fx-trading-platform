@@ -60,6 +60,7 @@ def test_structured_parameters_reject_unknown_top_level_keys():
 def test_session_profile_is_resolved_per_instrument():
     config = StrategyConfig(
         strategy_id="probe",
+        session_profiles={"usdjpy_core": {"tokyo": "ALLOWED"}},
         parameters={
             "instruments": {
                 "USDJPY": {"session_profile": "usdjpy_core"},
@@ -69,6 +70,26 @@ def test_session_profile_is_resolved_per_instrument():
 
     assert config.params_for("USDJPY").session_profile == "usdjpy_core"
     assert config.params_for("EURUSD").session_profile is None
+    assert config.session_profile_for("USDJPY") == SessionProfile(
+        sessions={"tokyo": SessionEntryPolicy.ALLOWED}
+    )
+    assert config.session_profile_for("EURUSD") is None
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"defaults": {"session_profile": "missing_profile"}},
+        {"instruments": {"USDJPY": {"session_profile": "missing_profile"}}},
+    ],
+)
+def test_unknown_session_profile_reference_is_rejected_at_the_config_boundary(parameters):
+    with pytest.raises(ValidationError, match="unknown session_profile"):
+        StrategyConfig(
+            strategy_id="probe",
+            session_profiles={"usdjpy_core": {"tokyo": "ALLOWED"}},
+            parameters=parameters,
+        )
 
 
 def test_retention_window_uses_largest_instrument_override():

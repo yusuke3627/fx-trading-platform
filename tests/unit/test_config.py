@@ -4,13 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from trading.config import (
-    AppConfig,
     EventRiskWindowSettings,
     InstrumentPolicy,
     MarketConfig,
     load_config,
 )
-from trading.strategy.base import StrategyConfig, StrategyStatus
+from trading.strategy.base import StrategyStatus
 from trading.strategy.sessions import SessionEntryPolicy
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
@@ -138,21 +137,39 @@ def test_base_session_profiles_load_as_typed_policies():
     assert config.session_profiles["usdjpy_core"].entry_allowed("tokyo") is True
 
 
-def test_unknown_session_profile_reference_is_rejected():
-    with pytest.raises(ValidationError):
-        AppConfig(
-            environment="demo",
-            strategies={
-                "probe": StrategyConfig(
-                    strategy_id="probe",
-                    parameters={
-                        "instruments": {
-                            "USDJPY": {"session_profile": "missing_profile"}
-                        }
-                    },
-                )
-            },
-        )
+def test_unknown_session_profile_reference_is_rejected(tmp_path):
+    (tmp_path / "base.yaml").write_text(
+        """
+session_profiles:
+  usdjpy_core:
+    tokyo: ALLOWED
+strategies:
+  probe:
+    parameters:
+      instruments:
+        USDJPY:
+          session_profile: missing_profile
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "demo.yaml").write_text("", encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="unknown session_profile"):
+        load_config("demo", tmp_path)
+
+
+def test_base_config_binds_session_profiles_to_strategies():
+    config = load_config("demo", CONFIG_DIR)
+
+    assert (
+        config.strategies["monetary_policy_convergence"].session_profile_for("USDJPY")
+        == config.session_profiles["usdjpy_core"]
+    )
+    assert (
+        config.strategies["failed_spike_reversal"].session_profile_for("USDJPY")
+        == config.session_profiles["usdjpy_scalp_research"]
+    )
+    assert config.strategies["post_event_failed_breakout"].session_profile_for("USDJPY") is None
 
 
 def test_every_platform_instrument_has_a_spread_ceiling():

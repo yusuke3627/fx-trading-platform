@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -393,6 +394,27 @@ def test_stats_and_baseline_span_use_cluster_anchors() -> None:
     assert non_overlapping.hit_rate == pytest.approx(1.0)
     assert span[0].start == m5(2, "0").start
     assert span[-1].start == m5(11, "0").start
+
+
+def test_baseline_span_ignores_cluster_anchors_without_the_horizon() -> None:
+    first_date = T0.date()
+    later_date = first_date + timedelta(days=20)
+    measured = measured_outcome(first_date, first_date, 2, -0.01)
+    unmeasured = replace(
+        measured_outcome(later_date, later_date, 15, -0.01),
+        returns={},
+        adverse={},
+        favorable={},
+    )
+
+    span = baseline_span(
+        [measured, unmeasured],
+        [m5(i, "150") for i in range(20)],
+        Horizon("15m", "5m", 3),
+    )
+
+    assert span[0].start == m5(2, "0").start
+    assert span[-1].start == m5(5, "0").start
 
 
 def test_report_contains_missing_overlap_individual_summary_and_profile_sections() -> None:

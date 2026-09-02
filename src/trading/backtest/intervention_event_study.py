@@ -344,15 +344,18 @@ def cluster_only(outcomes: Sequence[Outcome]) -> list[Outcome]:
 def baseline_span(
     outcomes: Sequence[Outcome], bars: Sequence[Bar], horizon: Horizon
 ) -> Sequence[Bar]:
-    """クラスタアンカーが届く範囲だけを無条件分布へ渡す。"""
+    """計測済みのクラスタアンカーが届く範囲だけを無条件分布へ渡す。
+
+    比較相手の cluster anchors 行と母集団を揃えるため。
+    """
     entries = [
         outcome.anchor.entry if horizon.timeframe == "5m" else outcome.daily_entry
         for outcome in cluster_only(outcomes)
+        if horizon.label in outcome.returns
     ]
-    measured_entries = [entry for entry in entries if entry is not None]
-    if not measured_entries:
+    if not entries:
         return ()
-    return bars[min(measured_entries) : max(measured_entries) + horizon.bars + 1]
+    return bars[min(entries) : max(entries) + horizon.bars + 1]
 
 
 def _cluster_label(episode: Episode) -> str:

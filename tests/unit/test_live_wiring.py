@@ -4,10 +4,15 @@ from types import SimpleNamespace
 import pytest
 
 from tests.support import FakeBarRepository, FakeTickRepository, FixedClock, usdjpy_spec
-from trading.config import load_config
+from trading.config import AppConfig, InstrumentPolicy, MarketConfig, load_config
 from trading.data.market.stored import StoredMarketData
 from trading.live.clock import CycleClock
-from trading.live.wiring import UnknownStrategyError, build_runner, traded_symbols
+from trading.live.wiring import (
+    UnknownStrategyError,
+    build_runner,
+    runner_symbols,
+    traded_symbols,
+)
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.strategy.base import StrategyConfig, StrategyStatus
 from trading.strategy.registry import STRATEGIES
@@ -73,8 +78,8 @@ def test_an_unregistered_strategy_id_stops_the_build():
 
 
 def test_traded_symbols_collects_what_a_running_strategy_declares():
-    # Only the runner's symbol gets an instrument spec loaded, so this is what
-    # decides whether a --symbol is one any evaluation would actually reach.
+    # Only the runner's symbols get instrument specs loaded, so this decides
+    # whether a requested symbol is one any evaluation would actually reach.
     config = SimpleNamespace(
         strategies={
             "a": _config("a", ["USDJPY"]),
@@ -87,8 +92,7 @@ def test_traded_symbols_collects_what_a_running_strategy_declares():
 
 def test_traded_symbols_excludes_strategies_that_never_run():
     # A symbol only a switched-off strategy names is one no evaluation reaches,
-    # which for a runner keyed to a single symbol is the same as naming a
-    # symbol nobody configured at all.
+    # so the runner must not load it among the symbols it evaluates.
     config = SimpleNamespace(
         strategies={
             "a": _config("a", ["USDJPY"]),
@@ -98,6 +102,72 @@ def test_traded_symbols_excludes_strategies_that_never_run():
     )
 
     assert traded_symbols(config) == {"USDJPY"}
+
+
+def test_runner_symbols_follow_the_primary_instrument_order():
+    config = AppConfig(
+        environment="shadow",
+        market=MarketConfig(primary_instruments=["USDJPY", "EURUSD", "USDJPY"]),
+        instruments={
+            "USDJPY": InstrumentPolicy(platform_enabled=True),
+            "EURUSD": InstrumentPolicy(platform_enabled=True),
+        },
+        strategies={"a": _config("a", ["USDJPY", "EURUSD"])},
+    )
+
+    assert runner_symbols(config) == ["USDJPY", "EURUSD"]
+
+
+def test_runner_symbols_can_be_narrowed_by_the_requested_symbols():
+    config = AppConfig(
+        environment="shadow",
+        market=MarketConfig(primary_instruments=["USDJPY", "EURUSD"]),
+        instruments={
+            "USDJPY": InstrumentPolicy(platform_enabled=True),
+            "EURUSD": InstrumentPolicy(platform_enabled=True),
+        },
+        strategies={"a": _config("a", ["USDJPY", "EURUSD"])},
+    )
+
+    assert runner_symbols(config, ["EURUSD"]) == ["EURUSD"]
+
+
+def test_runner_symbols_reject_a_symbol_no_running_strategy_trades():
+    config = AppConfig(
+        environment="shadow",
+        market=MarketConfig(primary_instruments=["EURUSD"]),
+        instruments={"EURUSD": InstrumentPolicy(platform_enabled=True)},
+        strategies={"a": _config("a", ["USDJPY"])},
+    )
+
+    with pytest.raises(ValueError, match="no enabled strategy trades EURUSD"):
+        runner_symbols(config)
+
+
+@pytest.mark.parametrize(
+    "instruments",
+    [{}, {"USDJPY": InstrumentPolicy(platform_enabled=False)}],
+)
+def test_runner_symbols_reject_a_symbol_that_is_not_platform_enabled(instruments):
+    config = AppConfig(
+        environment="shadow",
+        market=MarketConfig(primary_instruments=["USDJPY"]),
+        instruments=instruments,
+        strategies={"a": _config("a", ["USDJPY"])},
+    )
+
+    with pytest.raises(ValueError, match="USDJPY is not platform_enabled"):
+        runner_symbols(config)
+
+
+def test_runner_symbols_reject_an_empty_selection():
+    config = AppConfig(
+        environment="shadow",
+        market=MarketConfig(primary_instruments=[]),
+    )
+
+    with pytest.raises(ValueError, match="no symbol to evaluate"):
+        runner_symbols(config)
 
 
 def _config(strategy_id, instruments, *, enabled=True, status=StrategyStatus.SHADOW):

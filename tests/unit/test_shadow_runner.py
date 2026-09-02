@@ -12,12 +12,14 @@ from tests.support import (
     FakeTickRepository,
     FixedClock,
     at,
+    eurusd_spec,
     make_snapshot,
     make_tick,
     usdjpy_spec,
 )
 from trading.data.market.stored import StoredMarketData
 from trading.domain.account import AccountMode
+from trading.domain.money import Currency
 from trading.domain.position import PositionDirection
 from trading.domain.risk import EventRiskMode
 from trading.execution.mt5.adapter import MT5ConnectionError
@@ -30,7 +32,12 @@ from trading.intelligence.regime import (
     RuleBasedRegimeService,
 )
 from trading.live.clock import CycleClock
-from trading.live.shadow import ShadowRunner, broker_identity, describe
+from trading.live.shadow import (
+    ShadowInstrument,
+    ShadowRunner,
+    broker_identity,
+    describe,
+)
 from trading.portfolio.exposure import CurrencyExposureService
 from trading.portfolio.manager import PortfolioManager
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
@@ -83,6 +90,22 @@ class SilentStrategy(SignallingStrategy):
         return []
 
 
+class MultiSymbolSignallingStrategy(SignallingStrategy):
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol=symbol,
+                direction=PositionDirection.SHORT,
+                conviction=0.7,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            )
+            for symbol in context.config.instruments
+        ]
+
+
 def build(
     *,
     ticks=(),
@@ -95,10 +118,20 @@ def build(
     event_risk=NO_WINDOWS,
     event_mode_default=EventRiskMode.NORMAL,
     features=None,
+    instruments=None,
 ):
+    instruments = (
+        list(instruments)
+        if instruments is not None
+        else [ShadowInstrument(usdjpy_spec(), trading_enabled=True)]
+    )
+    specs = [instrument.spec for instrument in instruments]
     clock = CycleClock(source_clock or FixedClock(at(minutes=1)))
     market = StoredMarketData(
-        FakeTickRepository(ticks), FakeBarRepository(), clock, {"USDJPY": usdjpy_spec()}
+        FakeTickRepository(ticks),
+        FakeBarRepository(),
+        clock,
+        {spec.symbol: spec for spec in specs},
     )
     snapshot_store = FakeAccountSnapshotRepository()
     for snapshot in snapshots:
@@ -106,7 +139,7 @@ def build(
     ledger = VirtualPositionLedger(clock)
     binding = StrategyBinding(
         strategy=(strategy or SignallingStrategy)(),
-        context=_context(clock, market, ledger, enabled),
+        context=_context(clock, market, ledger, enabled, specs),
     )
     risk_config = RiskConfig(
         trading_enabled=trading_enabled, event_mode_default=event_mode_default
@@ -114,12 +147,10 @@ def build(
     return ShadowRunner(
         runner=StrategyRunner([binding]),
         portfolio=PortfolioManager(
-            ledger, clock, MarketQuoteConversionService(market, [usdjpy_spec()])
+            ledger, clock, MarketQuoteConversionService(market, specs)
         ),
         ledger=ledger,
-        risk=RiskEngine(
-            risk_config, clock, MarketQuoteConversionService(market, [usdjpy_spec()])
-        ),
+        risk=RiskEngine(risk_config, clock, MarketQuoteConversionService(market, specs)),
         risk_config=risk_config,
         market=market,
         snapshots=snapshot_store,
@@ -128,16 +159,15 @@ def build(
         clock=clock,
         account_id=ACCOUNT,
         account_mode=AccountMode.HEDGING,
-        instrument=usdjpy_spec(),
-        instrument_trading_enabled=True,
+        instruments=instruments,
         exposure=CurrencyExposureService(
-            MarketQuoteConversionService(market, [usdjpy_spec()])
+            MarketQuoteConversionService(market, specs)
         ),
         features=features,
     )
 
 
-def _context(clock, market, ledger, enabled):
+def _context(clock, market, ledger, enabled, specs):
     features = InMemoryFeatureStore()
     return StrategyContext(
         clock=clock,
@@ -152,7 +182,7 @@ def _context(clock, market, ledger, enabled):
             strategy_id="test_signaller",
             enabled=enabled,
             status=StrategyStatus.SHADOW,
-            instruments=["USDJPY"],
+            instruments=[spec.symbol for spec in specs],
         ),
     )
 
@@ -183,7 +213,7 @@ def test_nothing_is_evaluated_before_a_quote_is_collected():
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
-    assert cycle.blocked == "no quote collected"
+    assert cycle.blocked == {"USDJPY": "no quote collected"}
 
 
 def test_nothing_is_evaluated_before_the_account_is_known():
@@ -198,7 +228,7 @@ def test_nothing_is_evaluated_before_the_account_is_known():
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
-    assert cycle.blocked == "no account snapshot collected"
+    assert cycle.blocked == {"USDJPY": "no account snapshot collected"}
 
 
 def test_a_stale_quote_stops_the_evaluation():
@@ -214,7 +244,7 @@ def test_a_stale_quote_stops_the_evaluation():
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
-    assert cycle.blocked is not None and "quote is" in cycle.blocked
+    assert "quote is" in cycle.blocked["USDJPY"]
 
 
 def test_a_stale_account_stops_the_evaluation():
@@ -231,7 +261,7 @@ def test_a_stale_account_stops_the_evaluation():
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
-    assert cycle.blocked is not None and "account snapshot is" in cycle.blocked
+    assert "account snapshot is" in cycle.blocked["USDJPY"]
 
 
 def test_a_snapshot_written_after_the_cycle_started_is_not_visible():
@@ -400,6 +430,130 @@ def test_the_configured_trading_switch_reaches_the_decision():
     assert "TRADING_ENABLED" not in graded.decision.reject_codes
 
 
+# The instant build() runs on unless a test moves the clock.
+CYCLE_AT = at(minutes=1)
+
+TWO_PAIRS = (
+    ShadowInstrument(usdjpy_spec(), trading_enabled=True),
+    ShadowInstrument(eurusd_spec(), trading_enabled=False),
+)
+
+
+def usdjpy_tick(time=CYCLE_AT):
+    return make_tick("158.840", "158.844", time=time, received_at=time)
+
+
+def eurusd_tick(time=CYCLE_AT):
+    return make_tick("1.08000", "1.08010", time=time, symbol="EURUSD", received_at=time)
+
+
+def two_pairs(*, ticks=None, snapshots=None):
+    """USDJPY and EURUSD evaluated together, each with a fresh quote and the
+    account known unless a test takes one away. EURUSD is not trading-enabled,
+    which is how the two symbols are told apart in what Risk says about them."""
+    return {
+        "ticks": [usdjpy_tick(), eurusd_tick()] if ticks is None else ticks,
+        "snapshots": (
+            [make_snapshot("1000000", observed_at=CYCLE_AT)]
+            if snapshots is None
+            else snapshots
+        ),
+        "strategy": MultiSymbolSignallingStrategy,
+        "instruments": TWO_PAIRS,
+    }
+
+
+def by_symbol(cycle):
+    return {result.signal.symbol: result for result in cycle.decisions}
+
+
+def test_each_symbol_is_sized_with_its_own_spec_and_quote():
+    # 500 JPY of risk budget against 5 pips: 0.05 JPY per unit on USDJPY, and
+    # 0.0005 USD per unit on EURUSD converted at the USDJPY ask. The
+    # quantities differ only if pip size, quote currency and entry price all
+    # came from the signal's own instrument.
+    runner = build(**two_pairs())
+
+    results = by_symbol(runner.evaluate_once())
+
+    assert set(results) == {"USDJPY", "EURUSD"}
+    assert results["USDJPY"].intent.target_quantity == Decimal(10000)
+    assert results["EURUSD"].intent.target_quantity == Decimal(6000)
+
+
+def test_each_symbols_trading_switch_reaches_its_decision():
+    runner = build(**two_pairs())
+
+    results = by_symbol(runner.evaluate_once())
+
+    assert "INSTRUMENT_TRADING_ENABLED" not in results["USDJPY"].decision.reject_codes
+    assert "INSTRUMENT_TRADING_ENABLED" in results["EURUSD"].decision.reject_codes
+
+
+def test_event_windows_apply_to_each_symbols_currency_legs():
+    # An ECB decision touches EUR: it halts EURUSD scalp entries and says
+    # nothing about USDJPY, which only holds if each intent is graded with
+    # its own instrument's legs.
+    window = EventRiskWindow(
+        name="eur_central_bank_window",
+        first_event_at=at(hours=2),
+        last_event_at=at(hours=2),
+        pre_hours=48,
+        post_hours=24,
+        actions={StrategyHorizon.SCALP: EventRiskMode.HALT},
+        affected_currencies=frozenset({Currency.EUR}),
+    )
+    runner = build(**two_pairs(), event_risk=EventRiskCalendar([window], COVERED))
+
+    results = by_symbol(runner.evaluate_once())
+
+    assert "EVENT_MODE_ALLOWS_ENTRY" not in results["USDJPY"].decision.reject_codes
+    assert "EVENT_MODE_ALLOWS_ENTRY" in results["EURUSD"].decision.reject_codes
+
+
+def test_a_missing_quote_only_blocks_its_symbol():
+    # The collectors are one process per symbol; one of them being down is
+    # the ordinary failure, and it must not take the other pairs with it. The
+    # strategy still forms a view on the missing pair (it evaluates every
+    # instrument it has), and that view is dropped rather than recorded.
+    store = FakeDecisionRepository()
+    runner = build(**two_pairs(ticks=[usdjpy_tick()]), decisions=store)
+
+    cycle = runner.evaluate_once()
+
+    assert cycle.blocked == {"EURUSD": "no quote collected"}
+    assert [result.signal.symbol for result in cycle.decisions] == ["USDJPY"]
+    assert [signal.symbol for _, signal in store.signals] == ["USDJPY"]
+
+
+def test_a_stale_quote_only_blocks_its_symbol():
+    runner = build(**two_pairs(ticks=[usdjpy_tick(), eurusd_tick(time=T0)]))
+
+    cycle = runner.evaluate_once()
+
+    assert "quote is" in cycle.blocked["EURUSD"]
+    assert [result.signal.symbol for result in cycle.decisions] == ["USDJPY"]
+
+
+def test_a_missing_account_blocks_every_symbol_before_dispatch():
+    # Every symbol is sized from the same equity and graded against the same
+    # loss history, so no account means no evaluation at all: not a
+    # per-symbol condition, and nothing is dispatched or refreshed.
+    store = FakeDecisionRepository()
+    features = RecordingFeatureSource()
+    runner = build(**two_pairs(snapshots=[]), decisions=store, features=features)
+
+    cycle = runner.evaluate_once()
+
+    assert cycle.blocked == {
+        "USDJPY": "no account snapshot collected",
+        "EURUSD": "no account snapshot collected",
+    }
+    assert cycle.decisions == ()
+    assert store.signals == []
+    assert features.refreshed_at == []
+
+
 def test_a_disabled_strategy_is_never_evaluated():
     runner = build(**quote_and_account(), enabled=False)
 
@@ -407,7 +561,7 @@ def test_a_disabled_strategy_is_never_evaluated():
 
     assert cycle.decisions == ()
     # Nothing is wrong: the runner simply had nothing to decide.
-    assert cycle.blocked is None
+    assert cycle.blocked == {}
 
 
 def test_a_strategy_with_nothing_to_say_produces_no_decision():
@@ -416,7 +570,7 @@ def test_a_strategy_with_nothing_to_say_produces_no_decision():
     cycle = runner.evaluate_once()
 
     assert cycle.decisions == ()
-    assert cycle.blocked is None
+    assert cycle.blocked == {}
 
 
 def test_the_whole_evaluation_reads_one_instant():

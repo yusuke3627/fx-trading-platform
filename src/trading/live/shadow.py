@@ -5,8 +5,8 @@ intents, Risk grades them — and the result is reported instead of executed.
 The runner holds no OMS and no broker adapter, so "no orders are sent" is a
 property of what is wired rather than a flag that could be flipped.
 
-The broker is touched once, at startup, for two facts that only it has: which
-account the terminal is connected to, and the instrument's specification.
+The broker is touched at startup for two facts that only it has: which account
+the terminal is connected to, and the instruments' specifications.
 Every evaluation after that reads the stored series, so the loop runs on the
 database alone and what a strategy sees is what was collected.
 
@@ -18,7 +18,7 @@ whatever else did or did not pass.
 
 Usage (Windows host with MT5 terminal):
 
-    python -m trading.live.shadow --env shadow --symbol USDJPY
+    python -m trading.live.shadow --env shadow --symbol USDJPY --symbol EURUSD
     python -m trading.live.shadow --env shadow --once
 """
 from __future__ import annotations
@@ -26,7 +26,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -37,9 +38,10 @@ from trading.data.features import StoredFeatureSource
 from trading.data.market import MarketDataService
 from trading.domain.account import AccountMode
 from trading.domain.event import EventEnvelope
-from trading.domain.exposure import OpenPositionExposure
+from trading.domain.exposure import OpenPositionExposure, PortfolioRiskSnapshot
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
+from trading.domain.market import Tick
 from trading.domain.position import PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel, RiskDecision
 from trading.domain.signal import StrategySignal
@@ -54,7 +56,7 @@ from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.conversion import MarketQuoteConversionService
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 from trading.risk.event_risk import EventRiskCalendar
-from trading.runner import StrategyRunner
+from trading.runner import CollectedSignal, StrategyRunner
 from trading.storage.repository import AccountSnapshotRepository, DecisionRepository
 from trading.strategy.base import StrategyHorizon
 
@@ -82,6 +84,12 @@ class ShadowDecision:
 
 
 @dataclass(frozen=True)
+class ShadowInstrument:
+    spec: InstrumentSpec
+    trading_enabled: bool
+
+
+@dataclass(frozen=True)
 class ShadowCycle:
     """What one evaluation produced, or why it produced nothing.
 
@@ -92,7 +100,7 @@ class ShadowCycle:
 
     at: datetime
     decisions: tuple[ShadowDecision, ...] = ()
-    blocked: str | None = None
+    blocked: dict[str, str] = field(default_factory=dict)
 
 
 class ShadowRunner:
@@ -111,8 +119,7 @@ class ShadowRunner:
         clock: CycleClock,
         account_id: str,
         account_mode: AccountMode,
-        instrument: InstrumentSpec,
-        instrument_trading_enabled: bool,
+        instruments: Sequence[ShadowInstrument],
         exposure: CurrencyExposureService,
         features: StoredFeatureSource | None = None,
     ) -> None:
@@ -128,30 +135,51 @@ class ShadowRunner:
         self._clock = clock
         self._account_id = account_id
         self._account_mode = account_mode
-        self._instrument = instrument
-        self._instrument_trading_enabled = instrument_trading_enabled
+        self._instruments = {
+            instrument.spec.symbol: instrument for instrument in instruments
+        }
         self._exposure = exposure
         self._features = features
 
     def evaluate_once(self) -> ShadowCycle:
         """One evaluation of every enabled strategy at a single instant."""
         now = self._clock.begin_cycle()
-        quote = self._market.latest_tick(self._instrument.symbol)
         account = self._snapshots.latest_known_before(self._account_id, now)
-        if quote is None:
-            return ShadowCycle(at=now, blocked="no quote collected")
-        # Risk would refuse an entry on a quote this old anyway; refusing here
-        # keeps a strategy from forming a view on a price that is no longer
-        # the market. The bound is the one Risk grades against, so the two
-        # cannot drift apart.
-        quote_age = (now - quote.known_time).total_seconds()
-        if quote_age > self._risk_config.quote_max_age_seconds:
-            return ShadowCycle(at=now, blocked=f"quote is {quote_age:.0f}s old")
         if account is None:
-            return ShadowCycle(at=now, blocked="no account snapshot collected")
+            return ShadowCycle(
+                at=now,
+                blocked={
+                    symbol: "no account snapshot collected"
+                    for symbol in self._instruments
+                },
+            )
         age = now - account.observed_at
         if age > ACCOUNT_MAX_AGE:
-            return ShadowCycle(at=now, blocked=f"account snapshot is {age} old")
+            return ShadowCycle(
+                at=now,
+                blocked={
+                    symbol: f"account snapshot is {age} old"
+                    for symbol in self._instruments
+                },
+            )
+
+        quotes: dict[str, Tick] = {}
+        blocked: dict[str, str] = {}
+        for symbol in self._instruments:
+            quote = self._market.latest_tick(symbol)
+            if quote is None:
+                blocked[symbol] = "no quote collected"
+                continue
+            # Risk would refuse an entry on a quote this old anyway; refusing
+            # here keeps a strategy from forming a view on a stale price. The
+            # bound is the one Risk grades against, so the two cannot drift.
+            quote_age = (now - quote.known_time).total_seconds()
+            if quote_age > self._risk_config.quote_max_age_seconds:
+                blocked[symbol] = f"quote is {quote_age:.0f}s old"
+                continue
+            quotes[symbol] = quote
+        if not quotes:
+            return ShadowCycle(at=now, blocked=blocked)
 
         # Refreshed inside the cycle so every strategy in it reads one
         # consistent snapshot, taken at the frozen cycle instant.
@@ -162,12 +190,16 @@ class ShadowRunner:
             event_id=uuid4(),
             event_type="market.tick",
             source="live",
-            retrieved_at=quote.known_time,
-            known_at=quote.known_time,
+            retrieved_at=now,
+            known_at=now,
         )
         collected = asyncio.run(self._runner.dispatch(event))
-        if not collected:
-            return ShadowCycle(at=now)
+        # 戦略は 1 dispatch で自分の全 instruments を評価するので、quote gate で
+        # 止めた symbol の signal もここに混ざる。評価しなかった symbol として
+        # 捨て、trail には残さない。
+        candidates = [item for item in collected if item.signal.symbol not in blocked]
+        if not candidates:
+            return ShadowCycle(at=now, blocked=blocked)
         # Read once for the cycle: the window is the same for every intent in
         # it, and it is the largest query the loop makes.
         history = list(
@@ -184,9 +216,27 @@ class ShadowRunner:
         if baseline is not None:
             history.insert(0, baseline)
 
-        results: list[ShadowDecision] = []
-        for item in collected:
+        # 仮想 book（fill は届かないため通常空）の通貨分解。stop は
+        # VirtualPosition に無いので stop-risk は 0 として評価される。mark は
+        # 当 cycle の quote: fill が届かない以上、quote gate で止めた symbol に
+        # position があることはない。
+        portfolio_risk = self._exposure.snapshot(
+            [
+                OpenPositionExposure(
+                    spec=self._instruments[position.symbol].spec,
+                    signed_units=position.signed_quantity,
+                    mark_price=quotes[position.symbol].mid,
+                )
+                for position in self._ledger.open_positions()
+            ],
+            now,
+        )
+
+        sized: list[tuple[CollectedSignal, PositionIntent]] = []
+        for item in candidates:
             signal = item.signal
+            instrument = self._instruments[signal.symbol].spec
+            quote = quotes[signal.symbol]
             entry_price = (
                 quote.ask
                 if signal.desired_direction is PositionDirection.LONG
@@ -195,9 +245,9 @@ class ShadowRunner:
             sizing = SizingInput(
                 equity=account.equity,
                 max_risk_per_trade_pct=self._risk_config.max_risk_per_trade_pct,
-                pip_size=self._instrument.pip_size,
-                quote_currency=self._instrument.quote_currency,
-                volume_step=self._instrument.volume_step,
+                pip_size=instrument.pip_size,
+                quote_currency=instrument.quote_currency,
+                volume_step=instrument.volume_step,
                 entry_price=entry_price,
             )
             intents = self._portfolio.intents_from_signal(signal, sizing)
@@ -209,34 +259,54 @@ class ShadowRunner:
                 self._decisions.record_signal(self._account_id, signal)
                 continue
             for intent in intents:
-                context = self._pretrade_context(
-                    signal, intent, quote, account, history, now, item.horizon
-                )
-                decision = self._risk.evaluate(intent, context)
-                # Written before it is reported: the record is the point of a
-                # shadow run, and printing a decision that never reached the
-                # database would make the log and the trail disagree.
-                self._decisions.record(self._account_id, signal, intent, decision)
-                results.append(
-                    ShadowDecision(signal=signal, intent=intent, decision=decision)
-                )
-        return ShadowCycle(at=now, decisions=tuple(results))
+                sized.append((item, intent))
+
+        results: list[ShadowDecision] = []
+        for item, intent in sized:
+            signal = item.signal
+            quote = quotes[signal.symbol]
+            context = self._pretrade_context(
+                signal,
+                intent,
+                quote,
+                account,
+                history,
+                now,
+                item.horizon,
+                portfolio_risk,
+            )
+            decision = self._risk.evaluate(intent, context)
+            # Written before it is reported: the record is the point of a
+            # shadow run, and printing a decision that never reached the
+            # database would make the log and the trail disagree.
+            self._decisions.record(self._account_id, signal, intent, decision)
+            results.append(
+                ShadowDecision(signal=signal, intent=intent, decision=decision)
+            )
+        return ShadowCycle(at=now, decisions=tuple(results), blocked=blocked)
 
     def run(self, interval_seconds: float) -> None:
-        blocked: str | None = None
+        blocked: dict[str, str] = {}
         while True:
             cycle = self.evaluate_once()
             # A block is a standing condition, not an event: repeating it every
             # few seconds would bury the decisions between them.
-            if cycle.blocked != blocked:
-                blocked = cycle.blocked
-                if blocked is not None:
-                    print(f"{cycle.at.isoformat()} not evaluating: {blocked}")
+            for symbol, reason in cycle.blocked.items():
+                if blocked.get(symbol) != reason:
+                    print(
+                        f"{cycle.at.isoformat()} not evaluating {symbol}: {reason}"
+                    )
+            blocked = cycle.blocked
             for result in cycle.decisions:
                 print(describe(result))
             time.sleep(interval_seconds)
 
-    def _event_mode(self, horizon: StrategyHorizon, now: datetime) -> EventRiskMode:
+    def _event_mode(
+        self,
+        instrument: InstrumentSpec,
+        horizon: StrategyHorizon,
+        now: datetime,
+    ) -> EventRiskMode:
         """Graded per horizon: a central-bank decision halts scalp entries
         while swing only reduces.
 
@@ -247,13 +317,22 @@ class ShadowRunner:
         """
         if self._event_risk is None:
             return self._risk_config.event_mode_default
-        mode = self._event_risk.mode_for_instrument(self._instrument, horizon, now)
+        mode = self._event_risk.mode_for_instrument(instrument, horizon, now)
         return mode if mode is not None else self._risk_config.event_mode_default
 
     def _pretrade_context(
-        self, signal, intent, quote, account, history, now, horizon
+        self,
+        signal,
+        intent,
+        quote,
+        account,
+        history,
+        now,
+        horizon,
+        portfolio_risk: PortfolioRiskSnapshot,
     ) -> PreTradeContext:
         symbol = signal.symbol
+        instrument = self._instruments[symbol]
         return PreTradeContext(
             now=now,
             # Nothing here has exercised the order path, so reporting it as
@@ -264,7 +343,7 @@ class ShadowRunner:
             # which does not exist yet.
             account_reconciled=False,
             quote=quote,
-            instrument=self._instrument,
+            instrument=instrument.spec,
             account=account,
             snapshots=history,
             # The virtual ledger is the only book this runner can see, and no
@@ -276,24 +355,12 @@ class ShadowRunner:
             ),
             portfolio_open_positions_count=len(self._ledger.open_positions()),
             symbol_exposure_units=self._ledger.net_exposure(symbol),
-            event_mode=self._event_mode(horizon, now),
+            event_mode=self._event_mode(instrument.spec, horizon, now),
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,
             account_mode=self._account_mode,
-            instrument_trading_enabled=self._instrument_trading_enabled,
-            # 仮想 book（fill は届かないため通常空）の通貨分解。stop は
-            # VirtualPosition に無いので stop-risk は 0 として評価される。
-            portfolio_risk=self._exposure.snapshot(
-                [
-                    OpenPositionExposure(
-                        spec=self._instrument,
-                        signed_units=p.signed_quantity,
-                        mark_price=quote.mid,
-                    )
-                    for p in self._ledger.open_positions()
-                ],
-                now,
-            ),
+            instrument_trading_enabled=instrument.trading_enabled,
+            portfolio_risk=portfolio_risk,
             stop_distance_pips=signal.stop_distance_pips,
             requested_quantity=intent.target_quantity or Decimal(0),
         )
@@ -347,11 +414,11 @@ def main() -> None:
     from trading.config import load_config
     from trading.data.market.stored import StoredMarketData
     from trading.data.policy.risk_windows import central_bank_calendar
-    from trading.live.wiring import build_runner, traded_symbols
+    from trading.live.wiring import build_runner, runner_symbols
 
     parser = argparse.ArgumentParser(description="Shadow strategy runner")
     parser.add_argument("--env", default="shadow")
-    parser.add_argument("--symbol", default=None)
+    parser.add_argument("--symbol", action="append", default=None)
     parser.add_argument(
         "--interval-seconds", type=poll_interval, default=DEFAULT_INTERVAL_SECONDS
     )
@@ -363,20 +430,24 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.env)
-    symbol = args.symbol or config.market.primary_instruments[0]
-    # Only this symbol's spec is loaded, so a symbol no running strategy trades
-    # leaves every evaluation asking for an instrument that is not there — and
-    # doing nothing about it, quietly, for as long as the process lives.
-    traded = traded_symbols(config)
-    if symbol not in traded:
-        raise SystemExit(f"no enabled strategy trades {symbol}: {sorted(traded)}")
+    try:
+        symbols = runner_symbols(config, args.symbol)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     dsn = os.environ.get(config.storage.dsn_env)
     if not dsn:
         raise SystemExit(f"{config.storage.dsn_env} is not set")
 
-    account_id, instrument = broker_identity(symbol)
-    # instruments 設定に無い symbol は発注不可として評価する（fail-close）。
-    instrument_policy = config.instruments.get(symbol)
+    instrument_specs: dict[str, InstrumentSpec] = {}
+    for symbol in symbols:
+        account_id, instrument_specs[symbol] = broker_identity(symbol)
+    instruments = [
+        ShadowInstrument(
+            spec=instrument_specs[symbol],
+            trading_enabled=config.instruments[symbol].trading_enabled,
+        )
+        for symbol in symbols
+    ]
 
     # Imported here so the module stays unit-testable without the db extra.
     from trading.storage.postgres import (
@@ -395,17 +466,17 @@ def main() -> None:
         PostgresMarketTickRepository(conn),
         PostgresMarketBarRepository(conn),
         clock,
-        {symbol: instrument},
+        instrument_specs,
     )
     ledger = VirtualPositionLedger(clock)
     # 換算も市場と同じ stored series を読む: sizing の quote 鮮度制約と
     # risk config の quote_max_age を一致させる。換算 path の spec は取引銘柄
     # と独立に config から解決する — 非 JPY quote の銘柄（EURUSD 等）では
     # 取引銘柄自身の path（EUR↔USD）だけでは JPY 換算が張れない。
-    conversion_specs = [instrument] + [
+    conversion_specs = list(instrument_specs.values()) + [
         broker_identity(sym)[1]
         for sym in config.market.conversion_instruments
-        if sym != symbol
+        if sym not in instrument_specs
     ]
     conversion = MarketQuoteConversionService(
         market,
@@ -442,21 +513,21 @@ def main() -> None:
         clock=clock,
         account_id=account_id,
         account_mode=AccountMode(config.broker.expected_account_mode),
-        instrument=instrument,
-        instrument_trading_enabled=instrument_policy is not None
-        and instrument_policy.trading_enabled,
+        instruments=instruments,
         exposure=CurrencyExposureService(conversion),
         features=features,
     )
 
-    print(f"shadow on {symbol} for {account_id}")
+    print(f"shadow on {', '.join(symbols)} for {account_id}")
     if args.once:
         cycle = runner.evaluate_once()
-        if cycle.blocked is not None:
-            raise SystemExit(f"not evaluating: {cycle.blocked}")
+        for symbol, reason in cycle.blocked.items():
+            print(f"{cycle.at.isoformat()} not evaluating {symbol}: {reason}")
         for result in cycle.decisions:
             print(describe(result))
         print(f"{len(cycle.decisions)} decisions")
+        if cycle.blocked:
+            raise SystemExit(1)
     else:
         runner.run(args.interval_seconds)
 

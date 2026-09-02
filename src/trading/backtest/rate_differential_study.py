@@ -10,7 +10,7 @@ E′（policy_event_study）は会合ごとの階段スコアを測り、USD/JPY
 会合が年16回しかない標本数問題も解消される。
 
 **PIT 整列。** US2Y は ALFRED vintage の known_at（vintage 日 18:00 ET）、
-JP2Y は MOF 公表 bound の known_at（次の基準日 15:00 JST、ADR-022）を持ち、
+JP2Y は MOF 公表 bound の known_at（次の基準日 15:00 JST、ADR-026）を持ち、
 日足バー t の close（17:00 ET）で見えるのはどちらも通常 t−1 の値。両系列が
 対称に1営業日遅れるだけで、close より未来の known_at を持つ値は決して使わ
 ない。

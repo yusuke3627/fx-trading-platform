@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from trading.domain.risk import EventRiskMode
 from trading.risk.engine import RiskConfig
 from trading.strategy.base import StrategyConfig, StrategyHorizon
+from trading.strategy.sessions import SessionProfile
 
 ENVIRONMENTS = ("backtest", "demo", "shadow", "micro_live", "production")
 
@@ -153,7 +154,22 @@ class AppConfig(BaseModel):
     event_risk: dict[str, EventRiskWindowSettings] = Field(default_factory=dict)
     intelligence: IntelligenceConfig = IntelligenceConfig()
     simulator: SimulatorConfig = SimulatorConfig()
+    session_profiles: dict[str, SessionProfile] = Field(default_factory=dict)
     strategies: dict[str, StrategyConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _session_profile_references_exist(self) -> AppConfig:
+        for strategy_id, strategy in self.strategies.items():
+            scopes = [strategy.parameters.defaults, *strategy.parameters.instruments.values()]
+            for values in scopes:
+                profile_name = values.get("session_profile")
+                if profile_name is None:
+                    continue
+                if not isinstance(profile_name, str) or profile_name not in self.session_profiles:
+                    raise ValueError(
+                        f"unknown session_profile {profile_name!r} for {strategy_id}"
+                    )
+        return self
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:

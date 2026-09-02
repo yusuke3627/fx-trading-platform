@@ -4,12 +4,14 @@ import pytest
 from pydantic import ValidationError
 
 from trading.config import (
+    AppConfig,
     EventRiskWindowSettings,
     InstrumentPolicy,
     MarketConfig,
     load_config,
 )
-from trading.strategy.base import StrategyStatus
+from trading.strategy.base import StrategyConfig, StrategyStatus
+from trading.strategy.sessions import SessionEntryPolicy
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
@@ -72,7 +74,7 @@ def test_micro_live_overlay_caps_and_enables():
     assert strategy.status is StrategyStatus.MICRO_LIVE
     assert strategy.enabled is True
     # Base parameters survive the overlay merge.
-    assert strategy.parameters["resistance_lookback"] == 20
+    assert strategy.params_for("USDJPY").param("resistance_lookback", 0) == 20
 
 
 def test_backtest_enables_risk_gate_for_simulated_orders():
@@ -124,3 +126,49 @@ def test_every_platform_instrument_has_a_unit_cap():
     for symbol, policy in config.instruments.items():
         if policy.platform_enabled:
             assert symbol in config.risk.max_units_per_symbol, symbol
+
+
+def test_base_session_profiles_load_as_typed_policies():
+    config = load_config("demo", CONFIG_DIR)
+
+    assert (
+        config.session_profiles["usdjpy_core"].sessions["new_york"]
+        is SessionEntryPolicy.PREFERRED
+    )
+    assert config.session_profiles["usdjpy_core"].entry_allowed("tokyo") is True
+
+
+def test_unknown_session_profile_reference_is_rejected():
+    with pytest.raises(ValidationError):
+        AppConfig(
+            environment="demo",
+            strategies={
+                "probe": StrategyConfig(
+                    strategy_id="probe",
+                    parameters={
+                        "instruments": {
+                            "USDJPY": {"session_profile": "missing_profile"}
+                        }
+                    },
+                )
+            },
+        )
+
+
+def test_every_platform_instrument_has_a_spread_ceiling():
+    config = load_config("production", CONFIG_DIR)
+
+    for symbol, policy in config.instruments.items():
+        if policy.platform_enabled:
+            assert symbol in config.risk.absolute_max_spread_pips, symbol
+
+
+def test_existing_strategy_parameter_formats_load_together():
+    config = load_config("backtest", CONFIG_DIR)
+
+    scalp = config.strategies["failed_spike_reversal"]
+    intraday = config.strategies["post_event_failed_breakout"]
+    swing = config.strategies["monetary_policy_convergence"]
+    assert scalp.params_for("USDJPY").param("atr_period", 0) == 14
+    assert intraday.params_for("USDJPY").param("resistance_lookback", 0) == 20
+    assert swing.params_for("USDJPY").param("support_lookback", 0) == 30

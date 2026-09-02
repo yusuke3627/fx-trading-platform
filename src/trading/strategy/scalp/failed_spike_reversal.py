@@ -26,6 +26,7 @@ from trading.strategy.base import (
     StrategyHorizon,
     market_span_to_calendar,
 )
+from trading.strategy.spread_gate import SpreadGate
 
 
 class FailedSpikeReversalStrategy(Strategy):
@@ -38,8 +39,11 @@ class FailedSpikeReversalStrategy(Strategy):
         # The slowest window is the entry-timeframe ATR; the tick window the
         # spike detection reads (window_seconds x 3) is added on top.
         entry_tf = config.timeframes.role("entry", "1m")
-        atr_period = int(config.param("atr_period", 14))
-        window_seconds = float(config.param("spike_window_seconds", 60))
+        params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        atr_period = max(int(item.param("atr_period", 14)) for item in params)
+        window_seconds = max(
+            float(item.param("spike_window_seconds", 60)) for item in params
+        )
         span = (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf] + window_seconds * 3
         return market_span_to_calendar(span)
 
@@ -47,14 +51,16 @@ class FailedSpikeReversalStrategy(Strategy):
     def bar_window(cls, config: StrategyConfig) -> int:
         # Only the entry-timeframe ATR reads bars, through IndicatorService's
         # max(default window, period + 1) fetch.
-        atr_period = int(config.param("atr_period", 14))
+        params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        atr_period = max(int(item.param("atr_period", 14)) for item in params)
         return max(DEFAULT_BAR_COUNT, atr_period + 1)
 
     @classmethod
     def tick_window_seconds(cls, config: StrategyConfig) -> float:
         # _evaluate reads spike_window x 3 of raw ticks; the momentum window
         # (spike_window / 2) sits inside it.
-        return float(config.param("spike_window_seconds", 60)) * 3
+        params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        return max(float(item.param("spike_window_seconds", 60)) for item in params) * 3
 
     async def on_event(
         self,
@@ -72,14 +78,15 @@ class FailedSpikeReversalStrategy(Strategy):
 
     def _evaluate(self, symbol: str, ctx: StrategyContext) -> StrategySignal | None:
         cfg = ctx.config
+        params = cfg.params_for(symbol)
         entry_tf = cfg.timeframes.role("entry", "1m")
-        window_seconds = float(cfg.param("spike_window_seconds", 60))
-        k = float(cfg.param("spike_atr_multiple", 3.0))
-        atr_period = int(cfg.param("atr_period", 14))
-        stop_buffer_atr = float(cfg.param("stop_buffer_atr", 0.5))
-        max_spread_pips = float(cfg.param("max_spread_pips", 1.5))
-        long_side_enabled = bool(cfg.param("long_side_enabled", False))
-        horizon_seconds = int(cfg.param("expected_horizon_seconds", 300))
+        window_seconds = float(params.param("spike_window_seconds", 60))
+        k = float(params.param("spike_atr_multiple", 3.0))
+        atr_period = int(params.param("atr_period", 14))
+        stop_buffer_atr = float(params.param("stop_buffer_atr", 0.5))
+        long_side_enabled = bool(params.param("long_side_enabled", False))
+        horizon_seconds = int(params.param("expected_horizon_seconds", 300))
+        spread_gate = SpreadGate.from_params(params)
 
         spec = ctx.market.instrument(symbol)
         if spec is None:
@@ -94,7 +101,11 @@ class FailedSpikeReversalStrategy(Strategy):
         if len(ticks) < 10:
             return None
         last = ticks[-1]
-        if float(last.spread) > max_spread_pips * pip:
+        if not spread_gate.allows(
+            spread=last.spread,
+            atr=atr,
+            pip_size=spec.pip_size,
+        ):
             return None
 
         mids = [float(t.mid) for t in ticks]

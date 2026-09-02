@@ -5,6 +5,7 @@ from tests.support import (
     FixedClock,
     at,
     eurusd_spec,
+    gbpjpy_spec,
     make_intent,
     make_snapshot,
     make_tick,
@@ -48,6 +49,10 @@ def enabled_config(**overrides) -> RiskConfig:
     values = {
         "trading_enabled": True,
         "max_units_per_symbol": {"USDJPY": 10000},
+        "absolute_max_spread_pips": {
+            "USDJPY": Decimal("2.0"),
+            "EURUSD": Decimal("2.0"),
+        },
     }
     values.update(overrides)
     return RiskConfig(**values)
@@ -383,6 +388,40 @@ def test_future_dated_quote_rejected():
     )
     assert not decision.approved
     assert "QUOTE_FRESH" in decision.reject_codes
+
+
+def test_unconfigured_spread_ceiling_fails_closed():
+    decision = engine(enabled_config(absolute_max_spread_pips={})).evaluate(
+        make_intent(), make_context()
+    )
+
+    assert not decision.approved
+    assert "SPREAD_CEILING_CONFIGURED" in decision.reject_codes
+
+
+def test_spread_ceiling_is_resolved_per_pair():
+    config = enabled_config(
+        max_units_per_symbol={"USDJPY": 10000, "GBPJPY": 10000},
+        absolute_max_spread_pips={
+            "USDJPY": Decimal("2.0"),
+            "GBPJPY": Decimal("4.0"),
+        },
+    )
+    usdjpy = engine(config).evaluate(
+        make_intent(),
+        make_context(quote=make_tick("158.840", "158.870", time=T0)),
+    )
+    gbpjpy = engine(config).evaluate(
+        make_intent(symbol="GBPJPY"),
+        make_context(
+            instrument=gbpjpy_spec(),
+            quote=make_tick("200.000", "200.030", time=T0, symbol="GBPJPY"),
+        ),
+    )
+
+    assert not usdjpy.approved
+    assert "SPREAD_ACCEPTABLE" in usdjpy.reject_codes
+    assert gbpjpy.approved, gbpjpy.reject_codes
 
 
 def usdjpy_market(tick_time=T0) -> InMemoryMarketData:

@@ -152,13 +152,13 @@ class WideTickWindowStrategy(Strategy):
 
     @classmethod
     def tick_window_seconds(cls, config) -> float:
-        return float(config.param("window_seconds", 0))
+        return float(config.params_for("").param("window_seconds", 0))
 
     def __init__(self, counts: list[int]) -> None:
         self._counts = counts
 
     async def on_event(self, event, context):
-        window = float(context.config.param("window_seconds", 0))
+        window = float(context.config.params_for("USDJPY").param("window_seconds", 0))
         self._counts.append(len(context.market.ticks("USDJPY", window)))
         return []
 

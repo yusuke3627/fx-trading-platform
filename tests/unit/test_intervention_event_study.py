@@ -205,6 +205,12 @@ def test_shock_anchor_requires_the_search_window_to_be_closed() -> None:
     assert shock_anchors([*partial, m5(432, "150")], [episode()])[T0.date()] is not None
 
 
+def test_shock_anchor_rejects_a_search_window_with_an_archive_gap() -> None:
+    bars = [m5(0, "149", open="150"), m5(1, "148", open="150"), m5(1441, "150")]
+
+    assert shock_anchors(bars, [episode()])[T0.date()] is None
+
+
 @pytest.mark.parametrize(
     ("known_at", "expected_label"),
     [
@@ -253,12 +259,12 @@ def test_news_anchor_requires_a_close_strictly_after_known_at() -> None:
     assert anchor.entry == 1
 
 
-def test_news_anchor_rejects_a_bar_beyond_the_archive_hole_threshold() -> None:
+def test_news_anchor_rejects_a_bar_beyond_the_news_lag_limit() -> None:
     known_at = datetime(2026, 5, 3, 21, 5, tzinfo=UTC)
     event = episode(known_at=known_at)
 
-    assert news_anchor([m5(1439, "150")], event, ANCHOR) is not None
-    assert news_anchor([m5(1440, "150")], event, ANCHOR) is None
+    assert news_anchor([m5(863, "150")], event, ANCHOR) is not None
+    assert news_anchor([m5(864, "150")], event, ANCHOR) is None
 
 
 def test_daily_entry_includes_a_five_minute_bar_ending_at_the_daily_close() -> None:

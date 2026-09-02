@@ -1085,9 +1085,9 @@ class BacktestEngine:
     def _portfolio_risk(self, state: _RunState, w: _Wiring):
         """既存 book の通貨分解。mark は最新の marking tick の mid。
 
-        in-flight（pending）の entry はまだ book に無く、その stop-risk は
-        合計に含まれない — 逐次処理の近似で、同時 signal の裁定は Portfolio
-        Arbitrator（#64）が引き取る。
+        in-flight（pending）の entry はまだ book に無く、その stop-risk は合計に
+        含まれない — 逐次処理の近似。同時 signal の裁定は Portfolio Arbitrator
+        （ADR-029）が shadow / live の経路で担い、単一銘柄の backtest には配線していない。
         """
         mark = state.marking_tick
         if mark is None:

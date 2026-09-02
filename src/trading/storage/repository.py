@@ -11,6 +11,7 @@ from typing import Protocol
 from uuid import UUID
 
 from trading.domain.account import AccountSnapshot
+from trading.domain.arbitration import ArbitrationDecision
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope
 from trading.domain.fill import Fill
@@ -194,9 +195,10 @@ class SwapSnapshotRepository(Protocol):
 
 class DecisionRepository(Protocol):
     # One decision trail: what a strategy saw, what Portfolio made of it, and
-    # how Risk graded that. The three tables are chained by foreign key
-    # (signal <- intent <- decision), so they are written together or not at
-    # all — a half-written trail cannot be read back as either outcome.
+    # how Risk graded that. Entry candidates also carry the Arbitrator verdict;
+    # exits pass None. The tables are chained by foreign key, so they are
+    # written together or not at all — a half-written trail cannot be read
+    # back as either outcome.
     #
     # Every call names the account: an intent is sized from its equity and a
     # decision is graded against its loss history, so the same trail means
@@ -210,6 +212,17 @@ class DecisionRepository(Protocol):
         signal: StrategySignal,
         intent: PositionIntent,
         decision: RiskDecision,
+        arbitration: ArbitrationDecision | None = None,
+    ) -> None: ...
+
+    # Arbitrator が退けた entry 候補: Risk には届かないので risk_decisions 行を持たない。
+    # signal / intent / arbitration を 1 トランザクションで書く。
+    def record_arbitration(
+        self,
+        account_id: str,
+        signal: StrategySignal,
+        intent: PositionIntent,
+        arbitration: ArbitrationDecision,
     ) -> None: ...
 
     # A signal that produced no intent at all — sizing landed below one volume

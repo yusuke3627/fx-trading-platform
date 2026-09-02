@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import pytest
 
+from trading.domain.arbitration import ArbitrationDecision
 from trading.domain.intent import PositionIntent, ProtectionSpec
 from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import RiskCheck, RiskDecision
@@ -40,6 +41,14 @@ def repo():
     yield PostgresDecisionRepository(conn), strategy_id, account, other_account
     # Foreign keys run signal <- intent <- decision, so removal runs the other
     # way round.
+    conn.execute(
+        """
+        DELETE FROM arbitration_decisions WHERE intent_id IN (
+            SELECT id FROM position_intents WHERE strategy_id = %s
+        )
+        """,
+        (strategy_id,),
+    )
     conn.execute(
         """
         DELETE FROM risk_decisions WHERE intent_id IN (
@@ -105,6 +114,21 @@ def make_trail(strategy_id: str, *, protected: bool = True, signal=None):
 def only_ours(repo_and_id, limit: int = 50):
     r, _, account, _ = repo_and_id
     return r.recent(account, limit)
+
+
+def arbitration_for(signal, *, accepted: bool = True) -> ArbitrationDecision:
+    return ArbitrationDecision(
+        arbitration_id=uuid4(),
+        signal_id=signal.signal_id,
+        accepted=accepted,
+        reason_code=(
+            "ACCEPTED" if accepted else "REJECTED_REDUNDANT_FACTOR_EXPOSURE"
+        ),
+        rank=1,
+        priority=Decimal("0.7"),
+        detail=None if accepted else "USD LONG already taken",
+        decided_at=T0,
+    )
 
 
 def test_a_trail_round_trips_through_the_database(repo):
@@ -173,3 +197,57 @@ def test_a_signal_shared_by_two_intents_is_stored_once(repo):
     assert len(trails) == 2
     assert {t[0].signal_id for t in trails} == {signal.signal_id}
     assert {t[1].intent_id for t in trails} == {first.intent_id, second.intent_id}
+
+
+def test_an_arbitration_verdict_is_written_with_the_trail(repo):
+    r, strategy_id, account, _ = repo
+    signal, intent, decision = make_trail(strategy_id)
+    arbitration = arbitration_for(signal)
+
+    r.record(account, signal, intent, decision, arbitration=arbitration)
+
+    row = r._conn.execute(
+        """
+        SELECT accepted, reason_code, rank, priority, detail
+        FROM arbitration_decisions
+        WHERE intent_id = %s
+        """,
+        (intent.intent_id,),
+    ).fetchone()
+    assert row == {
+        "accepted": True,
+        "reason_code": "ACCEPTED",
+        "rank": 1,
+        "priority": Decimal("0.7"),
+        "detail": None,
+    }
+
+
+def test_a_candidate_the_arbitrator_rejected_has_no_risk_decision(repo):
+    r, strategy_id, account, _ = repo
+    signal, intent, _ = make_trail(strategy_id)
+    arbitration = arbitration_for(signal, accepted=False)
+
+    r.record_arbitration(account, signal, intent, arbitration)
+
+    risk_count = r._conn.execute(
+        "SELECT count(*) AS count FROM risk_decisions WHERE intent_id = %s",
+        (intent.intent_id,),
+    ).fetchone()["count"]
+    row = r._conn.execute(
+        "SELECT accepted FROM arbitration_decisions WHERE intent_id = %s",
+        (intent.intent_id,),
+    ).fetchone()
+    assert risk_count == 0
+    assert row == {"accepted": False}
+
+
+def test_expected_edge_r_round_trips(repo):
+    r, strategy_id, account, _ = repo
+    signal, intent, decision = make_trail(strategy_id)
+    signal = signal.model_copy(update={"expected_edge_r": Decimal("1.5")})
+
+    r.record(account, signal, intent, decision)
+
+    (read_signal, _, _) = only_ours(repo)[0]
+    assert read_signal.expected_edge_r == Decimal("1.5")

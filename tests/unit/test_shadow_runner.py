@@ -19,8 +19,9 @@ from tests.support import (
 )
 from trading.data.market.stored import StoredMarketData
 from trading.domain.account import AccountMode
+from trading.domain.arbitration import REJECTED_REDUNDANT_FACTOR_EXPOSURE
 from trading.domain.money import Currency
-from trading.domain.position import PositionDirection
+from trading.domain.position import PositionAction, PositionDirection, VirtualPosition
 from trading.domain.risk import EventRiskMode
 from trading.execution.mt5.adapter import MT5ConnectionError
 from trading.execution.mt5.mapper import account_key_from_info
@@ -38,6 +39,7 @@ from trading.live.shadow import (
     broker_identity,
     describe,
 )
+from trading.portfolio.arbitrator import ArbitratorConfig, PortfolioArbitrator
 from trading.portfolio.exposure import CurrencyExposureService
 from trading.portfolio.manager import PortfolioManager
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
@@ -106,6 +108,30 @@ class MultiSymbolSignallingStrategy(SignallingStrategy):
         ]
 
 
+class RedundantSignallingStrategy(SignallingStrategy):
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol="USDJPY",
+                direction=PositionDirection.SHORT,
+                conviction=0.7,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            ),
+            self.make_signal(
+                context,
+                symbol="EURUSD",
+                direction=PositionDirection.LONG,
+                conviction=0.9,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            ),
+        ]
+
+
 class OutOfScopeSignallingStrategy(SignallingStrategy):
     async def on_event(self, event, context):
         return [
@@ -132,8 +158,10 @@ def build(
     decisions=None,
     event_risk=NO_WINDOWS,
     event_mode_default=EventRiskMode.NORMAL,
+    risk_overrides: dict | None = None,
     features=None,
     instruments=None,
+    arbitrator=None,
 ):
     instruments = (
         list(instruments)
@@ -157,7 +185,9 @@ def build(
         context=_context(clock, market, ledger, enabled, specs),
     )
     risk_config = RiskConfig(
-        trading_enabled=trading_enabled, event_mode_default=event_mode_default
+        trading_enabled=trading_enabled,
+        event_mode_default=event_mode_default,
+        **(risk_overrides or {}),
     )
     return ShadowRunner(
         runner=StrategyRunner([binding]),
@@ -178,6 +208,7 @@ def build(
         exposure=CurrencyExposureService(
             MarketQuoteConversionService(market, specs)
         ),
+        arbitrator=arbitrator or PortfolioArbitrator(ArbitratorConfig()),
         features=features,
     )
 
@@ -503,6 +534,110 @@ def test_each_symbols_trading_switch_reaches_its_decision():
 
     assert "INSTRUMENT_TRADING_ENABLED" not in results["USDJPY"].decision.reject_codes
     assert "INSTRUMENT_TRADING_ENABLED" in results["EURUSD"].decision.reject_codes
+
+
+def test_portfolio_stop_risk_is_recomputed_after_each_arbitrator_accept():
+    runner = build(
+        **two_pairs(),
+        risk_overrides={
+            "portfolio_stop_risk_budget_pct": Decimal("0.08"),
+            "max_units_per_symbol": {"USDJPY": 100000, "EURUSD": 100000},
+        },
+    )
+
+    results = by_symbol(runner.evaluate_once())
+
+    assert "PORTFOLIO_RISK_LIMIT" not in results["EURUSD"].decision.reject_codes
+    assert "PORTFOLIO_RISK_LIMIT" in results["USDJPY"].decision.reject_codes
+    assert results["USDJPY"].arbitration.rank == 2
+
+
+def test_portfolio_position_count_is_recomputed_after_each_arbitrator_accept():
+    runner = build(
+        **two_pairs(),
+        risk_overrides={
+            "max_open_positions_portfolio": 1,
+            "max_units_per_symbol": {"USDJPY": 100000, "EURUSD": 100000},
+        },
+    )
+
+    results = by_symbol(runner.evaluate_once())
+
+    assert "MAX_OPEN_POSITIONS_PORTFOLIO" not in results["EURUSD"].decision.reject_codes
+    assert "MAX_OPEN_POSITIONS_PORTFOLIO" in results["USDJPY"].decision.reject_codes
+
+
+def test_redundant_factor_keeps_the_strongest_and_records_both_candidates():
+    store = FakeDecisionRepository()
+    runner = build(
+        **{**two_pairs(), "strategy": RedundantSignallingStrategy},
+        decisions=store,
+    )
+
+    results = by_symbol(runner.evaluate_once())
+
+    assert results["EURUSD"].decision is not None
+    assert results["EURUSD"].arbitration.accepted is True
+    assert results["USDJPY"].decision is None
+    assert (
+        results["USDJPY"].arbitration.reason_code
+        == REJECTED_REDUNDANT_FACTOR_EXPOSURE
+    )
+    assert len(store.trails) == 1
+    assert len(store.arbitrations) == 2
+    assert len(store.signals) == 2
+
+
+def test_exit_bypasses_arbitration_while_the_new_entry_is_arbitrated():
+    runner = build(**quote_and_account())
+    runner._ledger.record(
+        VirtualPosition(
+            strategy_id="test_signaller",
+            symbol="USDJPY",
+            direction=PositionDirection.LONG,
+            quantity=Decimal(1000),
+            average_price=Decimal("158.80"),
+            as_of=T0,
+        )
+    )
+
+    exits, entries = {}, {}
+    for result in runner.evaluate_once().decisions:
+        target = exits if result.intent.action is PositionAction.CLOSE else entries
+        target[result.intent.action] = result
+
+    closed = exits[PositionAction.CLOSE]
+    opened = entries[PositionAction.OPEN]
+    assert closed.arbitration is None
+    assert closed.decision is not None
+    assert opened.arbitration is not None
+
+
+def test_arbitration_verdict_is_recorded_with_the_graded_trail():
+    store = FakeDecisionRepository()
+    runner = build(**quote_and_account(), decisions=store)
+
+    (result,) = runner.evaluate_once().decisions
+
+    assert len(store.trails) == 1
+    assert len(store.arbitrations) == 1
+    assert store.arbitrations[0][3].accepted is True
+    assert store.arbitrations[0][3].rank == 1
+    assert result.arbitration == store.arbitrations[0][3]
+
+
+def test_describe_reports_an_arbitrated_out_candidate():
+    runner = build(
+        **{**two_pairs(), "strategy": RedundantSignallingStrategy}
+    )
+    rejected = next(
+        result for result in runner.evaluate_once().decisions if result.decision is None
+    )
+
+    line = describe(rejected)
+
+    assert "ARBITRATED_OUT" in line
+    assert REJECTED_REDUNDANT_FACTOR_EXPOSURE in line
 
 
 def test_event_windows_apply_to_each_symbols_currency_legs():

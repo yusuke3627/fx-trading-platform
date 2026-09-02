@@ -13,6 +13,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trading.domain.risk import EventRiskMode
+from trading.portfolio.arbitrator import ArbitratorConfig
 from trading.risk.engine import RiskConfig
 from trading.strategy.base import StrategyConfig, StrategyHorizon
 from trading.strategy.sessions import SessionProfile
@@ -151,6 +152,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig = StorageConfig()
     macro_data: MacroDataConfig = MacroDataConfig()
     risk: RiskConfig = RiskConfig()
+    arbitrator: ArbitratorConfig = ArbitratorConfig()
     event_risk: dict[str, EventRiskWindowSettings] = Field(default_factory=dict)
     intelligence: IntelligenceConfig = IntelligenceConfig()
     simulator: SimulatorConfig = SimulatorConfig()

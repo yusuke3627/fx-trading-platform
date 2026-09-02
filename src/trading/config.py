@@ -13,6 +13,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trading.domain.risk import EventRiskMode
+from trading.oms.rate_limit import RateLimitConfig
 from trading.risk.engine import RiskConfig
 from trading.strategy.base import StrategyConfig, StrategyHorizon
 from trading.strategy.sessions import SessionProfile
@@ -26,6 +27,7 @@ class BrokerConfig(BaseModel):
     expected_account_mode: str = "HEDGING"
     magic_number: int = 0
     deviation_points: int = 10
+    rate_limit: RateLimitConfig = RateLimitConfig()
 
 
 class MarketConfig(BaseModel):

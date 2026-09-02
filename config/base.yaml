@@ -5,6 +5,11 @@ broker:
   expected_account_mode: HEDGING
   magic_number: 260813
   deviation_points: 10
+  # OANDA MT5 の実測 request 上限（設計書 v2.1 §32.2）。OMS の ExecutionQueue が
+  # RateLimiter 経由で守る。1 秒窓の件数なので 1 未満は設定エラー。
+  rate_limit:
+    per_symbol_requests_per_second: 5
+    market_entries_per_second: 1
 
 market:
   primary_instruments: [USDJPY]

@@ -7,9 +7,10 @@ INTERVENTION_REPORTED をショック足と報道時刻の二つでアンカー�
 2022〜2026 年の約 35 万本で約 560 MB、tick の復号を含む実行時間は VPS で
 30〜60 分を見込む。
 
-ショック足は 36 時間の探索窓全体から事後選択する。ただし、測定する価格は
-選ばれた足の close 以降だけである。「ショックが起きた条件で、その後に何が
-起きるか」を調べるもので、ショック発生を予測する研究ではない。
+ショック足は 36 時間の探索窓全体から事後選択し、窓が未完了のエピソードは
+測定しない。ただし、測定する価格は選ばれた足の close 以降だけである。
+「ショックが起きた条件で、その後に何が起きるか」を調べるもので、ショック
+発生を予測する研究ではない。
 
 5 分足の horizon は、休場と tick のない bucket を飛ばした「取引された足」
 の本数で数える。日足は営業日で数える。クラスタは最初の日だけを非重複集計に
@@ -175,7 +176,10 @@ def load_episodes_from_events(events: Sequence[EventEnvelope]) -> list[Episode]:
 def shock_anchors(
     bars: Sequence[Bar], episodes: Sequence[Episode]
 ) -> dict[date, Anchor | None]:
-    """各 action_date の探索窓で close/open が最も低い 5 分足を選ぶ。"""
+    """各 action_date の探索窓で close/open が最も低い 5 分足を選ぶ。
+
+    暫定的な最小足を確定結果にしないため、窓が閉じるまでは選ばない。
+    """
     starts = [bar.start for bar in bars]
     found: dict[date, Anchor | None] = {}
     ordered = sorted(episodes, key=lambda episode: episode.action_date)
@@ -189,6 +193,9 @@ def shock_anchors(
         window_end = min(day_start + SHOCK_WINDOW, next_start)
         left = bisect.bisect_left(starts, day_start)
         right = bisect.bisect_left(starts, window_end)
+        if right == len(bars):
+            found[episode.action_date] = None
+            continue
         if left == right:
             found[episode.action_date] = None
             continue
@@ -366,7 +373,9 @@ def _shock_anchor_lines(
     for episode in episodes:
         outcome = by_date.get(episode.action_date)
         if outcome is None:
-            lines.append(f"{episode.action_date} | {_cluster_label(episode)} | no quotes")
+            lines.append(
+                f"{episode.action_date} | {_cluster_label(episode)} | no shock anchor"
+            )
             continue
         shock = outcome.anchor
         bar = bars[shock.entry]
@@ -396,7 +405,9 @@ def _news_anchor_lines(
     for episode in episodes:
         label = known_to_broker_label(episode.known_at, anchor)
         if episode.action_date not in covered_dates:
-            lines.append(f"{episode.action_date} | {_cluster_label(episode)} | no quotes")
+            lines.append(
+                f"{episode.action_date} | {_cluster_label(episode)} | no shock anchor"
+            )
             continue
         outcome = by_date.get(episode.action_date)
         if outcome is None:

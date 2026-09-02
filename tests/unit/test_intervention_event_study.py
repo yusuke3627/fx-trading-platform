@@ -178,6 +178,7 @@ def test_shock_anchor_stops_at_the_next_episode_and_breaks_ties_early() -> None:
         m5(1, "148", open="150"),
         m5(2, "148", open="150"),
         m5(288, "130", open="150"),
+        m5(720, "150", open="150"),
     ]
 
     anchors = shock_anchors(bars, [episode(), episode(next_date)])
@@ -195,6 +196,13 @@ def test_shock_anchor_without_quotes_is_none() -> None:
     missing_date = T0.date() + timedelta(days=10)
 
     assert shock_anchors([m5(0, "150")], [episode(missing_date)])[missing_date] is None
+
+
+def test_shock_anchor_requires_the_search_window_to_be_closed() -> None:
+    partial = [m5(0, "149", open="150"), m5(431, "148", open="150")]
+
+    assert shock_anchors(partial, [episode()])[T0.date()] is None
+    assert shock_anchors([*partial, m5(432, "150")], [episode()])[T0.date()] is not None
 
 
 @pytest.mark.parametrize(
@@ -388,7 +396,7 @@ def test_report_contains_missing_overlap_individual_summary_and_profile_sections
         missing_date,
         known_at=datetime(2026, 5, 24, 21, 1, tzinfo=UTC),
     )
-    intraday = [m5(index, f"{150 - index / 100:.2f}") for index in range(600)]
+    intraday = [m5(index, f"{150 - index / 100:.2f}") for index in range(721)]
     daily = [d1(index, f"{150 - index / 10:.2f}") for index in range(15)]
     series = {"5m": intraday, "1d": daily}
 
@@ -397,7 +405,7 @@ def test_report_contains_missing_overlap_individual_summary_and_profile_sections
 
     assert "shock anchors" in text
     assert "news anchors" in text
-    assert "no quotes" in text
+    assert "no shock anchor" in text
     assert f"overlap {T0.date()}" in text
     assert "shock episode details" in text
     assert "news summary" in text

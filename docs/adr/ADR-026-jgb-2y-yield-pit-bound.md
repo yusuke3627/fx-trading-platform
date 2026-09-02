@@ -1,4 +1,4 @@
-# ADR-022: JGB 2年金利（jp_jgb_2y_yield）の PIT 方針
+# ADR-026: JGB 2年金利（jp_jgb_2y_yield）の PIT 方針
 
 **Status:** Accepted (2026-09-01)
 

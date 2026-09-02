@@ -57,7 +57,7 @@ swing 戦略 monetary_policy_convergence の前提検証。E′（`policy_event_
 - **pit_classification = PIT_UNVERIFIED**（ソースは最新版の履歴のみ配信）。
   ただし ADR-015 の「backfill に release 時刻の known_at を与えない」規範から
   の逸脱（公表時刻が公式に有界で、履歴が初出値のまま維持される系列に限る
-  例外）を **ADR-022 として追加**して合意を取る。pit_classification は現状
+  例外）を **ADR-026 として追加**して合意を取る。pit_classification は現状
   情報表示のみで実行時の消費者はいない（rg で確認済み）。
 - **US2Y 側**: 既存 ALFRED 経路（PIT_VERIFIED、known_at = vintage 日 18:00 ET）
   をそのまま読む。変更なし。
@@ -75,7 +75,7 @@ swing 戦略 monetary_policy_convergence の前提検証。E′（`policy_event_
 | `src/trading/backtest/rate_differential_study.py` | **新規**。B′ CLI（下記） |
 | `tests/unit/test_jgb_collector.py` | **新規** |
 | `tests/unit/test_rate_differential_study.py` | **新規** |
-| `docs/adr/ADR-022-jgb-2y-yield-pit-bound.md` | **新規**。上記 PIT 決定の記録 |
+| `docs/adr/ADR-026-jgb-2y-yield-pit-bound.md` | **新規**。上記 PIT 決定の記録 |
 
 **マイグレーション: なし。** 既存の `macro_observations`（vintage キー + 同値
 スキップ）と `events`（raw archive、ECONOMIC_RELEASE_RAW）で足りる。

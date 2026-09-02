@@ -3,7 +3,7 @@
 - 日付: 2026-09-02
 - 対象: `monetary_policy_convergence`（swing、USD/JPY SHORT/LONG）
 - 判断: **shadow 環境で凍結**（`config/shadow.yaml` で `enabled: false`）。backtest 環境には研究リプレイ用に残す
-- 関連: PR #93（E′ 実装）/ PR #95（B′ 実装）/ ADR-022（JGB 2年金利の PIT bound）
+- 関連: PR #93（E′ 実装）/ PR #95（B′ 実装）/ ADR-026（JGB 2年金利の PIT bound）
 
 ## 背景
 
@@ -46,7 +46,7 @@
 ## B′: 日米 2 年金利差のイベントスタディ（PR #95）
 
 - 説明変数: D = US2Y − JP2Y（%pt）。US2Y は ALFRED vintage、JP2Y は財務省国債金利
-  （公表 = 基準日の翌営業日 09:30 → known_at は「次の基準日 15:00 JST」の保守 bound、ADR-022）
+  （公表 = 基準日の翌営業日 09:30 → known_at は「次の基準日 15:00 JST」の保守 bound、ADR-026）
 - ΔD = 過去 20 営業日変化。両系列とも日足 close 時点で見えるのは前営業日値（対称ラグ、look-ahead なし）
 - 日次観測 444 件 / 日足 494 本（2024-08〜2026-09、74 日欠損は無効化）。非重複窓が正、全窓回帰は参考
 - 仮説整合の条件: **傾きが正**（D 縮小 → USD/JPY 下落）

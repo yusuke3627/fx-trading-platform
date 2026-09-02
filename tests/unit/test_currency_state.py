@@ -105,6 +105,81 @@ def test_stale_observations_decay_confidence():
     assert stale_state.confidence < fresh_state.confidence
 
 
+def test_monthly_cadence_stays_fresh_until_the_next_observation():
+    config = CurrencyScoreConfig(
+        weights={CurrencyFactor.INFLATION: 1.0},
+        normalization=NormalizationConfig(window=20, min_observations=5),
+    )
+    rows = [
+        (T0 + timedelta(days=30 * index), value)
+        for index, value in enumerate([1.0, 1.1, 0.9, 1.0, 1.05, 1.4])
+    ]
+    latest = rows[-1][0]
+
+    state = service(
+        {(Currency.USD, CurrencyFactor.INFLATION): rows}, config
+    ).state(Currency.USD, latest + timedelta(days=20))
+
+    assert state.confidence == Decimal(1)
+
+
+def test_monthly_cadence_decays_after_one_interval_and_reaches_zero_at_three():
+    config = CurrencyScoreConfig(
+        weights={CurrencyFactor.INFLATION: 1.0},
+        normalization=NormalizationConfig(window=20, min_observations=5),
+    )
+    rows = [
+        (T0 + timedelta(days=30 * index), value)
+        for index, value in enumerate([1.0, 1.1, 0.9, 1.0, 1.05, 1.4])
+    ]
+    latest = rows[-1][0]
+    states = service({(Currency.USD, CurrencyFactor.INFLATION): rows}, config)
+
+    halfway = states.state(Currency.USD, latest + timedelta(days=60))
+    expired = states.state(Currency.USD, latest + timedelta(days=90))
+
+    assert halfway.confidence == Decimal("0.500000")
+    assert expired.confidence == 0
+
+
+def test_policy_cadence_stays_fresh_while_waiting_for_the_next_meeting():
+    config = CurrencyScoreConfig(weights={CurrencyFactor.POLICY: 1.0})
+    rows = [(T0, -1.0), (T0 + timedelta(days=42), 1.0)]
+
+    state = service({(Currency.USD, CurrencyFactor.POLICY): rows}, config).state(
+        Currency.USD, rows[-1][0] + timedelta(days=30)
+    )
+
+    assert state.confidence == Decimal(1)
+
+
+def test_daily_cadence_uses_the_forty_eight_hour_floor():
+    config = CurrencyScoreConfig(
+        weights={CurrencyFactor.RATES: 1.0},
+        normalization=NormalizationConfig(window=20, min_observations=5),
+    )
+    rows = rising()
+    latest = rows[-1][0]
+    states = service({(Currency.USD, CurrencyFactor.RATES): rows}, config)
+
+    weekend = states.state(Currency.USD, latest + timedelta(hours=48))
+    expired = states.state(Currency.USD, latest + timedelta(hours=144))
+
+    assert weekend.confidence == Decimal(1)
+    assert expired.confidence == 0
+
+
+def test_unknown_cadence_uses_the_fixed_fallback():
+    config = CurrencyScoreConfig(weights={CurrencyFactor.POLICY: 1.0})
+    states = service({(Currency.USD, CurrencyFactor.POLICY): [(T0, 1.0)]}, config)
+
+    halfway = states.state(Currency.USD, T0 + timedelta(hours=192))
+    expired = states.state(Currency.USD, T0 + timedelta(hours=336))
+
+    assert halfway.confidence == Decimal("0.500000")
+    assert expired.confidence == 0
+
+
 def test_directional_score_weights_available_factors():
     weighted = CurrencyScoreConfig(
         weights={CurrencyFactor.GROWTH: 3.0, CurrencyFactor.RATES: 1.0},

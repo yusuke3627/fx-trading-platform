@@ -9,7 +9,11 @@ from decimal import Decimal
 
 import pytest
 
-from trading.intelligence.normalization import NormalizationConfig, normalize_series
+from trading.intelligence.normalization import (
+    NormalizationConfig,
+    bounded_score,
+    normalize_series,
+)
 
 T0 = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 CONFIG = NormalizationConfig(window=20, min_observations=5, clip_sigma=3.0)
@@ -108,6 +112,56 @@ def test_reports_the_observation_it_fitted_through():
     assert result is not None
     assert result.fitted_through == rows[-1][0]
     assert result.observations == 6
+
+
+def test_cadence_is_the_median_known_at_interval():
+    gaps = [0, 1, 4, 8, 13, 19]
+    rows = [
+        (T0 + timedelta(days=days), value)
+        for days, value in zip(gaps, [1.0, 1.1, 0.9, 1.0, 1.05, 1.4])
+    ]
+
+    result = normalize_series(rows, rows[-1][0], CONFIG)
+
+    assert result is not None
+    assert result.cadence == timedelta(days=4)
+
+
+def test_cadence_ignores_duplicate_known_at_instants():
+    rows = [
+        (T0, 1.0),
+        (T0 + timedelta(days=2), 1.1),
+        (T0 + timedelta(days=2), 0.9),
+        (T0 + timedelta(days=6), 1.05),
+        (T0 + timedelta(days=12), 1.4),
+    ]
+
+    result = normalize_series(rows, rows[-1][0], CONFIG)
+
+    assert result is not None
+    assert result.cadence == timedelta(days=4)
+
+
+def test_cadence_is_unknown_with_one_distinct_known_at():
+    rows = [(T0, value) for value in [1.0, 1.1, 0.9, 1.05, 1.4]]
+
+    result = normalize_series(rows, T0, CONFIG)
+
+    assert result is not None
+    assert result.cadence is None
+
+
+def test_bounded_score_reports_visible_series_cadence():
+    rows = [
+        (T0, -1.0),
+        (T0 + timedelta(days=2), 0.5),
+        (T0 + timedelta(days=6), 1.0),
+    ]
+
+    result = bounded_score(rows, rows[-1][0], 2.0)
+
+    assert result is not None
+    assert result.cadence == timedelta(days=3)
 
 
 def test_minimum_must_fit_inside_the_window():

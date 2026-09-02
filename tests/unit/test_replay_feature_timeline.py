@@ -11,6 +11,7 @@ from tests.support import FakeEventRepository, FakeObservationRepository
 from trading.data.features import ReplayFeatureTimeline, StoredFeatureSource
 from trading.data.policy.scoring import SCORING_VERSION
 from trading.domain.event import EventEnvelope
+from trading.domain.money import Currency
 from trading.intelligence import features as f
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
@@ -120,6 +121,34 @@ def test_stepping_matches_a_live_refresh_at_every_sampled_instant():
             f.INTERVENTION_RISK
         ), instant
         instant += timedelta(minutes=37)
+
+
+def test_currency_confidence_matches_live_between_full_refreshes():
+    event = score_event(1.0, T0 - timedelta(days=4))
+    timeline = timeline_over([event], [event.known_at])
+    timeline.reset(T0)
+    live = StoredFeatureSource(
+        FakeObservationRepository(),
+        FakeEventRepository([event]),
+        WEIGHTS,
+        InMemoryFeatureStore(),
+    )
+
+    instants = [
+        T0,
+        T0 + timedelta(hours=6),
+        T0 + timedelta(hours=18),
+        T0 + timedelta(days=1, hours=3),
+    ]
+    for instant in instants:
+        timeline.advance(instant)
+        live.refresh(instant)
+        replay_state = timeline.currency_states.get(Currency.USD)
+        live_state = live.currency_states.get(Currency.USD)
+
+        assert replay_state is not None and live_state is not None
+        assert replay_state.confidence == live_state.confidence
+        assert replay_state.known_at == live_state.known_at == instant
 
 
 def test_a_row_aging_out_of_the_lookback_expires_mid_day_like_live():

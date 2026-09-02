@@ -146,6 +146,51 @@ def test_the_pair_is_the_difference_of_the_legs() -> None:
     assert pair.directional_score == usd.directional_score - Decimal("-0.5")
 
 
+def test_retime_recalculates_confidence_and_known_at_on_read() -> None:
+    feed = source(events=[fed_score(1.0, NOW - timedelta(days=3))])
+    feed.refresh(NOW)
+    store = feed.currency_states
+    first = store.get(Currency.USD)
+
+    later = NOW + timedelta(days=11)
+    store.retime(later)
+    second = store.get(Currency.USD)
+
+    assert first is not None and second is not None
+    assert second.confidence < first.confidence
+    assert second.known_at == later
+
+
+def test_store_without_retime_returns_the_stored_state() -> None:
+    feed = source(events=[fed_score(1.0, NOW - timedelta(days=3))])
+    feed.refresh(NOW)
+    state = feed.currency_states.get(Currency.USD)
+    store = CurrencyStateStore()
+    store.replace({Currency.USD: state})
+
+    assert store.get(Currency.USD) is state
+
+
+def test_pair_confidence_follows_retime() -> None:
+    feed = source(events=[fed_score(1.0, NOW - timedelta(days=3))])
+    feed.refresh(NOW)
+    usd = feed.currency_states.get(Currency.USD)
+    jpy = usd.model_copy(
+        update={"currency": Currency.JPY, "directional_score": Decimal("-0.5")}
+    )
+    store = CurrencyStateStore()
+    store.replace({Currency.USD: usd, Currency.JPY: jpy})
+    store.retime(NOW)
+    first = store.pair(usdjpy_spec())
+
+    store.retime(NOW + timedelta(days=11))
+    second = store.pair(usdjpy_spec())
+
+    assert first is not None and second is not None
+    assert second.confidence < first.confidence
+    assert second.known_at == NOW + timedelta(days=11)
+
+
 def test_the_strategy_holds_the_read_only_view_not_the_store() -> None:
     from trading.strategy.base import StrategyContext
 

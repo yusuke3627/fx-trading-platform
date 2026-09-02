@@ -71,6 +71,8 @@ class FailedSpikeReversalStrategy(Strategy):
             return []
         signals = []
         for symbol in context.config.instruments:
+            if not self._session_permits_entry(context, symbol):
+                continue
             signal = self._evaluate(symbol, context)
             if signal is not None:
                 signals.append(signal)

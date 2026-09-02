@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import ClassVar, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trading.backtest.clock import Clock
 from trading.data.market import MarketDataService
@@ -32,6 +32,7 @@ from trading.strategy.parameters import (
     StrategyParameterResolver,
     StrategyParameters,
 )
+from trading.strategy.sessions import SessionProfile
 
 
 class StrategyStatus(StrEnum):
@@ -91,11 +92,30 @@ class StrategyConfig(BaseModel):
     instruments: list[str] = Field(default_factory=list)
     timeframes: TimeframeMap = Field(default_factory=TimeframeMap)
     parameters: StrategyParameters = Field(default_factory=StrategyParameters)
+    # 参照できる session profile の一覧。load_config が config/base.yaml の
+    # session_profiles を全 strategy へ同じものとして渡す。
+    session_profiles: dict[str, SessionProfile] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _session_profile_references_exist(self) -> StrategyConfig:
+        # 未知の profile 名は最初の市場イベントではなく設定境界で落とす（ADR-023）。
+        layers = [self.parameters.defaults, *self.parameters.instruments.values()]
+        for layer in layers:
+            name = layer.get("session_profile")
+            if name is None:
+                continue
+            if not isinstance(name, str) or name not in self.session_profiles:
+                raise ValueError(f"unknown session_profile {name!r} for {self.strategy_id}")
+        return self
 
     def params_for(self, symbol: str) -> ResolvedStrategyParameters:
         # model_copy(update=...) は validator を通らないため、parameters を
         # 差し替える呼び出し側は StrategyParameters を渡す（raw dict 不可）。
         return StrategyParameterResolver(self.parameters).resolve(symbol)
+
+    def session_profile_for(self, symbol: str) -> SessionProfile | None:
+        name = self.params_for(symbol).session_profile
+        return None if name is None else self.session_profiles[name]
 
     @property
     def runs(self) -> bool:
@@ -196,6 +216,16 @@ class Strategy(ABC):
             return False
         memo[slot] = setup_id
         return True
+
+    def _session_permits_entry(self, ctx: StrategyContext, symbol: str) -> bool:
+        """session profile を参照する instrument は、いま開いている session の
+        policy が許すときだけ評価に進む。profile 未参照なら常に進む。"""
+        profile = ctx.config.session_profile_for(symbol)
+        if profile is None:
+            return True
+        return profile.permits_entry(
+            ctx.clock.now(), live=ctx.config.status in LIVE_ELIGIBLE_STATUSES
+        )
 
     def make_signal(
         self,

@@ -21,8 +21,16 @@ ADR-012 では `platform_enabled` の runner 対象選定への配線を本変�
 
 shadow runner は `primary_instruments`、または繰り返し指定された `--symbol` の
 順序で複数シンボルを評価する。1 cycle は 1 instant・1 dispatch とし、quote の
-有無と鮮度、sizing、event mode、risk context は symbol ごとに解決する。quote が
-使えない symbol の signal は記録せず、他の symbol の評価は継続する。
+有無と鮮度、sizing、event mode、risk context は symbol ごとに解決する。他の
+symbol の評価は継続する。
+
+sizing と grading に進むのは、その cycle で fresh quote を取得した評価対象
+symbol だけとする。quote が使えない symbol の signal は sizing も grading も
+できないが、trail には記録する。dispatch は cycle ごとに 1 回で、その時点で
+Strategy 側の setup memo は消費済みのため、記録せずに捨てると quote 復旧後も
+同じ setup は二度と signal にならない。sizing が 1 volume step に満たず intent
+にならなかった signal を記録するのと同じ理由である。評価対象でない symbol に
+signal が返った場合は、別プロセスの担当範囲として記録せずに落とす。
 
 gate は account、quote の順に適用する。account は全 symbol が同じ equity で
 size され、同じ損失履歴で grade されるための cycle 全体の条件であり、symbol
@@ -43,7 +51,8 @@ market event の `EventEnvelope.retrieved_at` と `known_at` には cycle instan
 ## Consequences
 
 - 1 ペアの quote collector が停止しても、fresh quote がある他ペアは評価できる。
-- Strategy の dispatch と setup memo の意味は変わらず、signal を取りこぼさない。
+- Strategy の dispatch と setup memo の意味は変わらない。blocked symbol の signal
+  も trail に残るため、setup を取りこぼさない。
 - `ShadowCycle` は停止理由を symbol ごとに返し、1 symbol でも停止中なら
   `--once` は非ゼロで終了する。
 - portfolio arbitrator の差し込み前に全 candidate を size する二段階構造になるが、

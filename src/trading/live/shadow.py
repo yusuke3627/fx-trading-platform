@@ -465,6 +465,14 @@ class ShadowRunner:
             ),
             Decimal(0),
         )
+        symbol_gross_exposure_units = sum(
+            (
+                abs(exposure.signed_units)
+                for exposure in book
+                if exposure.spec.symbol == symbol
+            ),
+            Decimal(0),
+        )
         if self._account_mode is AccountMode.NETTING:
             net_by_symbol: dict[str, Decimal] = {}
             for exposure in book:
@@ -500,6 +508,7 @@ class ShadowRunner:
             symbol_open_positions_count=symbol_open_positions_count,
             portfolio_open_positions_count=portfolio_open_positions_count,
             symbol_exposure_units=symbol_exposure_units,
+            symbol_gross_exposure_units=symbol_gross_exposure_units,
             event_mode=self._event_mode(instrument.spec, horizon, now),
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,

@@ -133,6 +133,30 @@ class RedundantSignallingStrategy(SignallingStrategy):
         ]
 
 
+class OppositeDirectionSignallingStrategy(SignallingStrategy):
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol="USDJPY",
+                direction=PositionDirection.SHORT,
+                conviction=0.9,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            ),
+            self.make_signal(
+                context,
+                symbol="USDJPY",
+                direction=PositionDirection.LONG,
+                conviction=0.7,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            ),
+        ]
+
+
 class NettingIncreaseStrategy(SignallingStrategy):
     async def on_event(self, event, context):
         return [
@@ -592,6 +616,26 @@ def test_portfolio_position_count_is_recomputed_after_each_arbitrator_accept():
 
     assert "MAX_OPEN_POSITIONS_PORTFOLIO" not in results["EURUSD"].decision.reject_codes
     assert "MAX_OPEN_POSITIONS_PORTFOLIO" in results["USDJPY"].decision.reject_codes
+
+
+def test_hedging_gross_exposure_reduces_the_next_opposite_candidates_quantity():
+    runner = build(
+        **quote_and_account(),
+        strategy=OppositeDirectionSignallingStrategy,
+        account_mode=AccountMode.HEDGING,
+        risk_overrides={
+            "max_open_positions_per_symbol": 2,
+            "max_units_per_symbol": {"USDJPY": 10000},
+        },
+    )
+
+    ranked = {
+        result.arbitration.rank: result for result in runner.evaluate_once().decisions
+    }
+
+    # rank 1 の gross exposure で rank 2 の headroom が削られることを確認する。
+    assert "MINIMUM_BROKER_SIZE_EXCEEDS_RISK" not in ranked[1].decision.reject_codes
+    assert "MINIMUM_BROKER_SIZE_EXCEEDS_RISK" in ranked[2].decision.reject_codes
 
 
 def test_netting_increase_does_not_consume_a_second_portfolio_position_slot():

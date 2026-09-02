@@ -12,9 +12,12 @@ import pytest
 
 from tests.support import FixedClock
 from trading.data.market.dukascopy import (
+    OUTAGE_MAX_PAUSES,
+    OUTAGE_PAUSE_SECONDS,
     REQUEST_INTERVAL_SECONDS,
-    RETRY_WAIT_SECONDS,
+    RETRY_WAITS,
     DukascopyTickImporter,
+    ServerOutageError,
     decode_bi5,
     hour_url,
     known_to_broker_label,
@@ -77,6 +80,24 @@ class FakeFetch:
 
     def __call__(self, url: str) -> bytes | None:
         self.calls.append(url)
+        return self._payloads.get(url)
+
+
+class FlakyFetch:
+    def __init__(
+        self,
+        failures_left: dict[str, int],
+        payloads: Mapping[str, bytes | None],
+    ) -> None:
+        self._failures_left = dict(failures_left)
+        self._payloads = payloads
+        self.calls: list[str] = []
+
+    def __call__(self, url: str) -> bytes | None:
+        self.calls.append(url)
+        if self._failures_left.get(url, 0) > 0:
+            self._failures_left[url] -= 1
+            raise URLError("service unavailable")
         return self._payloads.get(url)
 
 
@@ -261,12 +282,13 @@ def test_transient_fetch_errors_are_retried() -> None:
 
     assert result == (1, 0)
     assert calls == [hour_url(SYMBOL, T0)] * 3
-    assert sleeps == [RETRY_WAIT_SECONDS, RETRY_WAIT_SECONDS, REQUEST_INTERVAL_SECONDS]
+    assert sleeps == [RETRY_WAITS[0], RETRY_WAITS[1], REQUEST_INTERVAL_SECONDS]
 
 
 def test_exhausted_retries_are_counted_and_next_hour_continues(capsys) -> None:
     repository = FakeTickRepository()
     calls: list[str] = []
+    sleeps: list[float] = []
     first_url = hour_url(SYMBOL, T0)
     second_url = hour_url(SYMBOL, T0 + timedelta(hours=1))
 
@@ -276,13 +298,120 @@ def test_exhausted_retries_are_counted_and_next_hour_continues(capsys) -> None:
             raise URLError("still unavailable")
         return bi5_payload((0, 150004, 150001))
 
-    importer = make_importer(repository, fetch)
+    importer = make_importer(repository, fetch, sleep=sleeps.append)
 
     result = importer.import_range(SYMBOL, T0, T0 + timedelta(hours=2))
 
     assert result == (1, 1)
-    assert calls == [first_url, first_url, first_url, second_url]
-    assert "fetch failed after 3 attempts" in capsys.readouterr().err
+    assert calls == [first_url] * 4 + [second_url]
+    assert sleeps == [
+        *RETRY_WAITS,
+        REQUEST_INTERVAL_SECONDS,
+        REQUEST_INTERVAL_SECONDS,
+    ]
+    assert "fetch failed after 4 attempts" in capsys.readouterr().err
+
+
+def test_three_consecutive_failed_hours_pause_and_retry_same_hour(capsys) -> None:
+    repository = FakeTickRepository()
+    urls = [hour_url(SYMBOL, T0 + timedelta(hours=offset)) for offset in range(5)]
+    fetch = FlakyFetch(
+        {
+            urls[0]: 10_000,
+            urls[1]: 10_000,
+            urls[2]: 4,
+            urls[3]: 10_000,
+            urls[4]: 10_000,
+        },
+        {urls[2]: bi5_payload((0, 150004, 150001))},
+    )
+    sleeps: list[float] = []
+    importer = make_importer(repository, fetch, sleep=sleeps.append)
+
+    result = importer.import_range(SYMBOL, T0, T0 + timedelta(hours=5))
+
+    assert result == (1, 4)
+    assert fetch.calls == (
+        [urls[0]] * 4
+        + [urls[1]] * 4
+        + [urls[2]] * 4
+        + [urls[2]]
+        + [urls[3]] * 4
+        + [urls[4]] * 4
+    )
+    interval = REQUEST_INTERVAL_SECONDS
+    assert sleeps == [
+        *RETRY_WAITS,
+        interval,
+        *RETRY_WAITS,
+        interval,
+        *RETRY_WAITS,
+        interval,
+        OUTAGE_PAUSE_SECONDS,
+        interval,
+        *RETRY_WAITS,
+        interval,
+        *RETRY_WAITS,
+        interval,
+    ]
+    assert sleeps.count(OUTAGE_PAUSE_SECONDS) == 1
+    assert (
+        "server outage suspected: 3 consecutive hours failed, pausing 300s"
+        in capsys.readouterr().err
+    )
+
+
+def test_not_found_hour_resets_consecutive_failures(capsys) -> None:
+    repository = FakeTickRepository()
+    urls = [hour_url(SYMBOL, T0 + timedelta(hours=offset)) for offset in range(5)]
+    fetch = FlakyFetch(
+        {
+            urls[0]: 10_000,
+            urls[1]: 10_000,
+            urls[3]: 10_000,
+            urls[4]: 10_000,
+        },
+        {urls[2]: None},
+    )
+    sleeps: list[float] = []
+    importer = make_importer(repository, fetch, sleep=sleeps.append)
+
+    result = importer.import_range(SYMBOL, T0, T0 + timedelta(hours=5))
+
+    assert result == (0, 4)
+    assert fetch.calls == (
+        [urls[0]] * 4
+        + [urls[1]] * 4
+        + [urls[2]]
+        + [urls[3]] * 4
+        + [urls[4]] * 4
+    )
+    assert OUTAGE_PAUSE_SECONDS not in sleeps
+    assert "server outage" not in capsys.readouterr().err
+
+
+def test_gives_up_after_max_pauses_and_keeps_stored_hours() -> None:
+    repository = FakeTickRepository()
+    urls = [hour_url(SYMBOL, T0 + timedelta(hours=offset)) for offset in range(4)]
+    fetch = FlakyFetch(
+        {
+            urls[1]: 10_000,
+            urls[2]: 10_000,
+            urls[3]: 10_000,
+        },
+        {urls[0]: bi5_payload((0, 150004, 150001))},
+    )
+    sleeps: list[float] = []
+    importer = make_importer(repository, fetch, sleep=sleeps.append)
+
+    with pytest.raises(ServerOutageError, match="giving up after 12 pauses"):
+        importer.import_range(SYMBOL, T0, T0 + timedelta(hours=4))
+
+    assert sleeps.count(OUTAGE_PAUSE_SECONDS) == OUTAGE_MAX_PAUSES
+    assert fetch.calls.count(urls[3]) == 4 * (OUTAGE_MAX_PAUSES + 1)
+    assert fetch.calls[:9] == [urls[0]] + [urls[1]] * 4 + [urls[2]] * 4
+    assert len(repository.ticks) == 1
+    assert len(repository.calls) == 1
 
 
 def test_ticks_outside_requested_half_open_range_are_filtered() -> None:

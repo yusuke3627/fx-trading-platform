@@ -41,18 +41,12 @@ def test_nested_parameter_groups_are_replaced_as_a_whole():
     config = StrategyConfig(
         strategy_id="probe",
         parameters={
-            "defaults": {
-                "spread_gate": {"max_spread_to_atr": "0.5", "mode": "primary"}
-            },
-            "instruments": {
-                "USDJPY": {"spread_gate": {"max_spread_to_atr": "0.4"}}
-            },
+            "defaults": {"entry": {"window_seconds": "300", "mode": "primary"}},
+            "instruments": {"USDJPY": {"entry": {"window_seconds": "240"}}},
         },
     )
 
-    assert config.params_for("USDJPY").param("spread_gate", {}) == {
-        "max_spread_to_atr": "0.4"
-    }
+    assert config.params_for("USDJPY").param("entry", {}) == {"window_seconds": "240"}
 
 
 def test_structured_parameters_reject_unknown_top_level_keys():

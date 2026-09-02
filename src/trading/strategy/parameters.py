@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from trading.strategy.spread_gate import SpreadGateSettings, spread_ceiling
 
 ParamValue = float | int | str | bool
 ParamGroup = dict[str, ParamValue]
@@ -20,6 +22,28 @@ class StrategyParameters(BaseModel):
         if isinstance(data, dict) and not ({"defaults", "instruments"} & data.keys()):
             return {"defaults": data}
         return data
+
+    @model_validator(mode="after")
+    def _settle_typed_parameters(self) -> StrategyParameters:
+        """型の決まったパラメータは設定境界で確定する。
+
+        パラメータは任意のキーを通す器なので、ここで確定しないと不正な値が
+        strategy の最初の市場イベントまで生き残る。defaults と instrument
+        override は別々に検証する — override は部分指定で、マージ後にしか
+        揃わないキーがあるため。
+        """
+        layers = {"defaults": self.defaults} | {
+            f"instruments.{symbol}": layer for symbol, layer in self.instruments.items()
+        }
+        for where, layer in layers.items():
+            try:
+                if "spread_gate" in layer:
+                    SpreadGateSettings.model_validate(layer["spread_gate"])
+                if "absolute_max_spread_pips" in layer:
+                    spread_ceiling(layer["absolute_max_spread_pips"])
+            except ValidationError as exc:
+                raise ValueError(f"{where}: {exc}") from exc
+        return self
 
 
 class ResolvedStrategyParameters(BaseModel):

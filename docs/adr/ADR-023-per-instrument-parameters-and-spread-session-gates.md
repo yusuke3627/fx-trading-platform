@@ -19,7 +19,9 @@ gate とし、必要なら通貨ペア別の absolute ceiling も併用する。
 持たず、通貨ペア別 `absolute_max_spread_pips` を hard safety ceiling とする。
 ceiling 未設定の通貨ペアは `SYMBOL_LIMIT_CONFIGURED` と同じ考え方で fail-close
 する。USDJPY 以外の初期 ceiling は保守的な仮置きであり、各ペアの昇格 Gate で
-校正する。
+校正する。`spread_gate` 群と `absolute_max_spread_pips` の型は設定境界
+（`StrategyParameters` の読み込み時）で確定し、不正な設定は最初の市場イベント
+ではなく起動時に拒否する。
 
 session profile は tokyo / london / new_york の名前参照として定義し、Strategy
 パラメータから profile 名を解決する。runtime の entry gate への配線は、並行して

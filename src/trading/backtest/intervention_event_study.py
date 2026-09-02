@@ -34,6 +34,7 @@ from trading.backtest.policy_event_study import (
     BOOTSTRAP_SEED,
     BROKER_CLOCK_MARGIN,
     EPOCH,
+    HOLE_MINIMUM,
     SYMBOL,
     Stats,
     _row,
@@ -211,10 +212,16 @@ def shock_anchors(
 def news_anchor(
     bars: Sequence[Bar], episode: Episode, server_ahead_of_ny: timedelta
 ) -> Anchor | None:
-    """known_at をラベル軸へ移し、厳密に後で閉じた最初の 5 分足を採る。"""
+    """known_at をラベル軸へ移し、厳密に後で閉じた最初の 5 分足を採る。
+
+    ただしその足が欠損の先にあるなら採らない。数週間後の値動きを介入反応
+    として数えてしまうため。
+    """
     label = known_to_broker_label(episode.known_at, server_ahead_of_ny)
     entry = bisect.bisect_right([bar.close_time for bar in bars], label)
     if entry == len(bars):
+        return None
+    if bars[entry].close_time - label >= HOLE_MINIMUM:
         return None
     return Anchor(
         kind=NEWS,
@@ -396,7 +403,7 @@ def _news_anchor_lines(
             lines.append(
                 f"{episode.action_date} | {_cluster_label(episode)} | "
                 f"{episode.known_at.astimezone(UTC).isoformat()} | {label.isoformat()} | "
-                "no bar after known_at"
+                "no bar close to known_at"
             )
             continue
         bar = bars[outcome.anchor.entry]

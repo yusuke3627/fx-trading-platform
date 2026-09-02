@@ -245,6 +245,14 @@ def test_news_anchor_requires_a_close_strictly_after_known_at() -> None:
     assert anchor.entry == 1
 
 
+def test_news_anchor_rejects_a_bar_beyond_the_archive_hole_threshold() -> None:
+    known_at = datetime(2026, 5, 3, 21, 5, tzinfo=UTC)
+    event = episode(known_at=known_at)
+
+    assert news_anchor([m5(1439, "150")], event, ANCHOR) is not None
+    assert news_anchor([m5(1440, "150")], event, ANCHOR) is None
+
+
 def test_daily_entry_includes_a_five_minute_bar_ending_at_the_daily_close() -> None:
     intraday = [m5(0, "150"), m5(287, "151"), m5(288, "152")]
     daily = [d1(0, "151"), d1(1, "152")]

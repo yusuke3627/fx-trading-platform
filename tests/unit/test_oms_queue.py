@@ -408,6 +408,42 @@ def test_market_entry_window_starts_after_revalidation_finishes():
     assert second.outcome is DispatchOutcome.SEND
 
 
+def test_entry_expiring_during_revalidation_is_not_sent_or_rate_limited():
+    clock = FixedClock()
+    revalidator = AdvancingApproveAll(clock)
+    queue = make_queue(clock=clock, revalidator=revalidator)
+    enqueue(queue, rank=1, expires_at=at(milliseconds=200))
+    enqueue(queue, rank=2)
+
+    expired = queue.dispatch()
+    assert expired is not None
+    assert expired.outcome is DispatchOutcome.EXPIRED
+    assert expired.command.state is CommandState.EXPIRED
+    assert expired.decision is not None
+
+    following = queue.dispatch()
+    assert following is not None
+    assert following.outcome is DispatchOutcome.SEND
+
+
+def test_claim_lease_expiring_during_revalidation_is_not_sent_or_rate_limited():
+    clock = FixedClock()
+    revalidator = AdvancingApproveAll(clock)
+    queue = make_queue(clock=clock, revalidator=revalidator)
+    enqueue(queue, rank=1, claim_expires_at=at(milliseconds=200))
+    enqueue(queue, rank=2)
+
+    lease_expired = queue.dispatch()
+    assert lease_expired is not None
+    assert lease_expired.outcome is DispatchOutcome.LEASE_EXPIRED
+    assert lease_expired.command.state is CommandState.CLAIMED
+    assert lease_expired.decision is not None
+
+    following = queue.dispatch()
+    assert following is not None
+    assert following.outcome is DispatchOutcome.SEND
+
+
 def test_current_wide_spread_is_rejected_at_dispatch_time():
     clock = FixedClock()
     revalidator = RiskRevalidator(clock)

@@ -14,14 +14,17 @@ dispatch は 1 回で最大 1 件を処理し、次の順で判定する:
    Protection が先に決済した position へ裸の反対売買を送らない
 5. pre-trade risk の再評価 → 不承認または数量縮小なら CANCELLED。REJECTED は
    CLAIMED から到達できず、作成時の risk 拒否と broker 拒否に予約する
+6. 送信確定時刻で signal と claim lease を再検査し、処理中に失効した command は
+   送らない
 
-rate limit の窓は revalidation を通った command だけが消費する。fresh select や
+rate limit の窓は送信が確定した command だけが消費する。fresh select や
 revalidation が例外を投げた command は queue から外れたままになり、lease 失効後に
 sweep が READY へ戻す（壊れた entry が先頭で他の command を塞がない）。
 
-失効・lease・rate limit・revalidation は dispatch 開始時刻で判定し、送信確定後に
-時刻を読み直して rate limit と SUBMITTING に記録する。呼び出し元の `save_state` と
-`order_send` までの遅延は queue から観測できないため、この窓には含まれない。
+失効・lease・rate limit・revalidation は dispatch 開始時刻で判定し、送信候補の確定後に
+時刻を読み直して失効と lease を再検査する。通過した時刻を rate limit と SUBMITTING に
+記録する。呼び出し元の `save_state` と `order_send` までの遅延は queue から観測できない
+ため、この窓には含まれない。
 """
 from __future__ import annotations
 
@@ -206,6 +209,19 @@ class ExecutionQueue:
                 )
 
             sent_at = self._clock.now()
+            if entry.expires_at is not None and sent_at >= entry.expires_at:
+                expired = transition(command, CommandState.EXPIRED, now=sent_at)
+                return Dispatch(DispatchOutcome.EXPIRED, entry, expired, decision)
+            if (
+                command.claim_expires_at is not None
+                and sent_at >= command.claim_expires_at
+            ):
+                return Dispatch(
+                    DispatchOutcome.LEASE_EXPIRED,
+                    entry,
+                    command,
+                    decision,
+                )
             self._limiter.record(command.symbol, market_entry=market_entry, now=sent_at)
             return Dispatch(
                 DispatchOutcome.SEND,

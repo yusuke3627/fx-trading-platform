@@ -1,6 +1,7 @@
 """Configuration to a runnable set of strategies."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from trading.backtest.clock import Clock
@@ -29,8 +30,8 @@ def traded_symbols(config: AppConfig) -> set[str]:
     """Every instrument a strategy that actually runs declares.
 
     Disabled strategies are excluded: a symbol only they name is one no
-    evaluation will ever reach, which for a runner keyed to a single symbol is
-    the same as naming a symbol nobody configured.
+    evaluation will ever reach, so a runner must not load it among the symbols
+    it evaluates.
     """
     return {
         instrument
@@ -38,6 +39,36 @@ def traded_symbols(config: AppConfig) -> set[str]:
         if strategy.runs
         for instrument in strategy.instruments
     }
+
+
+def runner_symbols(
+    config: AppConfig, requested: Sequence[str] | None = None
+) -> list[str]:
+    """The symbols one shadow process evaluates, in evaluation order.
+
+    `--symbol` narrows the run; otherwise market.primary_instruments. Each
+    must be traded by a running strategy (a symbol no evaluation reaches
+    would sit in the loop asking for quotes forever) and platform-enabled —
+    the switch ADR-012 reserved for deciding what the runner evaluates. A
+    contradiction between the three refuses to start rather than being
+    filtered out quietly.
+    """
+    symbols = list(
+        dict.fromkeys(
+            requested if requested is not None else config.market.primary_instruments
+        )
+    )
+    if not symbols:
+        raise ValueError("no symbol to evaluate")
+
+    traded = traded_symbols(config)
+    for symbol in symbols:
+        if symbol not in traded:
+            raise ValueError(f"no enabled strategy trades {symbol}: {sorted(traded)}")
+        policy = config.instruments.get(symbol)
+        if policy is None or not policy.platform_enabled:
+            raise ValueError(f"{symbol} is not platform_enabled in instruments")
+    return symbols
 
 
 def build_runner(

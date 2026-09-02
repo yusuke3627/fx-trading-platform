@@ -195,9 +195,16 @@ class ShadowRunner:
         )
         collected = asyncio.run(self._runner.dispatch(event))
         # 戦略は 1 dispatch で自分の全 instruments を評価するので、quote gate で
-        # 止めた symbol の signal もここに混ざる。評価しなかった symbol として
-        # 捨て、trail には残さない。
-        candidates = [item for item in collected if item.signal.symbol not in blocked]
+        # 止めた symbol の signal もここに混ざる。捨てると _new_setup の dedupe
+        # だけが消費され、quote 復旧後も同じ setup が再生成されないため、sizing
+        # できなくても trail には残す。quotes にも blocked にも無い symbol は
+        # このプロセスの評価対象外なので記録しない。
+        candidates: list[CollectedSignal] = []
+        for item in collected:
+            if item.signal.symbol in quotes:
+                candidates.append(item)
+            elif item.signal.symbol in blocked:
+                self._decisions.record_signal(self._account_id, item.signal)
         if not candidates:
             return ShadowCycle(at=now, blocked=blocked)
         # Read once for the cycle: the window is the same for every intent in

@@ -106,6 +106,21 @@ class MultiSymbolSignallingStrategy(SignallingStrategy):
         ]
 
 
+class OutOfScopeSignallingStrategy(SignallingStrategy):
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol="EURUSD",
+                direction=PositionDirection.SHORT,
+                conviction=0.7,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST"],
+            )
+        ]
+
+
 def build(
     *,
     ticks=(),
@@ -512,10 +527,8 @@ def test_event_windows_apply_to_each_symbols_currency_legs():
 
 
 def test_a_missing_quote_only_blocks_its_symbol():
-    # The collectors are one process per symbol; one of them being down is
-    # the ordinary failure, and it must not take the other pairs with it. The
-    # strategy still forms a view on the missing pair (it evaluates every
-    # instrument it has), and that view is dropped rather than recorded.
+    # collector は symbol ごとに独立しており、1 pair の停止で他を止めない。
+    # blocked symbol も dispatch で dedupe を消費するため、signal は trail に残す。
     store = FakeDecisionRepository()
     runner = build(**two_pairs(ticks=[usdjpy_tick()]), decisions=store)
 
@@ -523,7 +536,22 @@ def test_a_missing_quote_only_blocks_its_symbol():
 
     assert cycle.blocked == {"EURUSD": "no quote collected"}
     assert [result.signal.symbol for result in cycle.decisions] == ["USDJPY"]
-    assert [signal.symbol for _, signal in store.signals] == ["USDJPY"]
+    assert [signal.symbol for _, signal in store.signals] == ["EURUSD", "USDJPY"]
+
+
+def test_a_signal_outside_this_runners_symbols_is_ignored():
+    store = FakeDecisionRepository()
+    runner = build(
+        **quote_and_account(),
+        strategy=OutOfScopeSignallingStrategy,
+        decisions=store,
+    )
+
+    cycle = runner.evaluate_once()
+
+    assert cycle.blocked == {}
+    assert cycle.decisions == ()
+    assert store.signals == []
 
 
 def test_a_stale_quote_only_blocks_its_symbol():

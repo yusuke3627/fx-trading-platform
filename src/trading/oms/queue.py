@@ -18,10 +18,14 @@ dispatch は 1 回で最大 1 件を処理し、次の順で判定する:
 rate limit の窓は revalidation を通った command だけが消費する。fresh select や
 revalidation が例外を投げた command は queue から外れたままになり、lease 失効後に
 sweep が READY へ戻す（壊れた entry が先頭で他の command を塞がない）。
+
+失効・lease・rate limit・revalidation は dispatch 開始時刻で判定し、送信確定後に
+時刻を読み直して rate limit と SUBMITTING に記録する。呼び出し元の `save_state` と
+`order_send` までの遅延は queue から観測できないため、この窓には含まれない。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import IntEnum, StrEnum
 from itertools import count
@@ -149,7 +153,7 @@ class ExecutionQueue:
     def dispatch(self) -> Dispatch | None:
         """優先順で最初に送れる 1 件を処理する。None は空か全件 rate limit 待ち。"""
         # 失効・lease・rate limit・revalidation を同じ瞬間で判定するため、
-        # 時刻はここで 1 回だけ読む。
+        # 判定時刻はここで読む。送信確定時には記録用の時刻を読み直す。
         now = self._clock.now()
         for entry in sorted(self._entries, key=QueuedCommand.sort_key):
             command = entry.command
@@ -172,12 +176,20 @@ class ExecutionQueue:
                 continue
 
             self._entries.remove(entry)
-            if (
-                command.broker_position_ticket is not None
-                and self._broker.position(command.broker_position_ticket) is None
-            ):
-                cancelled = transition(command, CommandState.CANCELLED, now=now)
-                return Dispatch(DispatchOutcome.ALREADY_CLOSED, entry, cancelled)
+            if command.broker_position_ticket is not None:
+                position = self._broker.position(command.broker_position_ticket)
+                if position is None:
+                    cancelled = transition(command, CommandState.CANCELLED, now=now)
+                    return Dispatch(DispatchOutcome.ALREADY_CLOSED, entry, cancelled)
+
+                quantity = command.quantity
+                if command.action is PositionAction.CLOSE:
+                    quantity = position.quantity
+                elif command.action is PositionAction.REDUCE:
+                    quantity = min(command.quantity, position.quantity)
+                if quantity != command.quantity:
+                    command = command.model_copy(update={"quantity": quantity})
+                    entry = replace(entry, command=command)
 
             decision = self._revalidator.revalidate(entry, now)
             reduced = (
@@ -193,13 +205,12 @@ class ExecutionQueue:
                     decision,
                 )
 
-            self._limiter.record(
-                command.symbol, market_entry=market_entry, now=now
-            )
+            sent_at = self._clock.now()
+            self._limiter.record(command.symbol, market_entry=market_entry, now=sent_at)
             return Dispatch(
                 DispatchOutcome.SEND,
                 entry,
-                mark_submitting(command, now),
+                mark_submitting(command, sent_at),
                 decision,
             )
         return None

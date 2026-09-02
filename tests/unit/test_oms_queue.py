@@ -33,8 +33,13 @@ from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 
 
 class FakeBroker:
-    def __init__(self, closed: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        closed: set[str] | None = None,
+        quantity: Decimal = Decimal(1000),
+    ) -> None:
         self._closed = closed or set()
+        self._quantity = quantity
 
     def position(self, ticket: str) -> BrokerPosition | None:
         if ticket in self._closed:
@@ -44,7 +49,7 @@ class FakeBroker:
             broker_position_identifier=ticket,
             symbol="USDJPY",
             direction=PositionDirection.SHORT,
-            quantity=Decimal(1000),
+            quantity=self._quantity,
             entry_price=Decimal("158.840"),
             stop_loss=Decimal("159.500"),
             observed_at=T0,
@@ -68,6 +73,16 @@ class ApproveAll:
             approved_quantity=self.approved_quantity,
             decided_at=now,
         )
+
+
+class AdvancingApproveAll(ApproveAll):
+    def __init__(self, clock: FixedClock) -> None:
+        super().__init__()
+        self._clock = clock
+
+    def revalidate(self, entry: QueuedCommand, now: datetime) -> RiskDecision:
+        self._clock.advance(milliseconds=400)
+        return super().revalidate(entry, now)
 
 
 class RejectAll:
@@ -144,6 +159,7 @@ def enqueue(
     ticket: str | None = None,
     priority: QueuePriority | None = None,
     rank: int | None = None,
+    quantity: str = "1000",
     expires_at: datetime | None = None,
     claim_expires_at: datetime | None = None,
 ) -> QueuedCommand:
@@ -159,6 +175,7 @@ def enqueue(
         action=action,
         direction=direction,
         symbol=symbol,
+        quantity=quantity,
         broker_position_ticket=ticket,
         claim_expires_at=claim_expires_at,
     )
@@ -370,6 +387,27 @@ def test_approved_entry_is_marked_submitting_at_dispatch_time():
     assert revalidator.calls[0][1] == at(seconds=3)
 
 
+def test_market_entry_window_starts_after_revalidation_finishes():
+    clock = FixedClock()
+    revalidator = AdvancingApproveAll(clock)
+    queue = make_queue(clock=clock, revalidator=revalidator)
+    enqueue(queue, symbol="USDJPY", rank=1)
+    enqueue(queue, symbol="EURUSD", rank=2)
+
+    first = queue.dispatch()
+    assert first is not None
+    assert first.command.submitting_at == at(milliseconds=400)
+
+    clock.advance(milliseconds=600)
+    assert clock.now() == at(seconds=1)
+    assert queue.dispatch() is None
+
+    clock.advance(milliseconds=400)
+    second = queue.dispatch()
+    assert second is not None
+    assert second.outcome is DispatchOutcome.SEND
+
+
 def test_current_wide_spread_is_rejected_at_dispatch_time():
     clock = FixedClock()
     revalidator = RiskRevalidator(clock)
@@ -428,6 +466,67 @@ def test_ticket_exit_is_freshly_selected_before_send(position_exists):
         assert dispatched.outcome is DispatchOutcome.ALREADY_CLOSED
         assert dispatched.command.state is CommandState.CANCELLED
         assert revalidator.calls == []
+
+
+def test_close_uses_fresh_position_quantity_after_queue_wait():
+    revalidator = ApproveAll()
+    queue = make_queue(
+        broker=FakeBroker(quantity=Decimal(400)),
+        revalidator=revalidator,
+    )
+    queued = enqueue(
+        queue,
+        action=PositionAction.CLOSE,
+        ticket="1001",
+        quantity="1000",
+    )
+
+    dispatched = queue.dispatch()
+    assert dispatched is not None
+    assert dispatched.command.quantity == Decimal(400)
+    assert dispatched.entry.command.quantity == Decimal(400)
+    assert dispatched.entry is not queued
+    assert revalidator.calls[0][0] is dispatched.entry
+
+
+def test_reduce_is_capped_at_fresh_position_quantity():
+    revalidator = ApproveAll()
+    queue = make_queue(
+        broker=FakeBroker(quantity=Decimal(400)),
+        revalidator=revalidator,
+    )
+    enqueue(
+        queue,
+        action=PositionAction.REDUCE,
+        ticket="1001",
+        quantity="1000",
+    )
+
+    dispatched = queue.dispatch()
+    assert dispatched is not None
+    assert dispatched.command.quantity == Decimal(400)
+    assert dispatched.entry.command.quantity == Decimal(400)
+    assert revalidator.calls[0][0] is dispatched.entry
+
+
+def test_reduce_keeps_command_quantity_when_position_is_larger():
+    revalidator = ApproveAll()
+    queue = make_queue(
+        broker=FakeBroker(quantity=Decimal(1000)),
+        revalidator=revalidator,
+    )
+    queued = enqueue(
+        queue,
+        action=PositionAction.REDUCE,
+        ticket="1001",
+        quantity="500",
+    )
+
+    dispatched = queue.dispatch()
+    assert dispatched is not None
+    assert dispatched.command.quantity == Decimal(500)
+    assert dispatched.entry is queued
+    assert revalidator.calls[0][0] is queued
 
 
 def test_expired_claim_lease_is_removed_without_state_transition():

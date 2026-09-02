@@ -21,10 +21,11 @@ rate limit の窓は送信が確定した command だけが消費する。fresh 
 revalidation が例外を投げた command は queue から外れたままになり、lease 失効後に
 sweep が READY へ戻す（壊れた entry が先頭で他の command を塞がない）。
 
-失効・lease・rate limit・revalidation は dispatch 開始時刻で判定し、送信候補の確定後に
-時刻を読み直して失効と lease を再検査する。通過した時刻を rate limit と SUBMITTING に
-記録する。呼び出し元の `save_state` と `order_send` までの遅延は queue から観測できない
-ため、この窓には含まれない。
+失効・lease・rate limit は dispatch 開始時刻で判定する。ticket 付き exit の fresh select は
+broker への往復を挟むため、revalidation はその直後に読み直した時刻で行う。送信候補の
+確定後にもう一度時刻を読み、失効と lease を再検査したうえで、その時刻を rate limit と
+SUBMITTING に記録する。呼び出し元の `save_state` と `order_send` までの遅延は queue から
+観測できないため、この窓には含まれない。
 """
 from __future__ import annotations
 
@@ -155,8 +156,7 @@ class ExecutionQueue:
 
     def dispatch(self) -> Dispatch | None:
         """優先順で最初に送れる 1 件を処理する。None は空か全件 rate limit 待ち。"""
-        # 失効・lease・rate limit・revalidation を同じ瞬間で判定するため、
-        # 判定時刻はここで読む。送信確定時には記録用の時刻を読み直す。
+        # 失効・lease・rate limit は同じ dispatch 開始時刻で判定する。
         now = self._clock.now()
         for entry in sorted(self._entries, key=QueuedCommand.sort_key):
             command = entry.command
@@ -194,7 +194,8 @@ class ExecutionQueue:
                     command = command.model_copy(update={"quantity": quantity})
                     entry = replace(entry, command=command)
 
-            decision = self._revalidator.revalidate(entry, now)
+            revalidated_at = self._clock.now()
+            decision = self._revalidator.revalidate(entry, revalidated_at)
             reduced = (
                 decision.approved_quantity is not None
                 and decision.approved_quantity < command.quantity

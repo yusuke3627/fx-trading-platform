@@ -59,6 +59,16 @@ class FakeBroker:
         return Decimal(0)
 
 
+class AdvancingFakeBroker(FakeBroker):
+    def __init__(self, clock: FixedClock) -> None:
+        super().__init__()
+        self._clock = clock
+
+    def position(self, ticket: str) -> BrokerPosition | None:
+        self._clock.advance(milliseconds=500)
+        return super().position(ticket)
+
+
 class ApproveAll:
     def __init__(self, approved_quantity: Decimal | None = None) -> None:
         self.approved_quantity = approved_quantity
@@ -502,6 +512,23 @@ def test_ticket_exit_is_freshly_selected_before_send(position_exists):
         assert dispatched.outcome is DispatchOutcome.ALREADY_CLOSED
         assert dispatched.command.state is CommandState.CANCELLED
         assert revalidator.calls == []
+
+
+def test_ticket_exit_is_revalidated_after_fresh_position_lookup():
+    clock = FixedClock()
+    revalidator = ApproveAll()
+    queue = make_queue(
+        clock=clock,
+        broker=AdvancingFakeBroker(clock),
+        revalidator=revalidator,
+    )
+    enqueue(queue, action=PositionAction.CLOSE, ticket="1001")
+
+    dispatched = queue.dispatch()
+    assert dispatched is not None
+    assert dispatched.outcome is DispatchOutcome.SEND
+    assert revalidator.calls[0][1] == at(milliseconds=500)
+    assert dispatched.command.submitting_at == at(milliseconds=500)
 
 
 def test_close_uses_fresh_position_quantity_after_queue_wait():

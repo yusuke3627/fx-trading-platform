@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -156,6 +157,22 @@ def test_a_state_that_moved_underneath_the_caller_is_refused(workers):
             written.model_copy(update={"state": CommandState.SUBMITTING}),
             CommandState.READY,
         )
+
+
+def test_save_state_persists_send_time_adjusted_quantity(workers):
+    worker, prefix = workers
+    repo, _ = worker()
+    written = command(prefix, 1, state=CommandState.CLAIMED)
+    repo.insert(written)
+    adjusted = written.model_copy(
+        update={"state": CommandState.SUBMITTING, "quantity": Decimal(400)}
+    )
+
+    repo.save_state(adjusted, CommandState.CLAIMED)
+
+    stored = repo.get(str(written.command_id))
+    assert stored is not None
+    assert stored.quantity == Decimal(400)
 
 
 def test_commands_can_be_listed_by_state(workers):

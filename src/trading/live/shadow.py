@@ -1,7 +1,8 @@
 """Shadow runner: the whole decision path, with nothing reaching the broker.
 
 Strategies evaluate against live data, Portfolio sizes the signals into
-intents, Risk grades them — and the result is reported instead of executed.
+intents, the Arbitrator picks which sized entries are graded in priority order,
+and Risk grades them — the result is reported instead of executed.
 The runner holds no OMS and no broker adapter, so "no orders are sent" is a
 property of what is wired rather than a flag that could be flipped.
 
@@ -31,18 +32,23 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from trading.data.cli import poll_interval
 from trading.data.features import StoredFeatureSource
 from trading.data.market import MarketDataService
 from trading.domain.account import AccountMode
+from trading.domain.arbitration import (
+    ArbitrationCandidate,
+    ArbitrationDecision,
+    CandidateSignal,
+)
 from trading.domain.event import EventEnvelope
 from trading.domain.exposure import OpenPositionExposure, PortfolioRiskSnapshot
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
 from trading.domain.market import Tick
-from trading.domain.position import PositionDirection
+from trading.domain.position import PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel, RiskDecision
 from trading.domain.signal import StrategySignal
 from trading.execution.mt5 import mapper
@@ -50,6 +56,7 @@ from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
 from trading.live.clock import CycleClock
+from trading.portfolio.arbitrator import PortfolioArbitrator
 from trading.portfolio.exposure import CurrencyExposureService
 from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
@@ -80,7 +87,10 @@ ACCOUNT_MAX_AGE = timedelta(minutes=5)
 class ShadowDecision:
     signal: StrategySignal
     intent: PositionIntent
-    decision: RiskDecision
+    # Risk の grade。Arbitrator が退けた候補は Risk に届かないため None。
+    decision: RiskDecision | None
+    # entry 候補の裁定。exit（CLOSE）は裁定を経ないため None。
+    arbitration: ArbitrationDecision | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +131,7 @@ class ShadowRunner:
         account_mode: AccountMode,
         instruments: Sequence[ShadowInstrument],
         exposure: CurrencyExposureService,
+        arbitrator: PortfolioArbitrator,
         features: StoredFeatureSource | None = None,
     ) -> None:
         self._runner = runner
@@ -139,6 +150,7 @@ class ShadowRunner:
             instrument.spec.symbol: instrument for instrument in instruments
         }
         self._exposure = exposure
+        self._arbitrator = arbitrator
         self._features = features
 
     def evaluate_once(self) -> ShadowCycle:
@@ -223,21 +235,17 @@ class ShadowRunner:
         if baseline is not None:
             history.insert(0, baseline)
 
-        # 仮想 book（fill は届かないため通常空）の通貨分解。stop は
-        # VirtualPosition に無いので stop-risk は 0 として評価される。mark は
-        # 当 cycle の quote: fill が届かない以上、quote gate で止めた symbol に
-        # position があることはない。
-        portfolio_risk = self._exposure.snapshot(
-            [
-                OpenPositionExposure(
-                    spec=self._instruments[position.symbol].spec,
-                    signed_units=position.signed_quantity,
-                    mark_price=quotes[position.symbol].mid,
-                )
-                for position in self._ledger.open_positions()
-            ],
-            now,
-        )
+        # 仮想 book（fill は届かないため通常空）。stop は VirtualPosition に無いので
+        # stop-risk は 0 として評価される。mark は当 cycle の quote: fill が届かない
+        # 以上、quote gate で止めた symbol に position があることはない。
+        base_book = [
+            OpenPositionExposure(
+                spec=self._instruments[position.symbol].spec,
+                signed_units=position.signed_quantity,
+                mark_price=quotes[position.symbol].mid,
+            )
+            for position in self._ledger.open_positions()
+        ]
 
         sized: list[tuple[CollectedSignal, PositionIntent]] = []
         for item in candidates:
@@ -268,27 +276,80 @@ class ShadowRunner:
             for intent in intents:
                 sized.append((item, intent))
 
-        results: list[ShadowDecision] = []
+        exits: list[tuple[CollectedSignal, PositionIntent]] = []
+        entries: dict[UUID, tuple[CollectedSignal, PositionIntent]] = {}
+        arbitration_candidates: list[ArbitrationCandidate] = []
         for item, intent in sized:
-            signal = item.signal
-            quote = quotes[signal.symbol]
-            context = self._pretrade_context(
-                signal,
+            if intent.action is PositionAction.CLOSE:
+                exits.append((item, intent))
+                continue
+            entries[item.signal.signal_id] = (item, intent)
+            arbitration_candidates.append(
+                self._candidate(item.signal, intent, quotes[intent.symbol])
+            )
+        arbitration = self._arbitrator.select(arbitration_candidates, base_book, now)
+
+        # Written before each result is reported: the record is the point of a
+        # shadow run, and printing a decision that never reached the database
+        # would make the log and the trail disagree.
+        results: list[ShadowDecision] = []
+        # exit は risk 削減なので裁定を経ず、既存 book で grade する。
+        for item, intent in exits:
+            decision = self._grade(
+                item,
                 intent,
-                quote,
+                quotes[intent.symbol],
                 account,
                 history,
                 now,
-                item.horizon,
-                portfolio_risk,
+                base_book,
             )
-            decision = self._risk.evaluate(intent, context)
-            # Written before it is reported: the record is the point of a
-            # shadow run, and printing a decision that never reached the
-            # database would make the log and the trail disagree.
-            self._decisions.record(self._account_id, signal, intent, decision)
+            self._decisions.record(self._account_id, item.signal, intent, decision)
             results.append(
-                ShadowDecision(signal=signal, intent=intent, decision=decision)
+                ShadowDecision(signal=item.signal, intent=intent, decision=decision)
+            )
+        # 受理候補は priority 順に、先に受理した候補を含む book で grade する。
+        # これが accept ごとの既存 Risk limit 再計算になる。
+        for verdict in arbitration.accepted:
+            item, intent = entries[verdict.signal_id]
+            decision = self._grade(
+                item,
+                intent,
+                quotes[intent.symbol],
+                account,
+                history,
+                now,
+                verdict.book_before,
+            )
+            self._decisions.record(
+                self._account_id,
+                item.signal,
+                intent,
+                decision,
+                arbitration=verdict,
+            )
+            results.append(
+                ShadowDecision(
+                    signal=item.signal,
+                    intent=intent,
+                    decision=decision,
+                    arbitration=verdict,
+                )
+            )
+        # 却下候補は Risk に届かないが trail には残す（捨てると setup の dedupe
+        # だけが消費される）。
+        for verdict in arbitration.rejected:
+            item, intent = entries[verdict.signal_id]
+            self._decisions.record_arbitration(
+                self._account_id, item.signal, intent, verdict
+            )
+            results.append(
+                ShadowDecision(
+                    signal=item.signal,
+                    intent=intent,
+                    decision=None,
+                    arbitration=verdict,
+                )
             )
         return ShadowCycle(at=now, decisions=tuple(results), blocked=blocked)
 
@@ -327,6 +388,59 @@ class ShadowRunner:
         mode = self._event_risk.mode_for_instrument(instrument, horizon, now)
         return mode if mode is not None else self._risk_config.event_mode_default
 
+    def _candidate(
+        self, signal: StrategySignal, intent: PositionIntent, quote: Tick
+    ) -> ArbitrationCandidate:
+        entry_price = (
+            quote.ask
+            if signal.desired_direction is PositionDirection.LONG
+            else quote.bid
+        )
+        quantity = intent.target_quantity or Decimal(0)
+        signed_units = (
+            quantity
+            if signal.desired_direction is PositionDirection.LONG
+            else -quantity
+        )
+        stop = intent.protection.stop_loss_price if intent.protection else None
+        exposure = OpenPositionExposure(
+            spec=self._instruments[signal.symbol].spec,
+            signed_units=signed_units,
+            mark_price=entry_price,
+            stop_loss_price=stop,
+        )
+        # shadow は live 発注許可前の pair も証拠収集するため、裁定上は
+        # as-if 有効にする。実際の instrument policy は Risk が報告する。
+        return ArbitrationCandidate(
+            signal=CandidateSignal.from_signal(signal),
+            exposure=exposure,
+            trading_enabled=True,
+        )
+
+    def _grade(
+        self,
+        item: CollectedSignal,
+        intent: PositionIntent,
+        quote: Tick,
+        account,
+        history,
+        now: datetime,
+        book: Sequence[OpenPositionExposure],
+    ) -> RiskDecision:
+        portfolio_risk = self._exposure.snapshot(book, now)
+        context = self._pretrade_context(
+            item.signal,
+            intent,
+            quote,
+            account,
+            history,
+            now,
+            item.horizon,
+            book,
+            portfolio_risk,
+        )
+        return self._risk.evaluate(intent, context)
+
     def _pretrade_context(
         self,
         signal,
@@ -336,10 +450,48 @@ class ShadowRunner:
         history,
         now,
         horizon,
+        book: Sequence[OpenPositionExposure],
         portfolio_risk: PortfolioRiskSnapshot,
     ) -> PreTradeContext:
         symbol = signal.symbol
         instrument = self._instruments[symbol]
+        # book は ledger の仮想 position（fill は届かないため通常空）と、
+        # 当 cycle で Arbitrator が先に受理した候補を含む。
+        symbol_exposure_units = sum(
+            (
+                exposure.signed_units
+                for exposure in book
+                if exposure.spec.symbol == symbol
+            ),
+            Decimal(0),
+        )
+        symbol_gross_exposure_units = sum(
+            (
+                abs(exposure.signed_units)
+                for exposure in book
+                if exposure.spec.symbol == symbol
+            ),
+            Decimal(0),
+        )
+        if self._account_mode is AccountMode.NETTING:
+            net_by_symbol: dict[str, Decimal] = {}
+            for exposure in book:
+                held_symbol = exposure.spec.symbol
+                net_by_symbol[held_symbol] = (
+                    net_by_symbol.get(held_symbol, Decimal(0))
+                    + exposure.signed_units
+                )
+            # NETTING の broker position は strategy 数ではなく、net が残る symbol
+            # ごとに 1 件。HEDGING では各 exposure が別 ticket を表す。
+            symbol_open_positions_count = int(symbol_exposure_units != 0)
+            portfolio_open_positions_count = sum(
+                1 for units in net_by_symbol.values() if units != 0
+            )
+        else:
+            symbol_open_positions_count = sum(
+                1 for exposure in book if exposure.spec.symbol == symbol
+            )
+            portfolio_open_positions_count = len(book)
         return PreTradeContext(
             now=now,
             # Nothing here has exercised the order path, so reporting it as
@@ -353,15 +505,10 @@ class ShadowRunner:
             instrument=instrument.spec,
             account=account,
             snapshots=history,
-            # The virtual ledger is the only book this runner can see, and no
-            # fill ever reaches it, so both of these stay at zero. They are
-            # read from the ledger rather than written as constants so that
-            # the day a fill does arrive, they follow it.
-            symbol_open_positions_count=len(
-                self._ledger.positions_for_symbol(symbol)
-            ),
-            portfolio_open_positions_count=len(self._ledger.open_positions()),
-            symbol_exposure_units=self._ledger.net_exposure(symbol),
+            symbol_open_positions_count=symbol_open_positions_count,
+            portfolio_open_positions_count=portfolio_open_positions_count,
+            symbol_exposure_units=symbol_exposure_units,
+            symbol_gross_exposure_units=symbol_gross_exposure_units,
             event_mode=self._event_mode(instrument.spec, horizon, now),
             kill_switch=KillSwitchLevel.NONE,
             unknown_commands=0,
@@ -375,13 +522,23 @@ class ShadowRunner:
 
 def describe(result: ShadowDecision) -> str:
     decision = result.decision
+    arbitration = result.arbitration
+    if decision is None:
+        assert arbitration is not None
+        return (
+            f"{arbitration.decided_at.isoformat()} {result.signal.strategy_id} "
+            f"{result.signal.symbol} {result.intent.action} "
+            f"{result.signal.desired_direction} qty={result.intent.target_quantity} "
+            f"ARBITRATED_OUT {arbitration.reason_code}"
+        )
     verdict = "APPROVED" if decision.approved else "REJECTED"
+    rank = f" rank={arbitration.rank}" if arbitration is not None else ""
     rejects = " ".join(decision.reject_codes)
     return (
         f"{decision.decided_at.isoformat()} {result.signal.strategy_id} "
         f"{result.signal.symbol} {result.intent.action} "
         f"{result.signal.desired_direction} qty={result.intent.target_quantity} "
-        f"{verdict}{' ' + rejects if rejects else ''}"
+        f"{verdict}{rank}{' ' + rejects if rejects else ''}"
     )
 
 
@@ -422,6 +579,7 @@ def main() -> None:
     from trading.data.market.stored import StoredMarketData
     from trading.data.policy.risk_windows import central_bank_calendar
     from trading.live.wiring import build_runner, runner_symbols
+    from trading.portfolio.arbitrator import PortfolioArbitrator
 
     parser = argparse.ArgumentParser(description="Shadow strategy runner")
     parser.add_argument("--env", default="shadow")
@@ -522,6 +680,7 @@ def main() -> None:
         account_mode=AccountMode(config.broker.expected_account_mode),
         instruments=instruments,
         exposure=CurrencyExposureService(conversion),
+        arbitrator=PortfolioArbitrator(config.arbitrator),
         features=features,
     )
 

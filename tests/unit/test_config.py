@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -189,3 +190,10 @@ def test_existing_strategy_parameter_formats_load_together():
     assert scalp.params_for("USDJPY").param("atr_period", 0) == 14
     assert intraday.params_for("USDJPY").param("resistance_lookback", 0) == 20
     assert swing.params_for("USDJPY").param("support_lookback", 0) == 30
+
+
+def test_base_config_fixes_arbitrator_coefficients():
+    config = load_config("shadow", CONFIG_DIR)
+
+    assert config.arbitrator.existing_exposure_penalty_r == Decimal("0.10")
+    assert config.arbitrator.max_pairs_per_triangle == 2

@@ -26,6 +26,9 @@ class StrategySignal(BaseModel):
 
     desired_direction: PositionDirection
     conviction: float = Field(ge=0.0, le=1.0)
+    # 期待 edge（R 倍数）。strategy が推定を持つまでは 1R = 中立で、
+    # 裁定の priority は confidence だけで決まる。
+    expected_edge_r: Decimal = Field(default=Decimal(1), gt=0)
 
     expected_horizon_seconds: int
 

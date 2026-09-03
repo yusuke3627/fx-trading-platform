@@ -169,11 +169,15 @@ class PostgresCommandRepository:
         An unconditional UPDATE would let a slow worker holding a stale
         SUBMITTING object overwrite UNKNOWN (or rewind a terminal state),
         resolving UNKNOWN without reconciliation.
+
+        Quantity is written in the same CAS because a send-time fresh select
+        may shrink an exit; a stale value would corrupt fill reconciliation.
         """
         cursor = self._conn.execute(
             """
             UPDATE execution_commands
             SET state = %(state)s,
+                quantity = %(quantity)s,
                 claimed_by = %(claimed_by)s,
                 claimed_at = %(claimed_at)s,
                 claim_expires_at = %(claim_expires_at)s,
@@ -185,6 +189,7 @@ class PostgresCommandRepository:
             {
                 "id": command.command_id,
                 "state": command.state,
+                "quantity": command.quantity,
                 "expected_state": expected_state,
                 "claimed_by": command.claimed_by,
                 "claimed_at": command.claimed_at,

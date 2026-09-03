@@ -33,9 +33,10 @@ class CommandRepository(Protocol):
 
     def get(self, command_id: str) -> ExecutionCommand | None: ...
 
-    # Compare-and-set: raises StaleCommandStateError when the row is no
-    # longer in expected_state (e.g. a timeout sweep moved it to UNKNOWN
-    # while a slow worker was still holding the old object).
+    # Compare-and-set on state, timestamps and the send-time-adjusted quantity:
+    # raises StaleCommandStateError when the row is no longer in expected_state
+    # (e.g. a timeout sweep moved it to UNKNOWN while a slow worker was still
+    # holding the old object).
     def save_state(
         self, command: ExecutionCommand, expected_state: CommandState
     ) -> None: ...

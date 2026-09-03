@@ -192,6 +192,13 @@ def test_existing_strategy_parameter_formats_load_together():
     assert swing.params_for("USDJPY").param("support_lookback", 0) == 30
 
 
+def test_broker_rate_limits_load_from_base_config():
+    config = load_config("demo", CONFIG_DIR)
+
+    assert config.broker.rate_limit.per_symbol_requests_per_second == 5
+    assert config.broker.rate_limit.market_entries_per_second == 1
+
+
 def test_base_config_fixes_arbitrator_coefficients():
     config = load_config("shadow", CONFIG_DIR)
 

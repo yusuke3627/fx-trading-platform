@@ -81,6 +81,15 @@ risk:
 
   event_mode_default: REDUCED
 
+arbitrator:
+  # 同時 signal の裁定係数（設計書 v2.1 §26 Step 7、ADR-029）。backtest で校正して
+  # 固定する値で、LLM や runtime から変更しない。現在値は校正前の仮置き。
+  # 既存 book と同方向の通貨 leg 1 本あたり、priority（edge_r × confidence）から引く量。
+  existing_exposure_penalty_r: 0.10
+  # triangle（GBPJPY ≒ GBPUSD × USDJPY）を構成する 3 ペアのうち同時に保有してよい
+  # pair 数。2 = 三辺を同時には持たない。
+  max_pairs_per_triangle: 2
+
 event_risk:
   dual_central_bank_cluster:
     pre_hours: 48

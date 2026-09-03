@@ -7,6 +7,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from trading.domain.account import AccountSnapshot
+from trading.domain.arbitration import ArbitrationDecision
 from trading.domain.event import EventEnvelope
 from trading.domain.instrument import FillingMode, InstrumentSpec
 from trading.domain.intent import PositionIntent, ProtectionSpec
@@ -327,6 +328,9 @@ class FakeDecisionRepository:
 
     def __init__(self) -> None:
         self.trails: list[tuple[str, StrategySignal, PositionIntent, RiskDecision]] = []
+        self.arbitrations: list[
+            tuple[str, StrategySignal, PositionIntent, ArbitrationDecision]
+        ] = []
         self.signals: list[tuple[str, StrategySignal]] = []
 
     def record(
@@ -335,9 +339,22 @@ class FakeDecisionRepository:
         signal: StrategySignal,
         intent: PositionIntent,
         decision: RiskDecision,
+        arbitration: ArbitrationDecision | None = None,
     ) -> None:
         self.record_signal(account_id, signal)
         self.trails.append((account_id, signal, intent, decision))
+        if arbitration is not None:
+            self.arbitrations.append((account_id, signal, intent, arbitration))
+
+    def record_arbitration(
+        self,
+        account_id: str,
+        signal: StrategySignal,
+        intent: PositionIntent,
+        arbitration: ArbitrationDecision,
+    ) -> None:
+        self.record_signal(account_id, signal)
+        self.arbitrations.append((account_id, signal, intent, arbitration))
 
     def record_signal(self, account_id: str, signal: StrategySignal) -> None:
         if all(s.signal_id != signal.signal_id for _, s in self.signals):

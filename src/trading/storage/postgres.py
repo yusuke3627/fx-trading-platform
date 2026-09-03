@@ -16,6 +16,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from trading.domain.account import AccountSnapshot
+from trading.domain.arbitration import ArbitrationDecision
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope, ensure_json_native
 from trading.domain.fill import Fill
@@ -1044,6 +1045,7 @@ def _row_to_signal(row: dict[str, Any]) -> StrategySignal:
         symbol=row["signal_symbol"],
         desired_direction=row["desired_direction"],
         conviction=row["conviction"],
+        expected_edge_r=row["expected_edge_r"],
         expected_horizon_seconds=row["expected_horizon_seconds"],
         stop_distance_pips=row["stop_distance_pips"],
         reason_codes=row["signal_reason_codes"],
@@ -1101,10 +1103,53 @@ class PostgresDecisionRepository:
         signal: StrategySignal,
         intent: PositionIntent,
         decision: RiskDecision,
+        arbitration: ArbitrationDecision | None = None,
     ) -> None:
-        # One transaction for the three: the foreign keys chain them, and a
+        # One transaction for the trail: the foreign keys chain it, and a
         # trail that stopped halfway would read as a signal nobody graded.
         self._insert_signal(account_id, signal)
+        self._insert_intent(account_id, signal, intent)
+        if arbitration is not None:
+            self._insert_arbitration(account_id, intent, arbitration)
+        self._conn.execute(
+            """
+            INSERT INTO risk_decisions (
+                id, account_id, intent_id, approved, approved_quantity, checks,
+                reject_codes, decided_at
+            ) VALUES (
+                %(id)s, %(account_id)s, %(intent_id)s, %(approved)s,
+                %(approved_quantity)s, %(checks)s, %(reject_codes)s,
+                %(decided_at)s
+            )
+            """,
+            {
+                "id": decision.decision_id,
+                "account_id": account_id,
+                "intent_id": decision.intent_id,
+                "approved": decision.approved,
+                "approved_quantity": decision.approved_quantity,
+                "checks": Jsonb([c.model_dump() for c in decision.checks]),
+                "reject_codes": Jsonb(decision.reject_codes),
+                "decided_at": decision.decided_at,
+            },
+        )
+        self._conn.commit()
+
+    def record_arbitration(
+        self,
+        account_id: str,
+        signal: StrategySignal,
+        intent: PositionIntent,
+        arbitration: ArbitrationDecision,
+    ) -> None:
+        self._insert_signal(account_id, signal)
+        self._insert_intent(account_id, signal, intent)
+        self._insert_arbitration(account_id, intent, arbitration)
+        self._conn.commit()
+
+    def _insert_intent(
+        self, account_id: str, signal: StrategySignal, intent: PositionIntent
+    ) -> None:
         protection = intent.protection
         self._conn.execute(
             """
@@ -1142,29 +1187,36 @@ class PostgresDecisionRepository:
                 "generated_at": intent.generated_at,
             },
         )
+
+    def _insert_arbitration(
+        self,
+        account_id: str,
+        intent: PositionIntent,
+        arbitration: ArbitrationDecision,
+    ) -> None:
         self._conn.execute(
             """
-            INSERT INTO risk_decisions (
-                id, account_id, intent_id, approved, approved_quantity, checks,
-                reject_codes, decided_at
+            INSERT INTO arbitration_decisions (
+                id, account_id, intent_id, accepted, reason_code, rank,
+                priority, detail, decided_at
             ) VALUES (
-                %(id)s, %(account_id)s, %(intent_id)s, %(approved)s,
-                %(approved_quantity)s, %(checks)s, %(reject_codes)s,
+                %(id)s, %(account_id)s, %(intent_id)s, %(accepted)s,
+                %(reason_code)s, %(rank)s, %(priority)s, %(detail)s,
                 %(decided_at)s
             )
             """,
             {
-                "id": decision.decision_id,
+                "id": arbitration.arbitration_id,
                 "account_id": account_id,
-                "intent_id": decision.intent_id,
-                "approved": decision.approved,
-                "approved_quantity": decision.approved_quantity,
-                "checks": Jsonb([c.model_dump() for c in decision.checks]),
-                "reject_codes": Jsonb(decision.reject_codes),
-                "decided_at": decision.decided_at,
+                "intent_id": intent.intent_id,
+                "accepted": arbitration.accepted,
+                "reason_code": arbitration.reason_code,
+                "rank": arbitration.rank,
+                "priority": arbitration.priority,
+                "detail": arbitration.detail,
+                "decided_at": arbitration.decided_at,
             },
         )
-        self._conn.commit()
 
     def record_signal(self, account_id: str, signal: StrategySignal) -> None:
         self._insert_signal(account_id, signal)
@@ -1177,12 +1229,13 @@ class PostgresDecisionRepository:
             """
             INSERT INTO strategy_signals (
                 id, account_id, strategy_id, strategy_version, symbol,
-                desired_direction, conviction, expected_horizon_seconds,
-                stop_distance_pips, reason_codes, generated_at
+                desired_direction, conviction, expected_edge_r,
+                expected_horizon_seconds, stop_distance_pips, reason_codes,
+                generated_at
             ) VALUES (
                 %(id)s, %(account_id)s, %(strategy_id)s, %(strategy_version)s,
-                %(symbol)s, %(direction)s, %(conviction)s, %(horizon)s,
-                %(stop_pips)s, %(reason_codes)s, %(generated_at)s
+                %(symbol)s, %(direction)s, %(conviction)s, %(expected_edge_r)s,
+                %(horizon)s, %(stop_pips)s, %(reason_codes)s, %(generated_at)s
             )
             ON CONFLICT (id) DO NOTHING
             """,
@@ -1194,6 +1247,7 @@ class PostgresDecisionRepository:
                 "symbol": signal.symbol,
                 "direction": signal.desired_direction.value,
                 "conviction": signal.conviction,
+                "expected_edge_r": signal.expected_edge_r,
                 "horizon": signal.expected_horizon_seconds,
                 "stop_pips": signal.stop_distance_pips,
                 "reason_codes": Jsonb(signal.reason_codes),
@@ -1216,7 +1270,8 @@ class PostgresDecisionRepository:
                 s.strategy_id AS signal_strategy_id,
                 s.strategy_version AS signal_strategy_version,
                 s.symbol AS signal_symbol,
-                s.desired_direction, s.conviction, s.expected_horizon_seconds,
+                s.desired_direction, s.conviction, s.expected_edge_r,
+                s.expected_horizon_seconds,
                 s.stop_distance_pips,
                 s.reason_codes AS signal_reason_codes,
                 s.generated_at AS signal_generated_at,

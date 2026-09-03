@@ -73,6 +73,7 @@ Strategy implementation must not determine final execution quantity.
 Strategies run inside the same application during modular-monolith stages.
 Conflicting strategy directions are allowed.
 Portfolio Manager owns cross-strategy exposure aggregation.
+Portfolio Arbitrator owns simultaneous-signal selection.
 Risk Manager owns final risk permission.
 OMS owns broker order creation.
 Instrument-specific broker specs are never hard-coded into strategies.

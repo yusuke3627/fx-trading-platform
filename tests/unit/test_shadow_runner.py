@@ -49,6 +49,7 @@ from trading.risk.engine import RiskConfig, RiskEngine
 from trading.risk.event_risk import EventRiskCalendar, EventRiskWindow
 from trading.runner import StrategyBinding, StrategyRunner
 from trading.strategy.base import (
+    SESSION_CLOSED_EXIT_ONLY,
     Strategy,
     StrategyConfig,
     StrategyContext,
@@ -106,6 +107,31 @@ class MultiSymbolSignallingStrategy(SignallingStrategy):
                 reason_codes=["TEST"],
             )
             for symbol in context.config.instruments
+        ]
+
+
+class ExitOnlyAndEntryStrategy(SignallingStrategy):
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol="USDJPY",
+                direction=PositionDirection.SHORT,
+                conviction=0.7,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=[SESSION_CLOSED_EXIT_ONLY],
+                exit_only=True,
+            ),
+            self.make_signal(
+                context,
+                symbol="EURUSD",
+                direction=PositionDirection.LONG,
+                conviction=0.9,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST_ENTRY"],
+            ),
         ]
 
 
@@ -706,6 +732,37 @@ def test_exit_bypasses_arbitration_while_the_new_entry_is_arbitrated():
     assert closed.arbitration is None
     assert closed.decision is not None
     assert opened.arbitration is not None
+
+
+def test_exit_only_signal_bypasses_arbitration_and_persists_as_close_intent():
+    store = FakeDecisionRepository()
+    runner = build(
+        **{**two_pairs(), "strategy": ExitOnlyAndEntryStrategy},
+        decisions=store,
+    )
+    runner._ledger.record(
+        VirtualPosition(
+            strategy_id="test_signaller",
+            symbol="USDJPY",
+            direction=PositionDirection.LONG,
+            quantity=Decimal(1000),
+            average_price=Decimal("158.80"),
+            as_of=T0,
+        )
+    )
+
+    results = by_symbol(runner.evaluate_once())
+
+    exit_result = results["USDJPY"]
+    assert exit_result.signal.exit_only is True
+    assert exit_result.intent.action is PositionAction.CLOSE
+    assert exit_result.arbitration is None
+    assert results["EURUSD"].arbitration is not None
+    assert [trail[2].action for trail in store.trails] == [
+        PositionAction.CLOSE,
+        PositionAction.OPEN,
+    ]
+    assert len(store.arbitrations) == 1
 
 
 def test_arbitration_verdict_is_recorded_with_the_graded_trail():

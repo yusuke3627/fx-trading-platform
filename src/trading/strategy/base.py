@@ -49,6 +49,10 @@ LIVE_ELIGIBLE_STATUSES = frozenset(
     {StrategyStatus.MICRO_LIVE, StrategyStatus.LIMITED_LIVE, StrategyStatus.PRODUCTION}
 )
 
+# gate 閉鎖中に反転 setup が成立し、entry の代わりに決済専用 signal を出したことを
+# 決定記録（reason_codes）から読めるようにする印。
+SESSION_CLOSED_EXIT_ONLY = "SESSION_CLOSED_EXIT_ONLY"
+
 
 class StrategyHorizon(StrEnum):
     SCALP = "SCALP"
@@ -200,18 +204,26 @@ class Strategy(ABC):
         context: StrategyContext,
     ) -> list[StrategySignal]: ...
 
-    def _new_setup(self, symbol: str, direction: PositionDirection, setup_id: object) -> bool:
+    def _new_setup(
+        self,
+        symbol: str,
+        direction: PositionDirection,
+        setup_id: object,
+        *,
+        exit_only: bool = False,
+    ) -> bool:
         """One setup, one signal.
 
         Every market event re-evaluates the same closed bars, so a persisting
         condition would emit a fresh signal (and a fresh intent) on every
-        tick. Records the latest setup identity per (symbol, direction) and
-        returns False when it already produced a signal.
+        tick. Entry and exit-only signals use separate slots, so an exit-only
+        signal emitted while the gate is closed does not consume the setup for
+        entry after the session opens.
         """
-        memo: dict[tuple[str, PositionDirection], object] = self.__dict__.setdefault(
+        memo: dict[tuple[str, PositionDirection, bool], object] = self.__dict__.setdefault(
             "_signaled_setups", {}
         )
-        slot = (symbol, direction)
+        slot = (symbol, direction, exit_only)
         if memo.get(slot) == setup_id:
             return False
         memo[slot] = setup_id
@@ -227,6 +239,68 @@ class Strategy(ABC):
             ctx.clock.now(), live=ctx.config.status in LIVE_ELIGIBLE_STATUSES
         )
 
+    def _held_position(self, ctx: StrategyContext, symbol: str) -> VirtualPosition | None:
+        position = ctx.portfolio.position(self.strategy_id, symbol)
+        if position is None or position.quantity == 0:
+            return None
+        return position
+
+    def _session_permits_evaluation(self, ctx: StrategyContext, symbol: str) -> bool:
+        """gate が閉じていても、保有があれば決済判定のため評価へ進む。"""
+        return self._session_permits_entry(ctx, symbol) or (
+            self._held_position(ctx, symbol) is not None
+        )
+
+    def _setup_signal(
+        self,
+        context: StrategyContext,
+        *,
+        symbol: str,
+        direction: PositionDirection,
+        setup_id: object,
+        conviction: float,
+        expected_edge_r: Decimal = Decimal(1),
+        stop_distance_pips: Decimal,
+        expected_horizon_seconds: int,
+        reason_codes: list[str],
+    ) -> StrategySignal | None:
+        """成立した setup を、session と保有状態に応じて一度だけ signal にする。
+
+        gate が開いていれば entry signal にする。閉じていれば保有と逆向きの setup だけを
+        決済専用 signal に変え、entry 用の memo には触れない。同方向の setup は
+        INCREASE になるため閉鎖中は出さない。
+        """
+        if self._session_permits_entry(context, symbol):
+            if not self._new_setup(symbol, direction, setup_id):
+                return None
+            return self.make_signal(
+                context,
+                symbol=symbol,
+                direction=direction,
+                conviction=conviction,
+                expected_edge_r=expected_edge_r,
+                stop_distance_pips=stop_distance_pips,
+                expected_horizon_seconds=expected_horizon_seconds,
+                reason_codes=reason_codes,
+            )
+
+        held = self._held_position(context, symbol)
+        if held is None or held.direction is direction:
+            return None
+        if not self._new_setup(symbol, direction, setup_id, exit_only=True):
+            return None
+        return self.make_signal(
+            context,
+            symbol=symbol,
+            direction=direction,
+            conviction=conviction,
+            expected_edge_r=expected_edge_r,
+            stop_distance_pips=stop_distance_pips,
+            expected_horizon_seconds=expected_horizon_seconds,
+            reason_codes=[*reason_codes, SESSION_CLOSED_EXIT_ONLY],
+            exit_only=True,
+        )
+
     def make_signal(
         self,
         context: StrategyContext,
@@ -238,6 +312,7 @@ class Strategy(ABC):
         stop_distance_pips: Decimal,
         expected_horizon_seconds: int,
         reason_codes: list[str],
+        exit_only: bool = False,
     ) -> StrategySignal:
         return StrategySignal(
             signal_id=uuid4(),
@@ -250,5 +325,6 @@ class Strategy(ABC):
             expected_horizon_seconds=expected_horizon_seconds,
             stop_distance_pips=stop_distance_pips,
             reason_codes=reason_codes,
+            exit_only=exit_only,
             generated_at=context.clock.now(),
         )

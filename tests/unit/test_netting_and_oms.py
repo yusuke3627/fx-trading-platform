@@ -1,4 +1,5 @@
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
@@ -6,21 +7,26 @@ from tests.support import T0, FixedClock, make_command, make_intent
 from trading.backtest.clock import SystemClock
 from trading.data.market import InMemoryMarketData
 from trading.domain.account import AccountMode
+from trading.domain.intent import PositionIntent
+from trading.domain.money import Currency
 from trading.domain.order import ExecutionSide
 from trading.domain.position import (
     BrokerPosition,
     PositionAction,
     PositionDirection,
+    VirtualPosition,
 )
+from trading.domain.signal import StrategySignal
 from trading.oms.service import (
     ExitPreparation,
     NakedExitError,
     OMSService,
     execution_delta,
 )
-from trading.portfolio.manager import PortfolioManager
+from trading.portfolio.manager import PortfolioManager, SizingInput
 from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.conversion import MarketQuoteConversionService
+from trading.strategy.base import SESSION_CLOSED_EXIT_ONLY
 
 
 class FakeBroker:
@@ -324,3 +330,71 @@ def test_naked_exit_command_is_rejected_on_hedging():
     naked = make_command(action=PositionAction.CLOSE, broker_position_ticket=None)
     with pytest.raises(NakedExitError):
         oms.validate_command(naked)
+
+
+def test_exit_only_signal_leaves_only_a_ticketed_exit_for_oms_to_replay():
+    # 決済専用 signal は Portfolio で CLOSE intent になった後にしか trail に残らず、
+    # OMS が claim 後に読むのは intent の action / direction と ticket だけ。復元した
+    # intent から entry command は作れず、exit は fresh select した ticket を参照する
+    # （ADR-031）。
+    ledger = VirtualPositionLedger(FixedClock())
+    ledger.record(
+        VirtualPosition(
+            strategy_id="test_strategy",
+            symbol="USDJPY",
+            direction=PositionDirection.LONG,
+            quantity=Decimal(20000),
+            as_of=T0,
+        )
+    )
+    manager = PortfolioManager(
+        ledger, FixedClock(), MarketQuoteConversionService(InMemoryMarketData())
+    )
+    signal = StrategySignal(
+        signal_id=uuid4(),
+        strategy_id="test_strategy",
+        strategy_version="0.0.1",
+        symbol="USDJPY",
+        desired_direction=PositionDirection.SHORT,
+        conviction=0.5,
+        expected_horizon_seconds=300,
+        stop_distance_pips=Decimal(5),
+        reason_codes=[SESSION_CLOSED_EXIT_ONLY],
+        exit_only=True,
+        generated_at=T0,
+    )
+    sizing = SizingInput(
+        equity=Decimal(1_000_000),
+        max_risk_per_trade_pct=Decimal("0.05"),
+        pip_size=Decimal("0.01"),
+        quote_currency=Currency.JPY,
+        volume_step=Decimal(1000),
+        entry_price=Decimal("158.840"),
+    )
+    (intent,) = manager.intents_from_signal(signal, sizing)
+    restored = PositionIntent.model_validate(intent.model_dump(mode="json"))
+    assert restored.action is PositionAction.CLOSE
+
+    long_position = BrokerPosition(
+        broker_position_ticket="1001",
+        broker_position_identifier="1001",
+        symbol="USDJPY",
+        direction=PositionDirection.LONG,
+        quantity=Decimal(20000),
+        entry_price=Decimal("158.840"),
+        stop_loss=Decimal("158.200"),
+        take_profit=None,
+        observed_at=T0,
+    )
+    oms = OMSService(
+        account_mode=AccountMode.HEDGING,
+        broker=FakeBroker({"1001": long_position}),
+        clock=SystemClock(),
+    )
+    with pytest.raises(ValueError):
+        oms.command_for_entry(intent=restored, symbol="USDJPY", quantity=Decimal(20000))
+    command = oms.command_for_hedging_exit(intent=restored, ticket="1001")
+    assert command is not None
+    assert command.action is PositionAction.CLOSE
+    assert command.side is ExecutionSide.SELL
+    assert command.broker_position_ticket == "1001"

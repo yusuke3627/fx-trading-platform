@@ -502,3 +502,7 @@ cd /Users/yusuke/Products/fx-trading-platform/.claude/worktrees/feat+issue-107-e
   に「後から記録した古い as_of の snapshot は現在値を置き換えない」を 1 本追加。
 - `tests/unit/test_shadow_runner.py`: 決済専用 signal が shadow で裁定を経ず CLOSE intent
   として trail に残ることを固定するテストを 1 本追加（Codex 実装時）。
+- `tasks/PARENT-NOTES.md` の 2 点（Arbitrator 素通り / 永続化の往復）を §2.1 の根拠で確認し、
+  `tests/unit/test_shadow_runner.py`（同 symbol へ他 strategy の entry が同 cycle に来ても CLOSE は
+  消えない）と `tests/unit/test_netting_and_oms.py`（決済専用 signal → CLOSE intent → 復元 → OMS は
+  entry command を作れず exit は ticket 参照付き）に 1 本ずつ追加。

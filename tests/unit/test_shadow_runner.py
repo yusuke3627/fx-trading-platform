@@ -1057,3 +1057,74 @@ def test_the_account_key_matches_what_the_collector_stores():
     account_id, _ = broker_identity("USDJPY", terminal)
 
     assert account_id == account_key_from_info(terminal.account_info())
+
+
+class ExitOnlyStrategy(SignallingStrategy):
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol="USDJPY",
+                direction=PositionDirection.SHORT,
+                conviction=0.7,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=[SESSION_CLOSED_EXIT_ONLY],
+                exit_only=True,
+            )
+        ]
+
+
+class SameSymbolEntryStrategy(SignallingStrategy):
+    strategy_id = "test_other_entry"
+
+    async def on_event(self, event, context):
+        return [
+            self.make_signal(
+                context,
+                symbol="USDJPY",
+                direction=PositionDirection.LONG,
+                conviction=0.9,
+                stop_distance_pips=Decimal(5),
+                expected_horizon_seconds=300,
+                reason_codes=["TEST_ENTRY"],
+            )
+        ]
+
+
+def test_exit_only_close_is_not_netted_against_another_strategys_same_symbol_entry():
+    # 決済専用 signal の CLOSE は裁定を経ず既存 book で grade され、同じ cycle に
+    # 同 symbol へ来た他 strategy の entry と相殺されない。裁定されるのは entry だけ。
+    store = FakeDecisionRepository()
+    runner = build(**quote_and_account(), strategy=ExitOnlyStrategy, decisions=store)
+    context = runner._runner.bindings[0].context
+    runner._runner = StrategyRunner(
+        [
+            *runner._runner.bindings,
+            StrategyBinding(strategy=SameSymbolEntryStrategy(), context=context),
+        ]
+    )
+    runner._ledger.record(
+        VirtualPosition(
+            strategy_id="test_signaller",
+            symbol="USDJPY",
+            direction=PositionDirection.LONG,
+            quantity=Decimal(1000),
+            average_price=Decimal("158.80"),
+            as_of=T0,
+        )
+    )
+
+    results = {r.signal.strategy_id: r for r in runner.evaluate_once().decisions}
+
+    close = results["test_signaller"]
+    assert close.intent.action is PositionAction.CLOSE
+    assert close.intent.direction is PositionDirection.LONG
+    assert close.arbitration is None
+    entry = results["test_other_entry"]
+    assert entry.intent.action is PositionAction.OPEN
+    assert entry.arbitration is not None and entry.arbitration.accepted
+    assert [trail[2].action for trail in store.trails] == [
+        PositionAction.CLOSE,
+        PositionAction.OPEN,
+    ]

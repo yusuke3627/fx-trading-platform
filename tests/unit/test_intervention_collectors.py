@@ -208,6 +208,22 @@ def test_committed_episode_file_loads_and_maps():
     assert event.event_id == again.event_id
 
 
+def test_committed_government_confirmed_entries_map_to_official_action_events():
+    entries = load_episodes("config/intervention_episodes.yaml")
+    confirmed = [e for e in entries if e.kind == "GOVERNMENT_CONFIRMED"]
+    assert {e.action_date for e in confirmed} == {date(2022, 9, 22), date(2026, 7, 31)}
+    for entry in confirmed:
+        event = event_from_recognition(entry, FixedClock(RETRIEVED))
+        assert event.event_type == "INTERVENTION_GOVERNMENT_CONFIRMED"
+        assert event.known_at == entry.known_at
+        # 同じ action_date の REPORTED と event_id が衝突しない（kind がキーに含まれる）
+        reported = next(
+            e for e in entries if e.kind == "REPORTED" and e.action_date == entry.action_date
+        )
+        assert event.event_id != event_from_recognition(reported, FixedClock(RETRIEVED)).event_id
+        assert event.event_id == event_from_recognition(entry, FixedClock(RETRIEVED)).event_id
+
+
 def test_episode_loader_rejects_duplicates(tmp_path):
     entry = """
   - kind: REPORTED
@@ -268,6 +284,25 @@ def test_risk_inputs_decay_and_verification_stage():
     )
     upgraded = intervention_risk_inputs([reported, official], datetime(2026, 8, 3, tzinfo=UTC))
     assert upgraded["verification_state"] == 1.0
+
+
+def test_government_confirmation_raises_stage_without_moving_recency():
+    reported = _event(
+        "INTERVENTION_REPORTED",
+        {"action_date": "2026-07-31", "direction": "JPY_BUY", "verified": False},
+        datetime(2026, 8, 1, 14, 59, tzinfo=UTC),
+    )
+    confirmed = _event(
+        "INTERVENTION_GOVERNMENT_CONFIRMED",
+        {"action_date": "2026-07-31", "direction": "JPY_BUY", "verified": False},
+        datetime(2026, 8, 3, 0, 0, tzinfo=UTC),
+    )
+    t = datetime(2026, 8, 4, 0, 0, tzinfo=UTC)
+    only_reported = intervention_risk_inputs([reported], t)
+    both = intervention_risk_inputs([reported, confirmed], t)
+    assert only_reported["verification_state"] == pytest.approx(0.6)  # MEDIA_CONFIRMED
+    assert both["verification_state"] == pytest.approx(0.8)  # OFFICIAL_ACTION_CONFIRMED
+    assert both["days_since_intervention"] == only_reported["days_since_intervention"]
 
 
 def test_risk_inputs_use_monthly_period_end_only_when_positive():

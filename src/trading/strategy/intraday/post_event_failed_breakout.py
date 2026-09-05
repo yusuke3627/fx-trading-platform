@@ -123,8 +123,12 @@ class PostEventFailedBreakoutStrategy(Strategy):
         if resistance is None:
             return None
 
-        if self._short_macro_gate(ctx, gate_eps) and detect_failed_breakout(
-            entry_bars, resistance, side="UP"
+        # 閉鎖中に signal になり得ない向きは分岐に入らない。入ると None を返して
+        # 後続の反対向き setup（＝反転の決済）を評価できなくなる。
+        if (
+            self._session_permits_setup(ctx, symbol, PositionDirection.SHORT)
+            and self._short_macro_gate(ctx, gate_eps)
+            and detect_failed_breakout(entry_bars, resistance, side="UP")
         ):
             # One signal per failed-breakout attempt (identified by the
             # attempt bar), not one per market event while the setup holds.

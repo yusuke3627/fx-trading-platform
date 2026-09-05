@@ -123,7 +123,11 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
             return None
         current = float(bars[-1].close)
 
-        if self._short_fundamental_gate(ctx, intervention_min_for_short):
+        # 閉鎖中に signal になり得ない向きは分岐に入らない。入ると None を返して
+        # 後続の反対向き setup（＝反転の決済）を評価できなくなる。
+        if self._session_permits_setup(
+            ctx, symbol, PositionDirection.SHORT
+        ) and self._short_fundamental_gate(ctx, intervention_min_for_short):
             lower_high = is_lower_high(bars, left, right)
             support = rolling_low(bars[:-3] or bars, support_lookback)
             support_broken = support is not None and current < support

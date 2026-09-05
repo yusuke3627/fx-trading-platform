@@ -25,6 +25,9 @@ ADR-010 と同じ非対称を採る。
 - Strategy は gate 閉鎖中でも保有がある instrument だけ `_evaluate` へ進める。成立した setup は
   `_setup_signal` が、gate 開放中なら通常の entry signal、閉鎖中なら保有と逆向きの場合だけ
   決済専用 signal にする。同方向の setup は INCREASE になるため閉鎖中は捨てる。
+  ただし捨てた setup が評価を打ち切ってはならない。setup を上から順に見る strategy は
+  `_session_permits_setup` で「その向きが signal になり得るか」を先に判定し、なり得ない
+  向きの分岐へ入らないことで、後続の反対向き setup（＝反転の決済）を評価できるようにする。
 - gate 閉鎖中は entry 用の `_new_setup` memo に触れない。決済専用 signal は entry と別の
   dedupe slot を使う。
 

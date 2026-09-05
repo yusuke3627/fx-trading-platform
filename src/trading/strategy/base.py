@@ -251,6 +251,20 @@ class Strategy(ABC):
             self._held_position(ctx, symbol) is not None
         )
 
+    def _session_permits_setup(
+        self, ctx: StrategyContext, symbol: str, direction: PositionDirection
+    ) -> bool:
+        """この向きの setup が、いま signal になり得るか。
+
+        gate が開いていればどの向きも entry になり得る。閉じている間は保有と逆向き
+        （決済になる向き）だけ。setup を上から順に見る strategy は、最初の setup が
+        これで落ちたときに後続の反対向きを評価するために使う。
+        """
+        if self._session_permits_entry(ctx, symbol):
+            return True
+        held = self._held_position(ctx, symbol)
+        return held is not None and held.direction is not direction
+
     def _setup_signal(
         self,
         context: StrategyContext,
@@ -266,9 +280,9 @@ class Strategy(ABC):
     ) -> StrategySignal | None:
         """成立した setup を、session と保有状態に応じて一度だけ signal にする。
 
-        gate が開いていれば entry signal にする。閉じていれば保有と逆向きの setup だけを
-        決済専用 signal に変え、entry 用の memo には触れない。同方向の setup は
-        INCREASE になるため閉鎖中は出さない。
+        gate が開いていれば entry signal にする。閉じていれば `_session_permits_setup`
+        が許す向き（保有と逆向き）だけを決済専用 signal に変え、entry 用の memo には
+        触れない。同方向の setup は INCREASE になるため閉鎖中は出さない。
         """
         if self._session_permits_entry(context, symbol):
             if not self._new_setup(symbol, direction, setup_id):
@@ -284,8 +298,7 @@ class Strategy(ABC):
                 reason_codes=reason_codes,
             )
 
-        held = self._held_position(context, symbol)
-        if held is None or held.direction is direction:
+        if not self._session_permits_setup(context, symbol, direction):
             return None
         if not self._new_setup(symbol, direction, setup_id, exit_only=True):
             return None

@@ -122,7 +122,12 @@ class FailedSpikeReversalStrategy(Strategy):
 
         # Upward spike that failed: SELL setup.
         spike_up = spike_high - base
-        if spike_up > k * atr:
+        # 閉鎖中に signal になり得ない向きは分岐に入らない。入ると None を返して
+        # 後続の反対向き setup（＝反転の決済）を評価できなくなる。
+        if (
+            self._session_permits_setup(ctx, symbol, PositionDirection.SHORT)
+            and spike_up > k * atr
+        ):
             no_new_high = current < spike_high
             lost_base_high = current < max(mids[: mids.index(spike_high)] or [base])
             if no_new_high and lost_base_high and momentum < 0:

@@ -9,8 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support import FixedClock, make_event
+from tests.support import FixedClock, at, make_bar, make_event, usdjpy_spec
 from trading.domain.position import PositionDirection, VirtualPosition
+from trading.intelligence import features as f
+from trading.intelligence.features import InMemoryFeatureStore
 from trading.strategy.base import (
     SESSION_CLOSED_EXIT_ONLY,
     Strategy,
@@ -342,3 +344,127 @@ def test_open_session_ignores_the_held_position():
 
     assert signal is not None
     assert signal.exit_only is False
+
+
+@pytest.mark.parametrize(
+    "profile,held_direction,direction,expected",
+    [
+        # gate が開いていれば保有は entry の邪魔をしない。
+        (USDJPY_CORE, PositionDirection.SHORT, PositionDirection.SHORT, True),
+        (USDJPY_CORE, PositionDirection.SHORT, PositionDirection.LONG, True),
+        # 閉鎖中は保有と逆向き（決済になる向き）だけ。
+        (CLOSED_EVERYWHERE, PositionDirection.SHORT, PositionDirection.SHORT, False),
+        (CLOSED_EVERYWHERE, PositionDirection.SHORT, PositionDirection.LONG, True),
+        # 閉鎖中で保有が無ければどの向きも signal にならない。
+        (CLOSED_EVERYWHERE, None, PositionDirection.SHORT, False),
+        (CLOSED_EVERYWHERE, None, PositionDirection.LONG, False),
+        # profile を参照しない instrument は gate されない。
+        (None, None, PositionDirection.SHORT, True),
+    ],
+)
+def test_session_permits_setup_by_gate_and_held_direction(
+    profile, held_direction, direction, expected
+):
+    probe = GateProbe()
+    held = (
+        None
+        if held_direction is None
+        else VirtualPosition(
+            strategy_id=probe.strategy_id,
+            symbol="USDJPY",
+            direction=held_direction,
+            quantity=Decimal(1000),
+            as_of=TOKYO_ONLY,
+        )
+    )
+    ctx = ctx_for(
+        probe.strategy_id,
+        TOKYO_ONLY,
+        status=StrategyStatus.SHADOW,
+        profile=profile,
+        held=held,
+    )
+
+    assert probe._session_permits_setup(ctx, "USDJPY", direction) is expected
+
+
+def intraday_ctx(*, profile, held=None):
+    """両方向の failed breakout が同じバーで成立し、両方の macro gate が開く context。
+
+    `_evaluate` は setup を上から順に見るので、先に来る SHORT 分岐が後続の LONG 分岐を
+    塞がないことを、この 1 つの盤面で確かめられる。
+    """
+    setup_bars = [
+        make_bar(
+            "150.00", "150.50", "149.50", "150.00", start=at(minutes=15 * i), timeframe="15m"
+        )
+        for i in range(21)
+    ]
+    entry_bars = [
+        make_bar(
+            "150.00", "150.10", "149.90", "150.00", start=at(minutes=5 * i), timeframe="5m"
+        )
+        for i in range(3)
+    ]
+    # resistance(150.50) を上抜けて戻り、同時に support(149.50) を下抜けて戻る外側バー。
+    entry_bars.append(
+        make_bar("150.00", "150.80", "149.20", "150.00", start=at(minutes=15), timeframe="5m")
+    )
+    entry_bars.append(
+        make_bar("150.00", "150.10", "149.90", "150.00", start=at(minutes=20), timeframe="5m")
+    )
+
+    features = InMemoryFeatureStore()
+    features.set(f.US_DATA_SURPRISE, -0.5)
+    features.set(f.US2Y_CHANGE_5D, 0.10)
+    features.set(f.US2Y_CHANGE_1D, 0.04)
+    features.set(f.INTERVENTION_RISK, 0.1)
+
+    ctx = ctx_for(
+        PostEventFailedBreakoutStrategy.strategy_id,
+        TOKYO_ONLY,
+        status=StrategyStatus.SHADOW,
+        profile=profile,
+        held=held,
+    )
+    ctx.market = SimpleNamespace(
+        instrument=lambda _symbol: usdjpy_spec(),
+        bars=lambda _symbol, timeframe, _count: (
+            setup_bars if timeframe == "15m" else entry_bars
+        ),
+    )
+    ctx.indicators = SimpleNamespace(atr=lambda _symbol, _timeframe, _period: 0.10)
+    ctx.features = features
+    return ctx
+
+
+def test_closed_session_same_direction_setup_does_not_swallow_the_reversal():
+    strategy = PostEventFailedBreakoutStrategy()
+    held = VirtualPosition(
+        strategy_id=strategy.strategy_id,
+        symbol="USDJPY",
+        direction=PositionDirection.SHORT,
+        quantity=Decimal(1000),
+        as_of=TOKYO_ONLY,
+    )
+    ctx = intraday_ctx(profile=CLOSED_EVERYWHERE, held=held)
+
+    signal = strategy._evaluate("USDJPY", ctx)
+
+    assert signal is not None
+    assert signal.desired_direction is PositionDirection.LONG
+    assert signal.exit_only is True
+    assert SESSION_CLOSED_EXIT_ONLY in signal.reason_codes
+
+
+def test_open_session_first_setup_still_consumes_the_evaluation():
+    strategy = PostEventFailedBreakoutStrategy()
+    ctx = intraday_ctx(profile=USDJPY_CORE)
+
+    first = strategy._evaluate("USDJPY", ctx)
+
+    assert first is not None
+    assert first.desired_direction is PositionDirection.SHORT
+    assert first.exit_only is False
+    # 同じ setup を dedupe で落としたあと、反対向きの entry signal に化けない。
+    assert strategy._evaluate("USDJPY", ctx) is None

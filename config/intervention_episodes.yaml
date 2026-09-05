@@ -92,3 +92,10 @@ recognitions:
     verified: false
     source_uri: https://www.mof.go.jp/policy/international_policy/reference/feio/index.html
     note: 約164円から157円台への急伸時に介入観測報道（research note 2026-08-15）。公式日次額は未公表
+  - kind: REPORTED
+    action_date: 2026-07-31
+    known_at: 2026-08-01T14:59:00+00:00
+    direction: JPY_BUY
+    verified: false
+    source_uri: https://www.mof.go.jp/policy/international_policy/reference/feio/data/monthly/20260828.html
+    note: 米東部時間 7/31 の日米協調介入（米財務省が NY 連銀経由で執行、8/3 財務相談話で確認）。JST 8/1 中の報道として上界を置く。公式日次額は未公表

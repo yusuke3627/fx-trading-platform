@@ -9,6 +9,8 @@ gross と ask 決済の net を同じ標本で比較する。
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import math
 import os
 import statistics
@@ -131,6 +133,24 @@ class CellResult:
     triggers: list[Trigger]
     suppressed: int
     invalid: int
+
+
+def event_fingerprint(events: Sequence[EventEnvelope]) -> str:
+    """判定に使ったイベント内容の指紋。件数が同じでも時刻や payload の変更を検出する。"""
+    normalized = sorted(
+        (
+            str(event.event_id),
+            event.event_type,
+            event.known_at.astimezone(UTC).isoformat(),
+            json.dumps(event.payload, sort_keys=True, separators=(",", ":")),
+        )
+        for event in events
+    )
+    digest = hashlib.sha256()
+    for fields in normalized:
+        digest.update("\x1f".join(fields).encode())
+        digest.update(b"\x1e")
+    return digest.hexdigest()
 
 
 def fold_quote_bars(
@@ -535,6 +555,7 @@ def report(
     bid_bars: Sequence[Bar],
     episodes: Sequence[Episode],
     decisions: Sequence[EventEnvelope],
+    events_hash: str,
     provenance: Provenance,
     git: dict,
     anchor: timedelta,
@@ -557,7 +578,8 @@ def report(
         ),
         (
             f"5m bars={len(bars)} intervention episodes={len(episodes)} "
-            f"({cluster_count} cluster anchors) policy decisions={len(decisions)}"
+            f"({cluster_count} cluster anchors) policy decisions={len(decisions)} "
+            f"events_hash={events_hash}"
         ),
         (
             f"grid: N in {{{', '.join(str(n) for n in LOOKBACKS)}}} x "
@@ -566,7 +588,7 @@ def report(
             f"horizons {'/'.join(h.label for h in HORIZONS)}; seed={seed}"
         ),
         (
-            "trigger: z = (r - mean) / pstdev over the last N contiguous 5m log "
+            "trigger: z = (r - mean) / pstdev over the last N valid 5m log "
             "returns, fires when z < -K and r < 0"
         ),
         (
@@ -647,7 +669,8 @@ def main() -> None:
         raise SystemExit(f"no stored quotes for {symbol}")
 
     events = PostgresEventRepository(conn)
-    episodes = load_episodes_from_events(events.known_before(now, EVENT_TYPE))
+    intervention_events = events.known_before(now, EVENT_TYPE)
+    episodes = load_episodes_from_events(intervention_events)
     if not episodes:
         raise SystemExit(
             "no INTERVENTION_REPORTED events — run "
@@ -660,6 +683,7 @@ def main() -> None:
             for event in events.known_before(now, event_type)
         ]
     )
+    events_hash = event_fingerprint([*intervention_events, *decisions])
     anchor = timedelta(hours=config.market.broker_server_ahead_of_ny_hours)
     bid_bars = [quote.bar for quote in bars]
     returns = log_returns(bars)
@@ -687,6 +711,7 @@ def main() -> None:
             bid_bars,
             episodes,
             decisions,
+            events_hash,
             provenance,
             git_state(),
             anchor,

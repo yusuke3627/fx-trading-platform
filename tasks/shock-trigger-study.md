@@ -459,9 +459,9 @@ def verdict(cell: CellResult, seed: int) -> tuple[str, str | None]:
 shock trigger study
 git_commit=<sha> git_dirty=<bool>[ git_diff_sha256=<sha>]
 ticks=<tick_count> first=<first_tick iso> last=<last_tick iso> dataset_hash=<sha>
-5m bars=<n> intervention episodes=<n> (<n> cluster anchors) policy decisions=<n>
+5m bars=<n> intervention episodes=<n> (<n> cluster anchors) policy decisions=<n> events_hash=<sha>
 grid: N in {48, 96, 288} x K in {3, 4, 5}; primary N=96 K=4; horizons 15m/1h/4h; seed=<seed>
-trigger: z = (r - mean) / pstdev over the last N contiguous 5m log returns, fires when z < -K and r < 0
+trigger: z = (r - mean) / pstdev over the last N valid 5m log returns, fires when z < -K and r < 0
 negative = yen appreciation = short USD/JPY wins; gross = bid close -> bid close; net = bid close -> ask close (short round trip)
 adverse/favour are gross excursions (also shown on net rows); spread = ask - bid at entry, yen
 layers: A = within 36h of an intervention action_date 00:00 (label), A-first = cluster-first episodes, B = within 24h of a BOJ/FED decision, C = other; A wins over B

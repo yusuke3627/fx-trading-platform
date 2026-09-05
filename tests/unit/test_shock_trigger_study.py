@@ -36,6 +36,7 @@ from trading.backtest.shock_trigger_study import (
     Trigger,
     classify_layer,
     detect,
+    event_fingerprint,
     fold_quote_bars,
     intervention_windows,
     judge,
@@ -94,6 +95,21 @@ def policy_event(known_at: datetime) -> EventEnvelope:
         retrieved_at=known_at,
         known_at=known_at,
     )
+
+
+def test_event_fingerprint_is_order_independent_and_tracks_event_content() -> None:
+    first = policy_event(T0)
+    second = policy_event(T0 + timedelta(hours=1))
+    original = event_fingerprint([first, second])
+
+    changed_known_at = first.model_copy(update={"known_at": T0 + timedelta(seconds=1)})
+    changed_payload = first.model_copy(
+        update={"payload": {"scoring_version": "policy_shift_v2"}}
+    )
+
+    assert original == event_fingerprint([second, first])
+    assert original != event_fingerprint([changed_known_at, second])
+    assert original != event_fingerprint([changed_payload, second])
 
 
 def test_fold_quote_bars_pairs_bid_close_with_last_ask() -> None:
@@ -421,6 +437,7 @@ def test_report_lists_every_cell_and_the_verdict() -> None:
         bid_bars,
         episodes,
         [],
+        "events-test",
         Provenance(400, T0, bars[-1].bar.close_time, "dataset-test"),
         {"git_commit": "test", "git_dirty": False},
         ANCHOR,
@@ -435,4 +452,5 @@ def test_report_lists_every_cell_and_the_verdict() -> None:
     details = output.split("primary N=96 K=4 layer A triggers", maxsplit=1)[1]
     assert len(grid_rows) == 9
     assert f"{bars[300].bar.start.isoformat()} |" in details
+    assert "events_hash=events-test" in output
     assert "verdict (primary N=96 K=4, net):" in output

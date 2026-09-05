@@ -19,8 +19,10 @@ ADR-010 と同じ非対称を採る。
 - `StrategySignal` に `exit_only: bool = False` を追加する。決済専用 signal の
   `desired_direction` は反転 setup の向き、すなわち保有の逆方向とする。既存 DB 列の
   LONG / SHORT 制約を維持でき、下流の決済価格も通常の反転 signal と同じ側になる。
-- Portfolio は `exit_only` を受けたら、fresh な仮想ポジションがある場合だけ CLOSE を生成し、
-  OPEN と INCREASE は生成しない。ポジションが無ければ何も生成しない。Portfolio は session を
+- Portfolio は `exit_only` を受けたら、fresh な仮想ポジションが反転 setup と逆向きの場合だけ
+  CLOSE を生成し、OPEN と INCREASE は生成しない。ポジションが無い場合と、既に反転が約定して
+  向きが `desired_direction` と一致している場合は何も生成しない（後者を閉じると、開いたばかりの
+  玉を即座に決済してしまう）。Portfolio は session を
   知らず、gate を Strategy 層に閉じる ADR-028 の境界を維持する。
 - Strategy は gate 閉鎖中でも保有がある instrument だけ `_evaluate` へ進める。成立した setup は
   `_setup_signal` が、gate 開放中なら通常の entry signal、閉鎖中なら保有と逆向きの場合だけ

@@ -178,6 +178,14 @@ def test_exit_only_signal_closes_the_held_position_without_reopening():
     assert intents[0].protection is None
 
 
+def test_exit_only_signal_does_not_close_position_after_reversal_has_filled():
+    intents = manager_with(held(PositionDirection.SHORT)).intents_from_signal(
+        make_signal(direction=PositionDirection.SHORT, exit_only=True), sizing()
+    )
+
+    assert intents == []
+
+
 def test_exit_only_signal_without_a_position_yields_nothing():
     assert manager_with().intents_from_signal(make_signal(exit_only=True), sizing()) == []
 

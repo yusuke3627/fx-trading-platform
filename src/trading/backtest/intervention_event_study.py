@@ -181,7 +181,9 @@ def shock_anchors(
     """各 action_date の探索窓で close/open が最も低い 5 分足を選ぶ。
 
     暫定的な最小足を確定結果にしないため、窓が閉じるまでは選ばない。
-    開始・終了境界をまたぐ 5 日以上の欠損も、全体を観測できないため選ばない。
+    窓に重なる 5 日以上の欠損があるときも、全体を観測できないため選ばない。
+    重なりは欠損の実区間で見る。窓の直前で明ける欠損も、窓の終端ちょうどから
+    始まる欠損も、窓の中は連続して観測できているので選んでよい。
     """
     starts = [bar.start for bar in bars]
     found: dict[date, Anchor | None] = {}
@@ -202,7 +204,11 @@ def shock_anchors(
         if left == right:
             found[episode.action_date] = None
             continue
-        if gaps(bars[max(left - 1, 0) : right + 1]):
+        padded = bars[max(left - 1, 0) : right + 1]
+        if any(
+            before.close_time < window_end and after.start > day_start
+            for before, after in gaps(padded)
+        ):
             found[episode.action_date] = None
             continue
         entry = min(

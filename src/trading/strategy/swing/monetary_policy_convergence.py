@@ -87,7 +87,7 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
             return []
         signals = []
         for symbol in context.config.instruments:
-            if not self._session_permits_entry(context, symbol):
+            if not self._session_permits_evaluation(context, symbol):
                 continue
             signal = self._evaluate(symbol, context)
             if signal is not None:
@@ -123,7 +123,11 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
             return None
         current = float(bars[-1].close)
 
-        if self._short_fundamental_gate(ctx, intervention_min_for_short):
+        # 閉鎖中に signal になり得ない向きは分岐に入らない。入ると None を返して
+        # 後続の反対向き setup（＝反転の決済）を評価できなくなる。
+        if self._session_permits_setup(
+            ctx, symbol, PositionDirection.SHORT
+        ) and self._short_fundamental_gate(ctx, intervention_min_for_short):
             lower_high = is_lower_high(bars, left, right)
             support = rolling_low(bars[:-3] or bars, support_lookback)
             support_broken = support is not None and current < support
@@ -133,16 +137,15 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
                 # One signal per structural setup (identified by the bar of
                 # the last swing high), not one per market event.
                 setup_id = bars[highs[-1]].start if highs else bars[-1].start
-                if not self._new_setup(symbol, PositionDirection.SHORT, setup_id):
-                    return None
                 structural_high = float(bars[highs[-1]].high) if highs else max(
                     float(b.high) for b in bars[-10:]
                 )
                 stop_price_distance = (structural_high - current) + stop_buffer_atr * atr
-                return self.make_signal(
+                return self._setup_signal(
                     ctx,
                     symbol=symbol,
                     direction=PositionDirection.SHORT,
+                    setup_id=setup_id,
                     conviction=0.5,
                     stop_distance_pips=Decimal(str(round(stop_price_distance / pip, 1))),
                     expected_horizon_seconds=horizon_seconds,
@@ -157,13 +160,12 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
         if self._long_fundamental_gate(ctx) and self._trend_up(ctx, symbol, trend_tf):
             recent_low = rolling_low(bars, 10)
             if recent_low is not None and current > recent_low:
-                if not self._new_setup(symbol, PositionDirection.LONG, bars[-1].start):
-                    return None
                 stop_price_distance = (current - recent_low) + stop_buffer_atr * atr
-                return self.make_signal(
+                return self._setup_signal(
                     ctx,
                     symbol=symbol,
                     direction=PositionDirection.LONG,
+                    setup_id=bars[-1].start,
                     conviction=0.4,
                     stop_distance_pips=Decimal(str(round(stop_price_distance / pip, 1))),
                     expected_horizon_seconds=horizon_seconds,

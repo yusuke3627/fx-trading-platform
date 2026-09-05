@@ -15,6 +15,7 @@ def make_signal(
     direction: PositionDirection = PositionDirection.SHORT,
     stop_pips: str = "10",
     symbol: str = "USDJPY",
+    exit_only: bool = False,
 ) -> StrategySignal:
     return StrategySignal(
         signal_id=uuid4(),
@@ -26,6 +27,7 @@ def make_signal(
         expected_horizon_seconds=3600,
         stop_distance_pips=Decimal(stop_pips),
         reason_codes=["TEST"],
+        exit_only=exit_only,
         generated_at=T0,
     )
 
@@ -163,6 +165,41 @@ def test_direction_flip_closes_then_opens():
     assert reopen.direction is PositionDirection.SHORT
     assert reopen.target_quantity == Decimal(5000)
     assert reopen.protection is not None
+
+
+def test_exit_only_signal_closes_the_held_position_without_reopening():
+    intents = manager_with(held(PositionDirection.LONG)).intents_from_signal(
+        make_signal(direction=PositionDirection.SHORT, exit_only=True), sizing()
+    )
+
+    assert [intent.action for intent in intents] == [PositionAction.CLOSE]
+    assert intents[0].direction is PositionDirection.LONG
+    assert intents[0].target_quantity == Decimal(0)
+    assert intents[0].protection is None
+
+
+def test_exit_only_signal_without_a_position_yields_nothing():
+    assert manager_with().intents_from_signal(make_signal(exit_only=True), sizing()) == []
+
+    zero_position = held(PositionDirection.LONG).model_copy(update={"quantity": Decimal(0)})
+    assert manager_with(zero_position).intents_from_signal(
+        make_signal(exit_only=True), sizing()
+    ) == []
+
+
+def test_exit_only_close_survives_conversion_failure():
+    held_long = VirtualPosition(
+        strategy_id="test_strategy",
+        symbol="EURUSD",
+        direction=PositionDirection.LONG,
+        quantity=Decimal(1000),
+        as_of=T0,
+    )
+    intents = manager_with(held_long).intents_from_signal(
+        make_signal(symbol="EURUSD", exit_only=True), eurusd_sizing()
+    )
+
+    assert [intent.action for intent in intents] == [PositionAction.CLOSE]
 
 
 def test_no_intents_without_stop_distance():

@@ -71,7 +71,7 @@ class FailedSpikeReversalStrategy(Strategy):
             return []
         signals = []
         for symbol in context.config.instruments:
-            if not self._session_permits_entry(context, symbol):
+            if not self._session_permits_evaluation(context, symbol):
                 continue
             signal = self._evaluate(symbol, context)
             if signal is not None:
@@ -122,19 +122,23 @@ class FailedSpikeReversalStrategy(Strategy):
 
         # Upward spike that failed: SELL setup.
         spike_up = spike_high - base
-        if spike_up > k * atr:
+        # 閉鎖中に signal になり得ない向きは分岐に入らない。入ると None を返して
+        # 後続の反対向き setup（＝反転の決済）を評価できなくなる。
+        if (
+            self._session_permits_setup(ctx, symbol, PositionDirection.SHORT)
+            and spike_up > k * atr
+        ):
             no_new_high = current < spike_high
             lost_base_high = current < max(mids[: mids.index(spike_high)] or [base])
             if no_new_high and lost_base_high and momentum < 0:
                 # One signal per spike (identified by its extreme tick).
                 spike_time = ticks[mids.index(spike_high)].time
-                if not self._new_setup(symbol, PositionDirection.SHORT, spike_time):
-                    return None
                 stop_price_distance = (spike_high - current) + stop_buffer_atr * atr
-                return self.make_signal(
+                return self._setup_signal(
                     ctx,
                     symbol=symbol,
                     direction=PositionDirection.SHORT,
+                    setup_id=spike_time,
                     conviction=min(1.0, spike_up / (k * atr) - 1.0 + 0.5),
                     stop_distance_pips=Decimal(str(round(stop_price_distance / pip, 1))),
                     expected_horizon_seconds=horizon_seconds,
@@ -153,13 +157,12 @@ class FailedSpikeReversalStrategy(Strategy):
             reclaimed = current > min(mids[: mids.index(spike_low)] or [base])
             if no_new_low and reclaimed and momentum > 0:
                 spike_time = ticks[mids.index(spike_low)].time
-                if not self._new_setup(symbol, PositionDirection.LONG, spike_time):
-                    return None
                 stop_price_distance = (current - spike_low) + stop_buffer_atr * atr
-                return self.make_signal(
+                return self._setup_signal(
                     ctx,
                     symbol=symbol,
                     direction=PositionDirection.LONG,
+                    setup_id=spike_time,
                     conviction=min(1.0, spike_down / (k * atr) - 1.0 + 0.5),
                     stop_distance_pips=Decimal(str(round(stop_price_distance / pip, 1))),
                     expected_horizon_seconds=horizon_seconds,

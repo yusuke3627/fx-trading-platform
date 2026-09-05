@@ -53,3 +53,5 @@ BACKTEST_ELIGIBLE / SHADOW。
   できない。signal 単位で shadow 経路へ振り分けるには runner 側の配線が要り、本 ADR の
   範囲外とする。
 - PREFERRED と ALLOWED の使い分け（sizing 等）は決めていない。gate としては同じ。
+
+ADR-031 により一部改訂（gate 閉鎖中も保有の決済専用 signal は通す）。

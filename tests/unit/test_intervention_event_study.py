@@ -449,3 +449,23 @@ def test_report_contains_missing_overlap_individual_summary_and_profile_sections
     assert "+1h15m" in text
     assert "+4h " in text
     assert "+10d" in text
+
+
+def test_shock_anchor_accepts_an_archive_gap_ending_at_the_window_start() -> None:
+    """窓の直前で明ける欠損は、窓の中を連続して観測できているので除外しない。"""
+    bars = [m5(-1440, "150"), m5(0, "150"), m5(12, "148", open="150"), m5(432, "150")]
+
+    anchor = shock_anchors(bars, [episode()])[T0_DATE]
+
+    assert anchor is not None
+    assert anchor.entry == 2
+
+
+def test_shock_anchor_accepts_an_archive_gap_starting_at_the_window_end() -> None:
+    """窓の終端ちょうどから始まる欠損も、窓の中は観測できているので除外しない。"""
+    bars = [m5(0, "150"), m5(12, "148", open="150"), m5(431, "150"), m5(1871, "150")]
+
+    anchor = shock_anchors(bars, [episode()])[T0_DATE]
+
+    assert anchor is not None
+    assert anchor.entry == 1

@@ -1,6 +1,9 @@
 # 介入の市場認識タイムライン（MOF 統計では復元できない「いつ知られたか」のレイヤー）。
 #
 # - kind: MARKET_SUSPECTED / REPORTED / GOVERNMENT_CONFIRMED
+# - GOVERNMENT_CONFIRMED は政府が実施を公式表明した回だけ置く。覆面介入は
+#   月次額・日次額の公表（MOF collector のイベント）が確定段階なので置かない。
+#   MARKET_SUSPECTED は一次資料が無いので置かない
 # - known_at は「遅くともこの時刻には知られていた」上界。当時報道の初報時刻と
 #   照合できたら実時刻に置き換えて verified: true にする。未照合エントリは
 #   当日 23:59 JST（= 14:59 UTC）の保守置き
@@ -18,6 +21,13 @@ recognitions:
     verified: false
     source_uri: https://www.mof.go.jp/policy/international_policy/reference/feio/quarter/2022_3Q.html
     note: 初報時刻は要照合（政府当日発表があった介入）
+  - kind: GOVERNMENT_CONFIRMED
+    action_date: 2022-09-22
+    known_at: 2022-09-22T09:34:00+00:00
+    direction: JPY_BUY
+    verified: true
+    source_uri: https://www.fsa.go.jp/common/conference/minister/2022b/20220922-1.html
+    note: 財務大臣・財務官の共同記者会見（18:34〜19:03 JST）冒頭で「本日為替介入を実施いたしました」と明言。財務官は 17 時台に記者団へ「断固たる措置に踏み切った」と先に発言しているが、一次資料で時刻を確認できる会見開始を known_at に置く
   - kind: REPORTED
     action_date: 2022-10-21
     known_at: 2022-10-21T14:59:00+00:00
@@ -99,3 +109,10 @@ recognitions:
     verified: false
     source_uri: https://www.mof.go.jp/policy/international_policy/reference/feio/data/monthly/20260828.html
     note: 米東部時間 7/31 の日米協調介入（米財務省が NY 連銀経由で執行、8/3 財務相談話で確認）。JST 8/1 中の報道として上界を置く。公式日次額は未公表
+  - kind: GOVERNMENT_CONFIRMED
+    action_date: 2026-07-31
+    known_at: 2026-08-03T00:00:00+00:00
+    direction: JPY_BUY
+    verified: false
+    source_uri: https://www.mof.go.jp/public_relations/statement/other/20260803072806.html
+    note: 財務大臣談話（8/3）で「米国東部時間 7 月 31 日、米国財務省と協調して円買い介入を実施した」と表明。談話ページの URL タイムスタンプは 07:28:06（JST と推定）。上界として東京 9:00 JST を置く。7/30 の単独介入は談話に無く公式表明なし

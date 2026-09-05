@@ -152,6 +152,32 @@ def test_visibility_respects_the_reading_clock():
     assert f.FED_POLICY_SHIFT_SCORE not in source.snapshot(NOW)
 
 
+def test_government_confirmation_becomes_visible_only_after_its_known_at():
+    action = date(2026, 7, 31)
+    reported = intervention_event(action, datetime(2026, 8, 1, 14, 59, tzinfo=UTC))
+    confirmed = EventEnvelope(
+        event_id=uuid4(),
+        event_type="INTERVENTION_GOVERNMENT_CONFIRMED",
+        source="TEST",
+        payload={"action_date": action.isoformat()},
+        retrieved_at=datetime(2026, 8, 3, 0, 0, tzinfo=UTC),
+        known_at=datetime(2026, 8, 3, 0, 0, tzinfo=UTC),
+    )
+    stage_only = InterventionRiskConfig(version="test", weights={"verification_state": 1.0})
+    source = StoredFeatureSource(
+        FakeObservationRepository(),
+        FakeEventRepository([reported, confirmed]),
+        stage_only,
+        InMemoryFeatureStore(),
+    )
+
+    before = source.snapshot(datetime(2026, 8, 2, tzinfo=UTC))
+    after = source.snapshot(datetime(2026, 8, 4, tzinfo=UTC))
+
+    assert before[f.INTERVENTION_RISK] == pytest.approx(0.6)  # MEDIA_CONFIRMED
+    assert after[f.INTERVENTION_RISK] == pytest.approx(0.8)  # OFFICIAL_ACTION_CONFIRMED
+
+
 def test_refresh_removes_what_is_no_longer_computable():
     store = InMemoryFeatureStore()
     events = FakeEventRepository(

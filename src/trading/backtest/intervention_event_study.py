@@ -303,15 +303,18 @@ def build_outcomes(
     series: dict[str, list[Bar]],
     server_ahead_of_ny: timedelta,
 ) -> dict[str, list[Outcome]]:
-    """二種類のアンカーを検出し、計測可能なエピソードを組み立てる。"""
+    """二種類のアンカーを検出し、計測可能なエピソードを組み立てる。
+
+    報道アンカーはショック窓の成否と独立に全エピソードから探す。報道から遠すぎる
+    足を採らない判定は news_anchor が持つので、ショック窓の欠損で絞る必要はない。
+    """
     shocks = shock_anchors(series["5m"], episodes)
     shock_outcomes = [
         build_outcome(anchor, series) for anchor in shocks.values() if anchor is not None
     ]
-    covered_episodes = [anchor.episode for anchor in shocks.values() if anchor is not None]
     news = [
         news_anchor(series["5m"], episode, server_ahead_of_ny)
-        for episode in covered_episodes
+        for episode in episodes
     ]
     news_outcomes = [
         build_outcome(anchor, series) for anchor in news if anchor is not None
@@ -410,7 +413,6 @@ def _news_anchor_lines(
     episodes: Sequence[Episode],
     bars: Sequence[Bar],
     anchor: timedelta,
-    covered_dates: set[date],
 ) -> list[str]:
     by_date = _outcomes_by_date(outcomes)
     lines = [
@@ -419,11 +421,6 @@ def _news_anchor_lines(
     ]
     for episode in episodes:
         label = known_to_broker_label(episode.known_at, anchor)
-        if episode.action_date not in covered_dates:
-            lines.append(
-                f"{episode.action_date} | {_cluster_label(episode)} | no shock anchor"
-            )
-            continue
         outcome = by_date.get(episode.action_date)
         if outcome is None:
             lines.append(
@@ -591,12 +588,9 @@ def report(
     lines.extend(
         [""] + _shock_anchor_lines(outcomes_by_kind[SHOCK], episodes, series["5m"], anchor)
     )
-    covered_dates = set(_outcomes_by_date(outcomes_by_kind[SHOCK]))
     lines.extend(
         [""]
-        + _news_anchor_lines(
-            outcomes_by_kind[NEWS], episodes, series["5m"], anchor, covered_dates
-        )
+        + _news_anchor_lines(outcomes_by_kind[NEWS], episodes, series["5m"], anchor)
     )
     for kind in KINDS:
         outcomes = outcomes_by_kind[kind]

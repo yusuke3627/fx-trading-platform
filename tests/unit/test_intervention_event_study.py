@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 from trading.backtest.intervention_event_study import (
+    NEWS,
     SHOCK,
     Anchor,
     Episode,
@@ -272,6 +273,35 @@ def test_news_anchor_rejects_a_bar_beyond_the_news_lag_limit() -> None:
 
     assert news_anchor([m5(863, "150")], event, ANCHOR) is not None
     assert news_anchor([m5(864, "150")], event, ANCHOR) is None
+
+
+def test_build_outcomes_keeps_the_news_anchor_when_the_shock_window_has_a_hole() -> None:
+    intraday = [m5(-1440, "150"), *[m5(index, "150") for index in range(300, 500)]]
+    series = {"5m": intraday, "1d": [d1(index, "150") for index in range(3)]}
+    event = episode(known_at=datetime(2026, 5, 4, 22, 0, tzinfo=UTC))
+
+    outcomes = build_outcomes([event], series, ANCHOR)
+
+    assert outcomes[SHOCK] == []
+    assert [outcome.anchor.episode for outcome in outcomes[NEWS]] == [event]
+    assert outcomes[NEWS][0].anchor.entry == 1
+    assert "4h" in outcomes[NEWS][0].returns
+
+    text = report(outcomes, series, [event], ANCHOR)
+    news_section = text.split("news anchors", 1)[1]
+    assert m5(300, "150").start.isoformat() in news_section
+    assert "no shock anchor" not in news_section
+
+
+def test_build_outcomes_still_rejects_a_news_bar_beyond_the_lag_limit() -> None:
+    known_at = datetime(2026, 5, 3, 21, 5, tzinfo=UTC)
+    intraday = [m5(864 + index, "150") for index in range(60)]
+    series = {"5m": intraday, "1d": [d1(index, "150") for index in range(3)]}
+
+    outcomes = build_outcomes([episode(known_at=known_at)], series, ANCHOR)
+
+    assert outcomes[SHOCK] == []
+    assert outcomes[NEWS] == []
 
 
 def test_daily_entry_includes_a_five_minute_bar_ending_at_the_daily_close() -> None:

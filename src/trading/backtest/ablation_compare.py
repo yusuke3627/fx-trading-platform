@@ -29,10 +29,12 @@ UNDECIDED_SAMPLE = "判定不能（標本不足）。維持したまま再測定
 UNDECIDED_DIFFERENCE = "判定不能（差が検出できない）。維持したまま再測定"
 MIN_TRADES = 10
 ABLATION_PARAM = "macro_confirmation_enabled"
+ABLATION_STRATEGY = "post_event_failed_breakout"
 
 COMPARABLE_FIELDS = (
     "git_commit",
     "git_dirty",
+    "git_diff_sha256",
     "environment",
     "symbol",
     "strategy_id",
@@ -108,6 +110,8 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
 
     config_sha256 is excluded because the parameter override necessarily changes
     it. created_at and run_id identify executions rather than comparable inputs.
+    The engine marks open positions instead of force-closing them, so a run that
+    ends with a position has a right-censored trades.csv and is not comparable.
     """
     reasons = []
     for field in COMPARABLE_FIELDS:
@@ -116,6 +120,20 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
         if with_value != without_value:
             reasons.append(
                 f"{field}: with={with_value!r}, without={without_value!r}"
+            )
+
+    for arm, run in (("with", with_), ("without", without)):
+        strategy_id = run.manifest.get("strategy_id")
+        if strategy_id != ABLATION_STRATEGY:
+            reasons.append(
+                f"{arm} strategy_id must be {ABLATION_STRATEGY!r}, "
+                f"got {strategy_id!r}"
+            )
+        open_positions = run.metrics.get("open_positions_at_end")
+        if open_positions != "0":
+            reasons.append(
+                f"{arm} open_positions_at_end={open_positions!r}; "
+                "re-run with a period end where the book is flat"
             )
 
     with_overrides = dict(with_.manifest.get("param_overrides", {}))

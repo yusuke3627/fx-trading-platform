@@ -108,7 +108,7 @@ def backtest_result(
         snapshots=[],
         risk_rejections=[],
         rejected_commands=0,
-        metrics={"max_drawdown": max_drawdown},
+        metrics={"max_drawdown": max_drawdown, "open_positions_at_end": "0"},
     )
 
 
@@ -183,16 +183,32 @@ def test_verify_comparable_rejects_dataset_mismatch():
 
     with pytest.raises(SystemExit, match="dataset_hash"):
         verify_comparable(
-            RunArtifacts(with_manifest, {"max_drawdown": "0"}, []),
-            RunArtifacts(without_manifest, {"max_drawdown": "0"}, []),
+            RunArtifacts(
+                with_manifest,
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
+            RunArtifacts(
+                without_manifest,
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
         )
 
 
 def test_verify_comparable_requires_disabled_without_arm():
     with pytest.raises(SystemExit, match="macro_confirmation_enabled"):
         verify_comparable(
-            RunArtifacts(manifest("with-run", {}), {"max_drawdown": "0"}, []),
-            RunArtifacts(manifest("without-run", {}), {"max_drawdown": "0"}, []),
+            RunArtifacts(
+                manifest("with-run", {}),
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
+            RunArtifacts(
+                manifest("without-run", {}),
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
         )
 
 
@@ -202,8 +218,55 @@ def test_verify_comparable_rejects_other_override_mismatch_without_mutation():
 
     with pytest.raises(SystemExit, match="non-ablation param_overrides"):
         verify_comparable(
-            RunArtifacts(manifest("with-run", {}), {"max_drawdown": "0"}, []),
-            RunArtifacts(without_manifest, {"max_drawdown": "0"}, []),
+            RunArtifacts(
+                manifest("with-run", {}),
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
+            RunArtifacts(
+                without_manifest,
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
         )
 
     assert without_manifest["param_overrides"] == without_overrides
+
+
+def test_verify_comparable_requires_the_ablation_strategy():
+    with_manifest = manifest("with-run", {})
+    without_manifest = manifest(
+        "without-run", {"macro_confirmation_enabled": False}
+    )
+    with_manifest["strategy_id"] = "failed_spike_reversal"
+    without_manifest["strategy_id"] = "failed_spike_reversal"
+
+    with pytest.raises(SystemExit, match="post_event_failed_breakout"):
+        verify_comparable(
+            RunArtifacts(
+                with_manifest,
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
+            RunArtifacts(
+                without_manifest,
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
+        )
+
+
+def test_verify_comparable_rejects_an_open_position_at_period_end():
+    with pytest.raises(SystemExit, match="open_positions_at_end"):
+        verify_comparable(
+            RunArtifacts(
+                manifest("with-run", {}),
+                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                [],
+            ),
+            RunArtifacts(
+                manifest("without-run", {"macro_confirmation_enabled": False}),
+                {"max_drawdown": "0", "open_positions_at_end": "1"},
+                [],
+            ),
+        )

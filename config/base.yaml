@@ -168,6 +168,7 @@ strategies:
       atr_period: 14
       stop_buffer_atr: 0.5
       macro_gate_threshold: 0.0
+      macro_confirmation_enabled: true
       intervention_risk_max_for_long: 0.5
       expected_horizon_seconds: 21600
 

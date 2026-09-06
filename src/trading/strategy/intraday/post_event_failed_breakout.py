@@ -8,6 +8,9 @@ downside data surprise stays in the short gate under its own name, but no
 consensus source produces it yet, so that arm of the OR is inert until one
 does.
 
+`macro_confirmation_enabled` exists for the H5 ablation. Disabling it removes
+only macro confirmation; the intervention-risk ceiling for longs remains.
+
 Short: macro confirmation (US2Y weekly drift down OR US data downside
 surprise OR hawkish BOJ statement) + a failed breakout above setup-timeframe
 resistance on the entry timeframe.
@@ -97,6 +100,7 @@ class PostEventFailedBreakoutStrategy(Strategy):
         atr_period = int(params.param("atr_period", 14))
         stop_buffer_atr = float(params.param("stop_buffer_atr", 0.5))
         gate_eps = float(params.param("macro_gate_threshold", 0.0))
+        macro_enabled = bool(params.param("macro_confirmation_enabled", True))
         intervention_max_for_long = float(
             params.param("intervention_risk_max_for_long", 0.5)
         )
@@ -123,7 +127,9 @@ class PostEventFailedBreakoutStrategy(Strategy):
         if resistance is None:
             return None
 
-        if self._short_macro_gate(ctx, gate_eps) and detect_failed_breakout(
+        if self._short_macro_gate(
+            ctx, gate_eps, enabled=macro_enabled
+        ) and detect_failed_breakout(
             entry_bars, resistance, side="UP"
         ):
             # One signal per failed-breakout attempt (identified by the
@@ -147,7 +153,12 @@ class PostEventFailedBreakoutStrategy(Strategy):
             support = min(float(b.low) for b in setup_bars[-lookback:-1] or setup_bars)
         if (
             support is not None
-            and self._long_macro_gate(ctx, gate_eps, intervention_max_for_long)
+            and self._long_macro_gate(
+                ctx,
+                gate_eps,
+                intervention_max_for_long,
+                enabled=macro_enabled,
+            )
             and detect_failed_breakout(entry_bars, support, side="DOWN")
         ):
             if not self._new_setup(symbol, PositionDirection.LONG, entry_bars[-2].start):
@@ -166,7 +177,11 @@ class PostEventFailedBreakoutStrategy(Strategy):
         return None
 
     @staticmethod
-    def _short_macro_gate(ctx: StrategyContext, eps: float) -> bool:
+    def _short_macro_gate(
+        ctx: StrategyContext, eps: float, *, enabled: bool = True
+    ) -> bool:
+        if not enabled:
+            return True
         drift = ctx.features.get(f.US2Y_CHANGE_5D)
         surprise = ctx.features.get(f.US_DATA_SURPRISE)
         boj = ctx.features.get(f.BOJ_POLICY_SHIFT_SCORE)
@@ -177,15 +192,26 @@ class PostEventFailedBreakoutStrategy(Strategy):
         )
 
     @staticmethod
-    def _long_macro_gate(ctx: StrategyContext, eps: float, intervention_max: float) -> bool:
+    def _long_macro_gate(
+        ctx: StrategyContext,
+        eps: float,
+        intervention_max: float,
+        *,
+        enabled: bool = True,
+    ) -> bool:
         drift = ctx.features.get(f.US2Y_CHANGE_5D)
         day_move = ctx.features.get(f.US2Y_CHANGE_1D)
         intervention = ctx.features.get(f.INTERVENTION_RISK)
         return (
-            drift is not None
-            and drift > eps
-            and day_move is not None
-            and day_move > eps
-            and intervention is not None
+            intervention is not None
             and intervention < intervention_max
+            and (
+                not enabled
+                or (
+                    drift is not None
+                    and drift > eps
+                    and day_move is not None
+                    and day_move > eps
+                )
+            )
         )

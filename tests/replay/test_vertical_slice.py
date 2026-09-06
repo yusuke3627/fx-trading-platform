@@ -13,7 +13,12 @@ from decimal import Decimal
 from tests.support import make_tick, usdjpy_spec
 from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.data import dataset_hash, synthetic_ticks
-from trading.backtest.engine import BacktestEngine, BacktestResult, ScriptedStrategy
+from trading.backtest.engine import (
+    BacktestEngine,
+    BacktestResult,
+    ScriptedStrategy,
+    signed_pnl,
+)
 from trading.domain.position import PositionDirection
 from trading.domain.risk import EventRiskMode
 from trading.risk.engine import RiskConfig
@@ -220,6 +225,46 @@ def test_full_lifecycle_flows_through_the_pipeline():
         + Decimal(result.metrics["realized_pnl"])
         + Decimal(result.metrics["unrealized_pnl"])
     )
+
+
+def test_closed_quantities_are_recorded_as_round_trips():
+    result = run_slice(STRESS_SCENARIOS["normal"])
+    trade = result.trades[0]
+    entry = next(
+        fill
+        for fill in result.fills
+        if fill.action == "OPEN" and fill.direction == "LONG"
+    )
+    exit_ = next(
+        fill
+        for fill in result.fills
+        if fill.action == "CLOSE" and fill.direction == "LONG"
+    )
+
+    assert len(result.trades) == 1
+    assert trade.direction == "LONG"
+    assert trade.entry_at == entry.at
+    assert trade.exit_at == exit_.at
+    assert trade.net_pnl == signed_pnl(
+        PositionDirection.LONG,
+        trade.entry_price,
+        trade.exit_price,
+        trade.quantity,
+    )
+    assert trade.reason == "CLOSE"
+    assert sum((item.net_pnl for item in result.trades), Decimal(0)) == Decimal(
+        result.metrics["realized_pnl"]
+    )
+    assert result.metrics["trades"] == "1"
+    assert result.metrics["expectancy"] == str(trade.net_pnl)
+
+
+def test_no_closed_quantities_report_nan_expectancy():
+    result = run_slice(STRESS_SCENARIOS["normal"], count=10, plan={})
+
+    assert result.trades == []
+    assert result.metrics["trades"] == "0"
+    assert result.metrics["expectancy"] == "NaN"
 
 
 def test_partial_exit_keeps_remainder_tracked_and_withholds_reversal():
@@ -460,6 +505,7 @@ def test_protection_fill_closes_position_and_is_tracked():
     protection = [f for f in result.fills if f.origin == "PROTECTION"]
     assert protection, "expected the tight SL to fire within the dataset"
     assert protection[0].action == "PROTECTION_CLOSE"
+    assert result.trades[0].reason == "PROTECTION_CLOSE:STOP_LOSS"
     assert result.metrics["open_positions_at_end"] == "0"
 
 

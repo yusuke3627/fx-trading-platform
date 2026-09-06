@@ -52,10 +52,10 @@ INSERT_CHUNK_SIZE = 10_000
 # has to hand back a week in one array.
 BACKFILL_WINDOW = timedelta(days=1)
 
-# How wide a hole between two polled quotes is still closed from the tick
-# history. A burst the poll loop undersampled leaves milliseconds to seconds
-# behind; anything wider is a market closure or a collector outage, and
-# repairing those is the scheduled backfill's job, not the poll loop's.
+# How far apart two changed polled quotes may be for their tick history to be
+# read immediately. A burst may contain several prices stamped in the same
+# broker millisecond or span several seconds; anything wider is a market
+# closure or a collector outage for scheduled backfill to repair.
 POLL_GAP_MAX = timedelta(seconds=60)
 
 SOURCE_MT5 = "MT5"
@@ -160,12 +160,11 @@ class TickCollector:
         self._mt5.shutdown()
 
     def poll_once(self, symbol: str) -> int:
-        """Fetch the current quote, close the hole behind it, and store both.
+        """Fetch the current quote, recover updates since the last, and store them.
 
-        Returns rows actually added. The hole is the span between the quote
-        the previous poll saw and this one: the terminal only ever hands back
-        the newest tick, so a burst that outran the poll rate lives there and
-        nowhere else in this process's reach.
+        Returns rows actually added. The terminal only ever hands back the
+        newest tick, so history supplies both updates between two broker times
+        and other prices carrying the same millisecond stamp.
         """
         raw = self._mt5.symbol_info_tick(symbol)
         if raw is None:
@@ -186,7 +185,7 @@ class TickCollector:
             return 0
 
         ticks = [tick]
-        if previous is not None and timedelta(0) < tick.time - previous[0] <= POLL_GAP_MAX:
+        if previous is not None and timedelta(0) <= tick.time - previous[0] <= POLL_GAP_MAX:
             rows = self._mt5.copy_ticks_range(
                 symbol, previous[0], tick.time, COPY_TICKS_ALL
             )

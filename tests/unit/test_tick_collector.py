@@ -71,6 +71,8 @@ class FakeMT5:
         self.range_calls.append((symbol, date_from, date_to, flags))
         if self._range_rows is None:
             return None
+        if date_from == date_to:
+            return [r for r in self._range_rows if _row_time(r) == date_from]
         return [r for r in self._range_rows if date_from <= _row_time(r) < date_to]
 
     def last_error(self):
@@ -301,22 +303,33 @@ def test_an_unchanged_quote_costs_no_tick_history_call():
     assert mt5.range_calls == []
 
 
-def test_quotes_without_a_broker_time_gap_cost_no_tick_history_call():
-    # Two quotes sharing a broker timestamp leave no span between them, so
-    # there is nothing for the history to hold.
+def test_changed_quote_at_the_same_broker_time_fills_same_millisecond_history():
+    # Several prices can share one broker millisecond. If polling observes
+    # only the first and last, the range read must still recover the middle
+    # price because it may be the burst's high or low.
     mt5 = FakeMT5(
         info_ticks=[
             info_tick(T0_MSC, "158.840", "158.844"),
-            info_tick(T0_MSC, "158.845", "158.849"),
-        ]
+            info_tick(T0_MSC, "158.850", "158.854"),
+        ],
+        range_rows=[
+            range_row(T0_MSC, "158.840", "158.844"),
+            range_row(T0_MSC, "159.500", "159.504"),
+            range_row(T0_MSC, "158.850", "158.854"),
+        ],
     )
     collector, repository = make_collector(mt5)
 
-    collector.poll_once(SYMBOL)
-    collector.poll_once(SYMBOL)
+    assert collector.poll_once(SYMBOL) == 1
+    assert collector.poll_once(SYMBOL) == 2
 
-    assert mt5.range_calls == []
-    assert len(repository.ticks) == 2
+    assert len(mt5.range_calls) == 1
+    assert mt5.range_calls[0][1:3] == (T0, T0)
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("159.500"),
+        Decimal("158.850"),
+    ]
 
 
 def test_the_first_poll_of_a_process_fills_no_gap():

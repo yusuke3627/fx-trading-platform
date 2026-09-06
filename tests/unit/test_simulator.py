@@ -465,3 +465,71 @@ def test_repeated_identical_orders_draw_independent_shocks():
 
     assert first_run[0] != first_run[1]
     assert first_run == second_run
+
+
+def test_shared_tranche_close_keeps_shock_with_extra_older_tranche():
+    # An exit targets every held ticket at the same instant with identical
+    # side/action/direction, so arrival order alone would hand the shared
+    # tranche a different shock in the arm that also holds an older tranche.
+    costs = CostModel(latency_ms=0.0, slippage_sigma_pips=0.8)
+    arm_with_extra_tranche = ExecutionSimulator(costs, usdjpy_spec(), seed=42)
+    arm_without_extra_tranche = ExecutionSimulator(costs, usdjpy_spec(), seed=42)
+
+    old_time = at(minutes=-5)
+    old_open = arm_with_extra_tranche.submit(
+        make_command(
+            side=ExecutionSide.BUY,
+            direction=PositionDirection.LONG,
+            created_at=old_time,
+        ),
+        [make_tick("158.820", "158.824", time=old_time)],
+    )
+    shared_open_with_extra = arm_with_extra_tranche.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG),
+        [make_tick("158.840", "158.844")],
+    )
+    shared_open_without_extra = arm_without_extra_tranche.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG),
+        [make_tick("158.840", "158.844")],
+    )
+    assert old_open.position is not None
+    assert shared_open_with_extra.position is not None
+    assert shared_open_without_extra.position is not None
+
+    close_time = at(minutes=1)
+    close_tick = [make_tick("158.860", "158.864", time=close_time)]
+    extra_close = arm_with_extra_tranche.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.CLOSE,
+            broker_position_ticket=old_open.position.position_id,
+            created_at=close_time,
+        ),
+        close_tick,
+    )
+    shared_close_with_extra = arm_with_extra_tranche.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.CLOSE,
+            broker_position_ticket=shared_open_with_extra.position.position_id,
+            created_at=close_time,
+        ),
+        close_tick,
+    )
+    shared_close_without_extra = arm_without_extra_tranche.submit(
+        make_command(
+            side=ExecutionSide.SELL,
+            direction=PositionDirection.LONG,
+            action=PositionAction.CLOSE,
+            broker_position_ticket=shared_open_without_extra.position.position_id,
+            created_at=close_time,
+        ),
+        close_tick,
+    )
+
+    assert extra_close.fill is not None
+    assert shared_close_with_extra.fill is not None
+    assert shared_close_without_extra.fill is not None
+    assert shared_close_with_extra.fill.price == shared_close_without_extra.fill.price

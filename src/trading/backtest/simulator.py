@@ -66,6 +66,7 @@ class ExecutionSimulator:
         self._spec = spec
         self._seed = seed
         self._order_key_counts: dict[str, int] = {}
+        self._position_shock_ids: dict[str, str] = {}
         self._mode = account_mode
         self._positions: dict[str, SimulatedPosition] = {}
 
@@ -103,7 +104,8 @@ class ExecutionSimulator:
         An exit never fills more than the held quantity, so a queued close
         can never manufacture a reversal.
         """
-        rng = self._order_rng(command)
+        shock_id = self._order_shock_id(command)
+        rng = self._shock_rng(shock_id)
 
         if not ticks:
             return SimulationResult(fill=None, rejected=True, position=None)
@@ -240,6 +242,7 @@ class ExecutionSimulator:
                 opened_at=fill_tick.time,
             )
             self._positions[position.position_id] = position
+            self._position_shock_ids[position.position_id] = shock_id
             return SimulationResult(fill=fill, rejected=False, position=position)
 
         # Apply the exit FIFO across the matched positions.
@@ -329,31 +332,43 @@ class ExecutionSimulator:
             received_at=tick.known_time,
         )
 
-    def _order_rng(self, command: ExecutionCommand) -> random.Random:
-        """Shock stream of ONE order, keyed by what identifies the order
-        rather than by its arrival position.
+    def _order_shock_id(self, command: ExecutionCommand) -> str:
+        """Stable shock identity of one order.
 
         Two runs that differ only in an extra fill still hand every shared
         order the same rejects, slippage and partial fills — the difference
         they measure is the strategy change, not a reshuffled shock stream.
+        An exit also incorporates the shock identity of the tranche it closes,
+        so an extra tranche in one arm cannot shift a shared tranche's exit.
 
-        command_id, intent_id, idempotency_key and broker_position_ticket are
-        generated per run, so they cannot key the stream. Quantity follows
-        account equity and the protection prices follow volatility: including
-        any of them would give shared orders different keys as soon as the
-        two runs' equity diverges, which is exactly what this avoids.
+        New opening orders sharing a timestamp, symbol, side, action and
+        direction still require arrival order to distinguish them: command_id,
+        intent_id and idempotency_key are generated per run and cannot provide
+        a cross-run identity. broker_position_ticket is also generated per run
+        and only looks up the stable opening identity; it is not key material.
+        Quantity follows account equity and protection prices follow
+        volatility, so neither can identify a shared order.
         """
-        key = (
+        base = (
             f"{command.symbol}|{command.side.value}|{command.action.value}"
             f"|{command.direction.value}|{command.created_at.isoformat()}"
         )
-        # Orders sharing a key are separated by arrival so the second one
-        # draws its own shock; the count is per key, so it stays aligned
-        # across runs.
+        position_shock_id = None
+        if (
+            command.action in (PositionAction.REDUCE, PositionAction.CLOSE)
+            and command.broker_position_ticket is not None
+        ):
+            position_shock_id = self._position_shock_ids.get(
+                command.broker_position_ticket
+            )
+        key = f"{position_shock_id}>{base}" if position_shock_id else base
         occurrence = self._order_key_counts.get(key, 0)
         self._order_key_counts[key] = occurrence + 1
+        return f"{key}#{occurrence}"
+
+    def _shock_rng(self, shock_id: str) -> random.Random:
         derived = hashlib.blake2b(
-            f"{self._seed}|{key}#{occurrence}".encode(), digest_size=16
+            f"{self._seed}|{shock_id}".encode(), digest_size=16
         ).digest()
         return random.Random(int.from_bytes(derived, "big"))
 

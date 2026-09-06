@@ -1,7 +1,8 @@
 """Strategy signal.
 
 A signal expresses a desired position direction with conviction and a stop
-distance. Final quantity is never decided by the strategy.
+distance. Final quantity is never decided by the strategy. ``exit_only``
+marks a signal that may only close an existing position.
 """
 from __future__ import annotations
 
@@ -35,5 +36,8 @@ class StrategySignal(BaseModel):
     stop_distance_pips: Decimal
 
     reason_codes: list[str] = Field(default_factory=list)
+    # True なら保有を閉じるだけの signal。desired_direction は決済の契機になった反転 setup
+    # の向き（保有の逆）で、Portfolio はそれを OPEN しない（ADR-031）。
+    exit_only: bool = False
 
     generated_at: datetime

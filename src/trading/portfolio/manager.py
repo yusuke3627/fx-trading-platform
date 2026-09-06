@@ -66,7 +66,21 @@ class PortfolioManager:
         A direction flip yields CLOSE (held direction) followed by OPEN
         (desired direction): strategies dedupe setups, so collapsing the
         reversal into a bare exit would silently drop the desired position.
+
+        An exit-only signal bypasses sizing and conversion, and closes only a
+        position opposite to its reversal setup. A matching position is left
+        untouched because the reversal has already completed.
         """
+        if signal.exit_only:
+            current = self._ledger.position(signal.strategy_id, signal.symbol)
+            if (
+                current is None
+                or current.quantity == 0
+                or current.direction == signal.desired_direction
+            ):
+                return []
+            return [self._close_intent(signal, current.direction)]
+
         if signal.stop_distance_pips <= 0:
             return []
         loss_per_unit_quote = Money(

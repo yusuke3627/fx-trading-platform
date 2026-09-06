@@ -100,3 +100,11 @@ def test_open_positions_spans_symbols_and_drops_flat_books():
 
     held = {(p.strategy_id, p.symbol) for p in ledger.open_positions()}
     assert held == {("strategy_a", "USDJPY"), ("strategy_b", "GBPUSD")}
+
+
+def test_older_snapshot_recorded_later_does_not_replace_the_current_position():
+    ledger = VirtualPositionLedger(FixedClock())
+    ledger.record(snapshot("2000", as_of=at(hours=2)))
+    ledger.record(snapshot("1000", as_of=at(hours=1)))
+    current = ledger.position("strategy_a", "USDJPY")
+    assert current is not None and current.quantity == Decimal(2000)

@@ -108,7 +108,12 @@ def backtest_result(
         snapshots=[],
         risk_rejections=[],
         rejected_commands=0,
-        metrics={"max_drawdown": max_drawdown, "open_positions_at_end": "0"},
+        metrics={
+            "max_drawdown": max_drawdown,
+            "open_positions_at_end": "0",
+            "carry_total": str(sum(carries, Decimal(0))),
+            "unpriced_rollovers": "0",
+        },
     )
 
 
@@ -160,6 +165,8 @@ def test_load_run_and_report_round_trip_trade_pnls_and_provenance(tmp_path):
     assert 'param_overrides        {"macro_confirmation_enabled": false}' in rendered
     assert "with-run" in rendered
     assert "without-run" in rendered
+    assert f"{'carry_total':<28} {'-1.5':>22} {'0':>22}" in rendered
+    assert f"{'unpriced_rollovers':<28} {'0':>22} {'0':>22}" in rendered
     assert "verdict:" in rendered
     assert b"\r\n" not in (with_dir / "trades.csv").read_bytes()
 

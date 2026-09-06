@@ -4,6 +4,10 @@
         --with reports/h5_with/<run_id> \
         --without reports/h5_without/<run_id> \
         --seed 42
+
+This CLI's --seed controls only bootstrap resampling. Research seeds drive
+slippage, rejects and partial fills; an extra fill shifts later shared orders,
+so confirm the verdict across several matching research-seed pairs.
 """
 from __future__ import annotations
 
@@ -254,6 +258,8 @@ def report(with_: RunArtifacts, without: RunArtifacts, seed: int) -> str:
             f"{'expectancy(mean)':<28} {with_summary.mean!s:>22} {without_summary.mean!s:>22}",
             f"{'hit_rate':<28} {_format_float(with_summary.hit_rate):>22} {_format_float(without_summary.hit_rate):>22}",
             f"{'max_drawdown':<28} {with_summary.max_drawdown!s:>22} {without_summary.max_drawdown!s:>22}",
+            f"{'carry_total':<28} {with_.metrics['carry_total']:>22} {without.metrics['carry_total']:>22}",
+            f"{'unpriced_rollovers':<28} {with_.metrics['unpriced_rollovers']:>22} {without.metrics['unpriced_rollovers']:>22}",
             (
                 f"{'mean CI90 [low, high]':<28} "
                 f"{f'[{_format_float(with_summary.low)}, {_format_float(with_summary.high)}]':>22} "

@@ -200,6 +200,7 @@ def test_late_tick_protection_before_midnight_label_skips_carry():
     result = _run([_snapshot(datetime(2026, 8, 10, 6, 0, tzinfo=UTC), "-2.2")], ticks)
 
     assert any(f.origin == "PROTECTION" for f in result.fills)
+    assert result.trades[0].carry == 0
     assert Decimal(result.metrics["carry_total"]) == 0
     assert result.metrics["unpriced_rollovers"] == "0"
     # 訂正の走った instant では、先に保存された時間足 snapshot も訂正後の
@@ -238,6 +239,10 @@ def test_protection_after_midnight_label_still_pays_carry():
     assert any(f.origin == "PROTECTION" for f in result.fills)
     expected = Decimal("-2.2") * Decimal("0.001") * entry.quantity
     assert Decimal(result.metrics["carry_total"]) == expected
+    assert sum((trade.carry for trade in result.trades), Decimal(0)) == expected
+    assert sum(
+        (trade.net_pnl + trade.carry for trade in result.trades), Decimal(0)
+    ) == Decimal(result.metrics["realized_pnl"])
 
 
 def _late_close_ticks() -> list:

@@ -184,8 +184,9 @@ class FillRecord:
 class TradeRecord:
     """One closed quantity measured at fill prices in the quote currency.
 
-    Spread and slippage are included in net_pnl; carry remains separate because
-    it can be corrected after the close when late ticks cross a rollover.
+    net_pnl includes spread and slippage but excludes carry. carry is the
+    overnight swap attributed to this closed quantity (ADR-016); their sum is
+    this trade's contribution to realized PnL.
     """
 
     strategy_id: str
@@ -197,6 +198,7 @@ class TradeRecord:
     entry_price: Decimal
     exit_price: Decimal
     net_pnl: Decimal
+    carry: Decimal
     reason: str
 
 
@@ -615,11 +617,13 @@ class BacktestEngine:
         ticket: str,
         quantity: Decimal,
         at: datetime,
-    ) -> None:
+    ) -> Decimal:
         """決済数量ぶんの計上記録を消し込み、broker 時刻が rollover より
         前だった決済（遅着 tick で後から判明する）は carry を按分で戻す。
         snapshot が無く unpriced と数えた boundary も、跨いでいなかったと
         判明した数量を取り消す。
+
+        戻り値は決済数量へ帰属した carry。
 
         訂正が直すのは金額（realized / carry_total）と同 instant の
         snapshot まで。計上と訂正の間の instant に記録済みの経路依存の
@@ -630,16 +634,20 @@ class BacktestEngine:
         負の carry の取り消しで max_drawdown が過大でも報告が悪化する側）
         に倒れる（ADR-016）。"""
         adjusted = False
+        attributed = Decimal(0)
         charged = state.carry_charged.get(ticket)
         if charged:
             remaining: list[_ChargedCarry] = []
             for entry in charged:
                 consumed = min(quantity, entry.quantity)
-                if consumed and at < entry.midnight_label:
-                    reversal = entry.per_unit * consumed
-                    state.realized -= reversal
-                    state.carry_total -= reversal
-                    adjusted = True
+                if consumed:
+                    carry = entry.per_unit * consumed
+                    if at < entry.midnight_label:
+                        state.realized -= carry
+                        state.carry_total -= carry
+                        adjusted = True
+                    else:
+                        attributed += carry
                 entry.quantity -= consumed
                 if entry.quantity > 0:
                     remaining.append(entry)
@@ -664,6 +672,7 @@ class BacktestEngine:
                 state.unpriced_rollovers -= 1
         if adjusted:
             self._refresh_same_instant_snapshots(state, w)
+        return attributed
 
     def _refresh_same_instant_snapshots(self, state: _RunState, w: _Wiring) -> None:
         """現 instant の保存済み snapshot を訂正後の値で置き換える。
@@ -1007,6 +1016,7 @@ class BacktestEngine:
         entry = state.entry_price[ticket]
         net_pnl = signed_pnl(direction, entry, price, quantity)
         state.realized += net_pnl
+        carry = self._reverse_carry_for_close(state, w, ticket, quantity, at)
         state.trades.append(
             TradeRecord(
                 strategy_id=strategy_id,
@@ -1018,10 +1028,10 @@ class BacktestEngine:
                 entry_price=entry,
                 exit_price=price,
                 net_pnl=net_pnl,
+                carry=carry,
                 reason=reason,
             )
         )
-        self._reverse_carry_for_close(state, w, ticket, quantity, at)
         state.gross_mid_closed += signed_pnl(
             direction, state.entry_mid[ticket], mid, quantity
         )
@@ -1217,7 +1227,9 @@ class BacktestEngine:
         execution_cost = gross_mid - net + state.carry_total
 
         protection_fills = sum(1 for f in state.fills if f.origin == "PROTECTION")
-        trade_pnl = sum((trade.net_pnl for trade in state.trades), Decimal(0))
+        trade_pnl = sum(
+            (trade.net_pnl + trade.carry for trade in state.trades), Decimal(0)
+        )
         metrics = {
             "initial_equity": str(state.initial_equity),
             "realized_pnl": str(state.realized),

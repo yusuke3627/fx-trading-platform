@@ -54,6 +54,7 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
                 "entry_price",
                 "exit_price",
                 "net_pnl",
+                "carry",
                 "reason",
             ]
         )
@@ -68,6 +69,7 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
                 str(trade.entry_price),
                 str(trade.exit_price),
                 str(trade.net_pnl),
+                str(trade.carry),
                 trade.reason,
             ]
             for trade in result.trades

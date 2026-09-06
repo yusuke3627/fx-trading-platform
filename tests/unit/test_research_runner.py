@@ -130,9 +130,22 @@ def test_param_overrides_replace_defaults_without_mutating_config():
         updated.strategies[strategy_id].parameters.instruments
         == original_strategy.parameters.instruments
     )
+    assert (
+        updated.strategies[strategy_id].timeframes,
+        updated.strategies[strategy_id].session_profiles,
+    ) == (original_strategy.timeframes, original_strategy.session_profiles)
     for other_id, strategy in config.strategies.items():
         if other_id != strategy_id:
             assert updated.strategies[other_id] is strategy
+
+
+def test_param_override_rejects_an_unknown_session_profile():
+    with pytest.raises(SystemExit, match="session_profile"):
+        with_param_overrides(
+            load_config("backtest", CONFIG_DIR),
+            "post_event_failed_breakout",
+            {"session_profile": "no_such_profile"},
+        )
 
 
 def test_reconstructed_rewrites_known_time_from_the_broker_stamp():

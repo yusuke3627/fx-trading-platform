@@ -252,9 +252,10 @@ def test_closed_quantities_are_recorded_as_round_trips():
         trade.quantity,
     )
     assert trade.reason == "CLOSE"
-    assert sum((item.net_pnl for item in result.trades), Decimal(0)) == Decimal(
-        result.metrics["realized_pnl"]
-    )
+    assert trade.carry == 0
+    assert sum(
+        (item.net_pnl + item.carry for item in result.trades), Decimal(0)
+    ) == Decimal(result.metrics["realized_pnl"])
     assert result.metrics["trades"] == "1"
     assert result.metrics["expectancy"] == str(trade.net_pnl)
 

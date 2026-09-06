@@ -28,6 +28,27 @@ REMOVE = "確認レッグを外す（絞るだけで質が上がらない）"
 UNDECIDED_SAMPLE = "判定不能（標本不足）。維持したまま再測定"
 UNDECIDED_DIFFERENCE = "判定不能（差が検出できない）。維持したまま再測定"
 MIN_TRADES = 10
+ABLATION_PARAM = "macro_confirmation_enabled"
+
+COMPARABLE_FIELDS = (
+    "git_commit",
+    "git_dirty",
+    "environment",
+    "symbol",
+    "strategy_id",
+    "strategy_version",
+    "engine_version",
+    "scenario",
+    "seed",
+    "tick_count",
+    "period_from",
+    "period_to",
+    "warmup_days",
+    "broker_server_ahead_of_ny_hours",
+    "dataset_hash",
+    "feature_dataset_hash",
+    "swap_dataset_hash",
+)
 
 MANIFEST_FIELDS = (
     "run_id",
@@ -60,7 +81,11 @@ class ArmSummary:
 
 
 def load_run(run_dir: Path) -> RunArtifacts:
-    """Load the three artifacts that define one comparison arm."""
+    """Load one arm with carry-inclusive PnL.
+
+    ADR-016 requires overnight swap in the distribution; omitting it would
+    overstate the expectancy of an arm that holds across rollover.
+    """
     manifest_path = run_dir / "manifest.json"
     summary_path = run_dir / "summary.json"
     trades_path = run_dir / "trades.csv"
@@ -71,8 +96,50 @@ def load_run(run_dir: Path) -> RunArtifacts:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     with trades_path.open(newline="", encoding="utf-8") as source:
-        pnls = [Decimal(row["net_pnl"]) for row in csv.DictReader(source)]
+        pnls = [
+            Decimal(row["net_pnl"]) + Decimal(row["carry"])
+            for row in csv.DictReader(source)
+        ]
     return RunArtifacts(manifest=manifest, metrics=summary["metrics"], pnls=pnls)
+
+
+def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
+    """Require identical reproduction inputs outside the ablated parameter.
+
+    config_sha256 is excluded because the parameter override necessarily changes
+    it. created_at and run_id identify executions rather than comparable inputs.
+    """
+    reasons = []
+    for field in COMPARABLE_FIELDS:
+        with_value = with_.manifest.get(field)
+        without_value = without.manifest.get(field)
+        if with_value != without_value:
+            reasons.append(
+                f"{field}: with={with_value!r}, without={without_value!r}"
+            )
+
+    with_overrides = dict(with_.manifest.get("param_overrides", {}))
+    without_overrides = dict(without.manifest.get("param_overrides", {}))
+    if (
+        ABLATION_PARAM in with_overrides
+        and with_overrides[ABLATION_PARAM] is not True
+    ):
+        reasons.append(
+            f"with param_overrides.{ABLATION_PARAM} must be omitted or True"
+        )
+    if without_overrides.get(ABLATION_PARAM) is not False:
+        reasons.append(f"without param_overrides.{ABLATION_PARAM} must be False")
+
+    with_overrides.pop(ABLATION_PARAM, None)
+    without_overrides.pop(ABLATION_PARAM, None)
+    if with_overrides != without_overrides:
+        reasons.append(
+            "non-ablation param_overrides differ: "
+            f"with={with_overrides!r}, without={without_overrides!r}"
+        )
+
+    if reasons:
+        raise SystemExit("runs are not comparable:\n- " + "\n- ".join(reasons))
 
 
 def arm_summary(
@@ -140,6 +207,7 @@ def _manifest_value(manifest: dict, field: str) -> str:
 
 
 def report(with_: RunArtifacts, without: RunArtifacts, seed: int) -> str:
+    verify_comparable(with_, without)
     with_summary = arm_summary(
         with_.pnls, Decimal(with_.metrics["max_drawdown"]), seed
     )

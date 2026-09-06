@@ -59,6 +59,8 @@ from typing import TextIO
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from pydantic import ValidationError
+
 from trading.backtest.costs import STRESS_SCENARIOS
 from trading.backtest.data import TickDigest
 from trading.backtest.engine import ENGINE_VERSION, BacktestEngine
@@ -72,6 +74,7 @@ from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
+from trading.strategy.base import StrategyConfig
 from trading.strategy.parameters import ParamValue, StrategyParameters
 from trading.strategy.registry import STRATEGIES
 
@@ -359,13 +362,24 @@ def with_param_overrides(
     strategy_id: str,
     overrides: Mapping[str, ParamValue],
 ) -> AppConfig:
-    """Override defaults; symbol-specific parameters remain higher priority."""
+    """Override defaults; symbol-specific parameters remain higher priority.
+
+    The rebuilt StrategyConfig runs its validators so an unknown session_profile
+    fails at the configuration boundary (ADR-023).
+    """
     strategy = config.strategies[strategy_id]
     parameters = StrategyParameters(
         defaults={**strategy.parameters.defaults, **overrides},
         instruments=strategy.parameters.instruments,
     )
-    new_strategy = strategy.model_copy(update={"parameters": parameters})
+    try:
+        new_strategy = StrategyConfig.model_validate(
+            {**dict(strategy), "parameters": parameters}
+        )
+    except ValidationError as error:
+        raise SystemExit(
+            f"invalid --param override for {strategy_id}: {error}"
+        ) from error
     return config.model_copy(
         update={"strategies": {**config.strategies, strategy_id: new_strategy}}
     )

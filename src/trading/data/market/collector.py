@@ -7,16 +7,17 @@ first-hand from the trading host.
 Two paths, deliberately different in purpose:
 
 - Polling `symbol_info_tick` keeps the latest quote flowing. It returns only
-  the newest tick, so quotes arriving between two polls are structurally
-  missed; the polling series is never a complete tick record.
-- `copy_ticks_range` backfills a period after the fact and is what makes the
-  stored series complete. Scheduled backfill runs, not the poll loop, are how
-  a full research dataset is produced.
+  the newest tick, so quotes arriving between two polls are read immediately
+  afterwards from tick history. The poll loop closes holes up to POLL_GAP_MAX;
+  wider market closures and process outages remain scheduled-backfill work.
+- `copy_ticks_range` closes those short polling holes and backfills longer
+  periods after the fact, producing the complete stored series used by live
+  bars and research.
 
 A broker fetch failure raises instead of being retried here. Reconnect
-policy, gap detection and retry intervals are operational decisions that are
-not fixed in code: the process exits, the host's scheduler restarts it, and
-the period it missed is repaired with a backfill run.
+policy and retry intervals are operational decisions that are not fixed in
+code: the process exits, the host's scheduler restarts it, and any period
+beyond the bounded polling repair is filled by a backfill run.
 
 Usage (Windows host with MT5 terminal):
 
@@ -50,6 +51,12 @@ INSERT_CHUNK_SIZE = 10_000
 # day is 10^5-10^6 ticks; a multi-day request is split so the terminal never
 # has to hand back a week in one array.
 BACKFILL_WINDOW = timedelta(days=1)
+
+# How wide a hole between two polled quotes is still closed from the tick
+# history. A burst the poll loop undersampled leaves milliseconds to seconds
+# behind; anything wider is a market closure or a collector outage, and
+# repairing those is the scheduled backfill's job, not the poll loop's.
+POLL_GAP_MAX = timedelta(seconds=60)
 
 SOURCE_MT5 = "MT5"
 
@@ -153,7 +160,13 @@ class TickCollector:
         self._mt5.shutdown()
 
     def poll_once(self, symbol: str) -> int:
-        """Fetch the current quote and store it. Returns rows actually added."""
+        """Fetch the current quote, close the hole behind it, and store both.
+
+        Returns rows actually added. The hole is the span between the quote
+        the previous poll saw and this one: the terminal only ever hands back
+        the newest tick, so a burst that outran the poll rate lives there and
+        nowhere else in this process's reach.
+        """
         raw = self._mt5.symbol_info_tick(symbol)
         if raw is None:
             # A failed fetch is not "no tick": treating an outage as an empty
@@ -161,16 +174,39 @@ class TickCollector:
             raise MT5ConnectionError(
                 f"symbol_info_tick({symbol}) failed: {self._mt5.last_error()}"
             )
-        tick = tick_from_info(raw, symbol, self._clock.now())
+        received_at = self._clock.now()
+        tick = tick_from_info(raw, symbol, received_at)
         # Polling re-reads the same quote until the broker publishes a new
         # one. Skipping the repeat only saves the round trip; the unique key
         # is what actually keeps the table free of duplicates. Keyed by
         # symbol so the check still holds when several are polled in turn.
         quote = (tick.time, tick.bid, tick.ask)
-        if self._last_quote.get(symbol) == quote:
+        previous = self._last_quote.get(symbol)
+        if previous == quote:
             return 0
+
+        ticks = [tick]
+        if previous is not None and timedelta(0) < tick.time - previous[0] <= POLL_GAP_MAX:
+            rows = self._mt5.copy_ticks_range(
+                symbol, previous[0], tick.time, COPY_TICKS_ALL
+            )
+            if rows is None:
+                raise MT5ConnectionError(
+                    f"copy_ticks_range({symbol}, {previous[0]}, {tick.time}) "
+                    f"failed: {self._mt5.last_error()}"
+                )
+            endpoint_quotes = {previous, quote}
+            gap_ticks: list[Tick] = []
+            for row in rows:
+                gap_tick = tick_from_row(row, symbol, received_at)
+                gap_quote = (gap_tick.time, gap_tick.bid, gap_tick.ask)
+                if gap_quote not in endpoint_quotes:
+                    endpoint_quotes.add(gap_quote)
+                    gap_ticks.append(gap_tick)
+            ticks = sorted([*gap_ticks, tick], key=lambda item: item.time)
+
         self._last_quote[symbol] = quote
-        return self._write([tick])
+        return self._write(ticks)
 
     def backfill(self, symbol: str, start: datetime, end: datetime) -> int:
         stored = 0

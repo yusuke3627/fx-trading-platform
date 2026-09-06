@@ -14,6 +14,12 @@ from decimal import Decimal
 
 from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
 
+# How far the broker's clock may step backwards before it is read as the
+# server leaving summer time rather than a quote arriving out of order. The
+# shift is a whole hour twice a year (ADR-033); reordering inside the feed is
+# seconds wide, so nothing legitimate lands between the two.
+CLOCK_STEP_BACK = timedelta(minutes=30)
+
 
 @dataclass
 class _Bucket:
@@ -93,6 +99,12 @@ class BarBuilder:
     terminal draws. There is no session anchor to configure, and nothing here
     depends on how large the server's offset is or on when DST moves it,
     because broker timestamps are never converted into our own time.
+
+    The instant the broker clock itself steps backwards is the exception: a
+    large jump into an earlier bucket closes the open bucket and starts again
+    at the new position (ADR-033). Bars in the repeated hour may then collide
+    with rows already stored by start_at; ON CONFLICT DO NOTHING keeps the
+    first version, which is the candle known to the system at that time.
     """
 
     def __init__(self, symbol: str, timeframe: str) -> None:
@@ -112,6 +124,16 @@ class BarBuilder:
         """
         start = bucket_start(tick.time, self._timeframe)
         bucket = self._bucket
+
+        if bucket is not None and self._stepped_back(bucket, start, tick):
+            # The broker clock moved, it did not deliver late: a quote this
+            # far behind the bucket's own quotes is the server leaving summer
+            # time. Publishing the open bucket and starting again on the new
+            # position keeps bars flowing; holding it would drop every quote
+            # until the clock climbed back (ADR-033).
+            completed = self._to_bar(bucket, tick.known_time)
+            self._bucket = _open_bucket(start, tick)
+            return completed
 
         # Fold before publishing: a quote timestamped exactly at the close
         # belongs to the next bar, not to the one it releases.
@@ -136,6 +158,10 @@ class BarBuilder:
 
     def _end_of(self, bucket: _Bucket) -> datetime:
         return bucket.start + timedelta(seconds=self._seconds)
+
+    @staticmethod
+    def _stepped_back(bucket: _Bucket, start: datetime, tick: Tick) -> bool:
+        return start < bucket.start and tick.time <= bucket.last_time - CLOCK_STEP_BACK
 
     def _to_bar(self, bucket: _Bucket, closing_known_at: datetime) -> Bar:
         return Bar(

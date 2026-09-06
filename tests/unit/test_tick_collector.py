@@ -8,8 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support import FixedClock
+from tests.support import FixedClock, make_tick
 from trading.data.market import collector as collector_module
+from trading.data.market.bars import BarBuilder
 from trading.data.market.collector import TickCollector
 from trading.execution.mt5.adapter import MT5ConnectionError
 
@@ -35,11 +36,13 @@ class FakeMT5:
         self,
         *,
         info_ticks=(),
-        range_rows=None,
+        range_rows=(),
         initialize_ok: bool = True,
         select_ok: bool = True,
     ) -> None:
         self._info_ticks = list(info_ticks)
+        # None is a failed fetch, not an empty one: the terminal reports both
+        # and the collector has to tell them apart.
         self._range_rows = range_rows
         self._initialize_ok = initialize_ok
         self._select_ok = select_ok
@@ -179,6 +182,200 @@ def test_failed_quote_fetch_raises_instead_of_reporting_no_tick():
     with pytest.raises(MT5ConnectionError):
         collector.poll_once(SYMBOL)
     assert repository.ticks == []
+
+
+def test_quotes_missed_between_two_polls_are_filled_from_the_tick_history():
+    # symbol_info_tick hands back one quote per call, so a burst arriving
+    # faster than the poll rate is only ever sampled. The hole between the
+    # previous quote and this one is read from the tick history straight
+    # after, which is what makes the stored series complete rather than
+    # sampled.
+    clock = FixedClock(T0)
+    prices = [
+        ("158.840", "158.844"),
+        ("158.845", "158.849"),
+        ("158.850", "158.854"),
+        ("158.855", "158.859"),
+        ("158.860", "158.864"),
+        ("158.865", "158.869"),
+        ("158.870", "158.874"),
+        ("158.875", "158.879"),
+        ("158.880", "158.884"),
+    ]
+    rows = [
+        range_row(T0_MSC + index * 100, bid, ask)
+        for index, (bid, ask) in enumerate(prices)
+    ]
+    # The range overlaps the quote already stored by the first poll, and the
+    # terminal is free to repeat a row. Neither may inflate the series: the
+    # unique key would absorb them in Postgres, but the count this returns is
+    # what the caller reads.
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, *prices[0]),
+            info_tick(T0_MSC + 800, *prices[-1]),
+        ],
+        range_rows=[rows[0], *rows],
+    )
+    collector, repository = make_collector(mt5, clock)
+
+    assert collector.poll_once(SYMBOL) == 1
+    clock.advance(seconds=1)
+    assert collector.poll_once(SYMBOL) == 8
+
+    assert len(repository.ticks) == 9
+    assert [tick.time for tick in repository.ticks] == sorted(
+        tick.time for tick in repository.ticks
+    )
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal(bid) for bid, _ask in prices
+    ]
+    assert {tick.received_at for tick in repository.ticks[1:]} == {clock.now()}
+    assert [len(batch) for batch in repository.batches] == [1, 8]
+
+
+def test_a_burst_that_polling_samples_still_yields_the_full_high_and_low():
+    # Why the hole matters: the high and the low of the burst land between
+    # two polls, and a bar folded from the sampled series would print neither.
+    # A release or an intervention is exactly when those extremes are the
+    # point, and ON CONFLICT DO NOTHING means a bar written without them can
+    # never be corrected.
+    clock = FixedClock(T0)
+    prices = [
+        ("158.840", "158.844"),
+        ("158.900", "158.904"),
+        ("159.500", "159.504"),
+        ("158.700", "158.704"),
+        ("158.100", "158.104"),
+        ("158.750", "158.754"),
+        ("159.200", "159.204"),
+        ("158.600", "158.604"),
+        ("158.850", "158.854"),
+    ]
+    rows = [
+        range_row(T0_MSC + index * 100, bid, ask)
+        for index, (bid, ask) in enumerate(prices)
+    ]
+    collector, repository = make_collector(
+        FakeMT5(
+            info_ticks=[
+                info_tick(T0_MSC, *prices[0]),
+                info_tick(T0_MSC + 800, *prices[-1]),
+            ],
+            range_rows=rows,
+        ),
+        clock,
+    )
+
+    collector.poll_once(SYMBOL)
+    clock.advance(seconds=1)
+    collector.poll_once(SYMBOL)
+
+    builder = BarBuilder(SYMBOL, "1m")
+    for tick in repository.ticks:
+        assert builder.on_tick(tick) is None
+    bar = builder.on_tick(
+        make_tick(
+            "158.860",
+            "158.864",
+            time=T0 + timedelta(minutes=1),
+            received_at=T0 + timedelta(seconds=2),
+        )
+    )
+    assert bar is not None
+    assert bar.high == Decimal("159.500")
+    assert bar.low == Decimal("158.100")
+
+
+def test_an_unchanged_quote_costs_no_tick_history_call():
+    # Most polls re-read the quote they already have. Those must stay a
+    # single round trip, or repairing the holes would cost a second call
+    # five times a second to fetch nothing.
+    mt5 = FakeMT5(info_ticks=[info_tick(T0_MSC, "158.840", "158.844")])
+    collector, _ = make_collector(mt5)
+
+    collector.poll_once(SYMBOL)
+    collector.poll_once(SYMBOL)
+    collector.poll_once(SYMBOL)
+
+    assert mt5.range_calls == []
+
+
+def test_quotes_without_a_broker_time_gap_cost_no_tick_history_call():
+    # Two quotes sharing a broker timestamp leave no span between them, so
+    # there is nothing for the history to hold.
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC, "158.845", "158.849"),
+        ]
+    )
+    collector, repository = make_collector(mt5)
+
+    collector.poll_once(SYMBOL)
+    collector.poll_once(SYMBOL)
+
+    assert mt5.range_calls == []
+    assert len(repository.ticks) == 2
+
+
+def test_the_first_poll_of_a_process_fills_no_gap():
+    # With no previous quote there is no near edge to read from, and
+    # guessing one would make every restart re-import an arbitrary span.
+    mt5 = FakeMT5(
+        info_ticks=[info_tick(T0_MSC, "158.840", "158.844")],
+        range_rows=[range_row(T0_MSC - 100, "158.830", "158.834")],
+    )
+    collector, repository = make_collector(mt5)
+
+    assert collector.poll_once(SYMBOL) == 1
+
+    assert mt5.range_calls == []
+    assert len(repository.ticks) == 1
+
+
+def test_a_gap_wider_than_the_bound_is_left_to_backfill():
+    # A weekend or a collector outage is not an undersampled burst. Pulling
+    # it through the poll loop would import a period at the poll rate; the
+    # scheduled backfill exists for exactly that span.
+    ten_minutes_later = T0_MSC + 10 * 60 * 1000
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(ten_minutes_later, "158.900", "158.904"),
+        ],
+        range_rows=[range_row(T0_MSC + 100, "159.500", "159.504")],
+    )
+    collector, repository = make_collector(mt5)
+
+    collector.poll_once(SYMBOL)
+    assert collector.poll_once(SYMBOL) == 1
+
+    assert mt5.range_calls == []
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("158.900"),
+    ]
+
+
+def test_a_failed_tick_history_fetch_is_not_read_as_an_empty_burst():
+    # The same rule the quote fetch follows: an outage that reads as "no
+    # quotes in the hole" would leave the gap silently unrepaired.
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC + 1000, "158.900", "158.904"),
+        ],
+        range_rows=None,
+    )
+    collector, repository = make_collector(mt5)
+
+    collector.poll_once(SYMBOL)
+    with pytest.raises(MT5ConnectionError):
+        collector.poll_once(SYMBOL)
+
+    assert len(mt5.range_calls) == 1
+    assert len(repository.ticks) == 1
 
 
 def test_backfill_requests_the_given_range_and_stores_its_ticks():

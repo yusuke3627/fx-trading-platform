@@ -86,6 +86,7 @@ def run_metrics(**overrides: str) -> dict[str, str]:
         "max_drawdown": "0",
         "carry_total": "0",
         "unpriced_rollovers": "0",
+        "trades": "0",
         "open_positions_at_end": "0",
         "pending_commands_at_end": "0",
         **overrides,
@@ -122,11 +123,19 @@ def backtest_result(
         metrics=run_metrics(
             max_drawdown=max_drawdown,
             carry_total=str(sum(carries, Decimal(0))),
+            trades=str(len(pnls)),
         ),
     )
 
 
-def manifest(run_id: str, param_overrides: dict) -> dict:
+def manifest(
+    run_id: str,
+    param_overrides: dict,
+    *,
+    resolved_enabled: bool | None = None,
+) -> dict:
+    if resolved_enabled is None:
+        resolved_enabled = param_overrides.get("macro_confirmation_enabled", True)
     return {
         "run_id": run_id,
         "git_commit": "0123456789abcdef",
@@ -147,6 +156,9 @@ def manifest(run_id: str, param_overrides: dict) -> dict:
         "warmup_days": 2.0,
         "broker_server_ahead_of_ny_hours": 7.0,
         "param_overrides": param_overrides,
+        "resolved_parameters": {
+            "macro_confirmation_enabled": resolved_enabled,
+        },
     }
 
 
@@ -190,6 +202,23 @@ def test_load_run_reports_a_missing_trades_file(tmp_path):
         load_run(run_dir)
 
 
+def test_load_run_rejects_trade_count_mismatch(tmp_path):
+    run_dir = write_report(
+        backtest_result([Decimal(1), Decimal(2)], [Decimal(0)] * 2, "0"),
+        manifest("truncated-trades", {}),
+        tmp_path,
+    )
+    trades_path = run_dir / "trades.csv"
+    rows = trades_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    trades_path.write_text("".join(rows[:-1]), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as error:
+        load_run(run_dir)
+
+    assert str(trades_path) in str(error.value)
+    assert "actual rows=1, summary metrics.trades=2" in str(error.value)
+
+
 def test_verify_comparable_rejects_dataset_mismatch():
     with_manifest = manifest("with-run", {})
     without_manifest = manifest(
@@ -222,6 +251,28 @@ def test_verify_comparable_requires_disabled_without_arm():
             ),
             RunArtifacts(
                 manifest("without-run", {}),
+                run_metrics(),
+                [],
+            ),
+        )
+
+
+def test_verify_comparable_rejects_instrument_override_of_without_arm():
+    without_manifest = manifest(
+        "without-run",
+        {"macro_confirmation_enabled": False},
+        resolved_enabled=True,
+    )
+
+    with pytest.raises(SystemExit, match="resolved_parameters"):
+        verify_comparable(
+            RunArtifacts(
+                manifest("with-run", {}),
+                run_metrics(),
+                [],
+            ),
+            RunArtifacts(
+                without_manifest,
                 run_metrics(),
                 [],
             ),

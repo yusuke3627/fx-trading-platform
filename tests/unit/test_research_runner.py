@@ -27,6 +27,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
+from trading.strategy.parameters import StrategyParameters
 
 START = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 END = datetime(2026, 8, 22, 0, 0, tzinfo=UTC)
@@ -137,6 +138,36 @@ def test_param_overrides_replace_defaults_without_mutating_config():
     for other_id, strategy in config.strategies.items():
         if other_id != strategy_id:
             assert updated.strategies[other_id] is strategy
+
+
+def test_param_overrides_do_not_beat_the_instrument_layer():
+    # ablation の実効値は instrument 層が最終的に勝つ。research の manifest が
+    # 解決済みの値を残すのはこのため。
+    strategy_id = "post_event_failed_breakout"
+    config = load_config("backtest", CONFIG_DIR)
+    original_strategy = config.strategies[strategy_id]
+    instrument_strategy = original_strategy.model_copy(
+        update={
+            "parameters": StrategyParameters(
+                defaults=original_strategy.parameters.defaults,
+                instruments={"USDJPY": {"macro_confirmation_enabled": True}},
+            )
+        }
+    )
+    instrument_config = config.model_copy(
+        update={"strategies": {**config.strategies, strategy_id: instrument_strategy}}
+    )
+
+    updated = with_param_overrides(
+        instrument_config, strategy_id, {"macro_confirmation_enabled": False}
+    )
+
+    assert (
+        updated.strategies[strategy_id]
+        .params_for("USDJPY")
+        .values["macro_confirmation_enabled"]
+        is True
+    )
 
 
 def test_param_override_rejects_an_unknown_session_profile():

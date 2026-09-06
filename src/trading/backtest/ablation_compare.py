@@ -106,6 +106,12 @@ def load_run(run_dir: Path) -> RunArtifacts:
             Decimal(row["net_pnl"]) + Decimal(row["carry"])
             for row in csv.DictReader(source)
         ]
+    summary_trades = int(summary["metrics"]["trades"])
+    if len(pnls) != summary_trades:
+        raise SystemExit(
+            f"trade count mismatch for {trades_path}: "
+            f"actual rows={len(pnls)}, summary metrics.trades={summary_trades}"
+        )
     return RunArtifacts(manifest=manifest, metrics=summary["metrics"], pnls=pnls)
 
 
@@ -134,6 +140,17 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
             reasons.append(
                 f"{arm} strategy_id must be {ABLATION_STRATEGY!r}, "
                 f"got {strategy_id!r}"
+            )
+        resolved = run.manifest.get("resolved_parameters", {})
+        expected_enabled = arm == "with"
+        resolved_enabled = resolved.get(
+            ABLATION_PARAM, True if arm == "with" else None
+        )
+        if resolved_enabled is not expected_enabled:
+            reasons.append(
+                f"{arm} resolved_parameters.{ABLATION_PARAM} must be "
+                f"{expected_enabled}, got {resolved_enabled!r}; "
+                "instrument-specific parameters override defaults"
             )
         open_positions = run.metrics.get("open_positions_at_end")
         if open_positions != "0":

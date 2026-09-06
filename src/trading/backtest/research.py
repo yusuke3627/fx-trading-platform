@@ -580,6 +580,7 @@ def main() -> None:
         "scenario": scenario,
         "seed": seed,
         "param_overrides": overrides,
+        "resolved_parameters": dict(strategy_config.params_for(symbol).values),
         "tick_count": digest.count,
         "period_from": args.start.isoformat(),
         "period_to": args.end.isoformat(),

@@ -134,14 +134,6 @@ class AccountSnapshotCollector:
         raw = self._mt5.history_deals_get(
             start - BROKER_TIME_MARGIN, end + BROKER_TIME_MARGIN
         )
-        # adapter.py raises on any None from an MT5 getter, because there a
-        # fetch error read as "no position" makes an exit skip a live one.
-        # The asymmetry runs the other way here: this collector only observes,
-        # and raising on a day that has no fills yet would end the process
-        # every minute and leave account_snapshots missing outright - worse
-        # than a single wrong zero. Which reading is correct depends on
-        # whether history_deals_get answers an empty window with None or (),
-        # and only the Windows terminal can settle that; see issue #130.
         # 執行系の adapter は MT5 の None を無条件で失敗として扱う。あちらは取得失敗を
         # 「建玉が無い」と読むと exit が生きた建玉を飛ばすからで、ここは害の向きが逆になる
         # ―― 監視用の系列なので、約定の無い日に落ちれば系列そのものが欠測する。空区間に

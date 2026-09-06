@@ -116,6 +116,8 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
     it. created_at and run_id identify executions rather than comparable inputs.
     The engine marks open positions instead of force-closing them, so a run that
     ends with a position has a right-censored trades.csv and is not comparable.
+    A command still in flight at the end drops its candidate from the sample the
+    same way.
     """
     reasons = []
     for field in COMPARABLE_FIELDS:
@@ -138,6 +140,12 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
             reasons.append(
                 f"{arm} open_positions_at_end={open_positions!r}; "
                 "re-run with a period end where the book is flat"
+            )
+        pending = run.metrics.get("pending_commands_at_end")
+        if pending != "0":
+            reasons.append(
+                f"{arm} pending_commands_at_end={pending!r}; "
+                "re-run with a period end where no command is in flight"
             )
 
     with_overrides = dict(with_.manifest.get("param_overrides", {}))

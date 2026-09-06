@@ -81,6 +81,17 @@ def test_difference_interval_needs_two_trades_in_each_arm():
     assert math.isnan(high)
 
 
+def run_metrics(**overrides: str) -> dict[str, str]:
+    return {
+        "max_drawdown": "0",
+        "carry_total": "0",
+        "unpriced_rollovers": "0",
+        "open_positions_at_end": "0",
+        "pending_commands_at_end": "0",
+        **overrides,
+    }
+
+
 def backtest_result(
     pnls: list[Decimal], carries: list[Decimal], max_drawdown: str
 ) -> BacktestResult:
@@ -108,12 +119,10 @@ def backtest_result(
         snapshots=[],
         risk_rejections=[],
         rejected_commands=0,
-        metrics={
-            "max_drawdown": max_drawdown,
-            "open_positions_at_end": "0",
-            "carry_total": str(sum(carries, Decimal(0))),
-            "unpriced_rollovers": "0",
-        },
+        metrics=run_metrics(
+            max_drawdown=max_drawdown,
+            carry_total=str(sum(carries, Decimal(0))),
+        ),
     )
 
 
@@ -192,12 +201,12 @@ def test_verify_comparable_rejects_dataset_mismatch():
         verify_comparable(
             RunArtifacts(
                 with_manifest,
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
             RunArtifacts(
                 without_manifest,
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
         )
@@ -208,12 +217,12 @@ def test_verify_comparable_requires_disabled_without_arm():
         verify_comparable(
             RunArtifacts(
                 manifest("with-run", {}),
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
             RunArtifacts(
                 manifest("without-run", {}),
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
         )
@@ -227,12 +236,12 @@ def test_verify_comparable_rejects_other_override_mismatch_without_mutation():
         verify_comparable(
             RunArtifacts(
                 manifest("with-run", {}),
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
             RunArtifacts(
                 without_manifest,
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
         )
@@ -252,12 +261,12 @@ def test_verify_comparable_requires_the_ablation_strategy():
         verify_comparable(
             RunArtifacts(
                 with_manifest,
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
             RunArtifacts(
                 without_manifest,
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
         )
@@ -268,12 +277,28 @@ def test_verify_comparable_rejects_an_open_position_at_period_end():
         verify_comparable(
             RunArtifacts(
                 manifest("with-run", {}),
-                {"max_drawdown": "0", "open_positions_at_end": "0"},
+                run_metrics(),
                 [],
             ),
             RunArtifacts(
                 manifest("without-run", {"macro_confirmation_enabled": False}),
-                {"max_drawdown": "0", "open_positions_at_end": "1"},
+                run_metrics(open_positions_at_end="1"),
+                [],
+            ),
+        )
+
+
+def test_verify_comparable_rejects_a_command_in_flight_at_period_end():
+    with pytest.raises(SystemExit, match="pending_commands_at_end"):
+        verify_comparable(
+            RunArtifacts(
+                manifest("with-run", {}),
+                run_metrics(),
+                [],
+            ),
+            RunArtifacts(
+                manifest("without-run", {"macro_confirmation_enabled": False}),
+                run_metrics(pending_commands_at_end="1"),
                 [],
             ),
         )

@@ -37,9 +37,62 @@ _STREAM_BATCH_ROWS = 50_000
 # are sub-second; only a stuck session should ever reach this.
 _STREAM_SETTLE_TIMEOUT_SECONDS = 60.0
 
+# 2 引数 advisory lock の classid は 4 byte ASCII の subsystem tag。
+# 0x4F4D5300 は "OMS\0"、objid=1 はその中の dispatcher lock を表す。
+_OMS_ADVISORY_LOCK_CLASS_ID = 0x4F4D5300
+_OMS_DISPATCHER_LOCK_OBJECT_ID = 1
+
+# A write that gives the claim up (the sweep's CLAIMED -> READY, whose
+# transition nulls the claim columns) compares state alone; requiring the
+# columns it is about to clear would match no row and strand the recovery.
+_SAVE_STATE_RELEASING_CLAIM_SQL = """
+    UPDATE execution_commands
+    SET state = %(state)s,
+        quantity = %(quantity)s,
+        claimed_by = %(claimed_by)s,
+        claimed_at = %(claimed_at)s,
+        claim_expires_at = %(claim_expires_at)s,
+        submitting_at = %(submitting_at)s,
+        broker_request_started_at = %(broker_request_started_at)s,
+        updated_at = now()
+    WHERE id = %(id)s AND state = %(expected_state)s
+"""
+
+# A write that keeps the claim names the generation it observed. The values it
+# writes are the ones it read, so the SET placeholders double as the expected
+# ones. Extends the statement above so a column added there reaches both.
+_SAVE_STATE_RETAINING_CLAIM_SQL = _SAVE_STATE_RELEASING_CLAIM_SQL + """
+      AND claimed_by IS NOT DISTINCT FROM %(claimed_by)s
+      AND claim_expires_at IS NOT DISTINCT FROM %(claim_expires_at)s
+"""
+
 
 def connect(dsn: str) -> psycopg.Connection:
     return psycopg.connect(dsn, row_factory=dict_row)
+
+
+class PostgresDispatchLock:
+    """構築時の PostgreSQL session に束縛された dispatcher lock。"""
+
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+        self._acquired = False
+
+    def acquire(self) -> bool:
+        if self.held():
+            return True
+        row = self._conn.execute(
+            """
+            SELECT pg_try_advisory_lock(%s, %s) AS acquired
+            """,
+            (_OMS_ADVISORY_LOCK_CLASS_ID, _OMS_DISPATCHER_LOCK_OBJECT_ID),
+        ).fetchone()
+        self._conn.commit()
+        self._acquired = bool(row["acquired"])
+        return self._acquired
+
+    def held(self) -> bool:
+        return self._acquired and not self._conn.closed
 
 
 def _row_to_command(row: dict[str, Any]) -> ExecutionCommand:
@@ -55,6 +108,7 @@ def _row_to_command(row: dict[str, Any]) -> ExecutionCommand:
         stop_loss_price=row["stop_loss_price"],
         take_profit_price=row["take_profit_price"],
         broker_position_ticket=row["broker_position_ticket"],
+        expires_at=row["expires_at"],
         state=row["state"],
         claimed_by=row["claimed_by"],
         claimed_at=row["claimed_at"],
@@ -136,11 +190,11 @@ class PostgresCommandRepository:
             INSERT INTO execution_commands (
                 id, intent_id, idempotency_key, symbol, side, action, direction,
                 quantity, stop_loss_price, take_profit_price,
-                broker_position_ticket, state, created_at
+                broker_position_ticket, expires_at, state, created_at
             ) VALUES (
                 %(id)s, %(intent_id)s, %(idempotency_key)s, %(symbol)s, %(side)s,
                 %(action)s, %(direction)s, %(quantity)s, %(sl)s, %(tp)s,
-                %(ticket)s, %(state)s, %(created_at)s
+                %(ticket)s, %(expires_at)s, %(state)s, %(created_at)s
             )
             """,
             {
@@ -155,6 +209,7 @@ class PostgresCommandRepository:
                 "sl": command.stop_loss_price,
                 "tp": command.take_profit_price,
                 "ticket": command.broker_position_ticket,
+                "expires_at": command.expires_at,
                 "state": command.state,
                 "created_at": command.created_at,
             },
@@ -168,24 +223,21 @@ class PostgresCommandRepository:
 
         An unconditional UPDATE would let a slow worker holding a stale
         SUBMITTING object overwrite UNKNOWN (or rewind a terminal state),
-        resolving UNKNOWN without reconciliation.
+        resolving UNKNOWN without reconciliation. A retained claim also
+        compares its owner and lease expiry so an old worker cannot overwrite
+        a newer claim that happens to be in the same state.
 
         Quantity is written in the same CAS because a send-time fresh select
         may shrink an exit; a stale value would corrupt fill reconciliation.
         """
+        retains_claim = command.claimed_by is not None
+        statement = (
+            _SAVE_STATE_RETAINING_CLAIM_SQL
+            if retains_claim
+            else _SAVE_STATE_RELEASING_CLAIM_SQL
+        )
         cursor = self._conn.execute(
-            """
-            UPDATE execution_commands
-            SET state = %(state)s,
-                quantity = %(quantity)s,
-                claimed_by = %(claimed_by)s,
-                claimed_at = %(claimed_at)s,
-                claim_expires_at = %(claim_expires_at)s,
-                submitting_at = %(submitting_at)s,
-                broker_request_started_at = %(broker_request_started_at)s,
-                updated_at = now()
-            WHERE id = %(id)s AND state = %(expected_state)s
-            """,
+            statement,
             {
                 "id": command.command_id,
                 "state": command.state,
@@ -201,7 +253,8 @@ class PostgresCommandRepository:
         self._conn.commit()
         if cursor.rowcount != 1:
             raise StaleCommandStateError(
-                f"command {command.command_id} is no longer {expected_state}; "
+                f"command {command.command_id} state or claim generation no longer "
+                f"matches {expected_state}; "
                 "re-read and reconcile instead of writing"
             )
 

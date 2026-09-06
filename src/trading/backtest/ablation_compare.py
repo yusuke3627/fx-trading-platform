@@ -39,6 +39,7 @@ COMPARABLE_FIELDS = (
     "git_commit",
     "git_dirty",
     "git_diff_sha256",
+    "python_version",
     "environment",
     "symbol",
     "strategy_id",

@@ -140,6 +140,7 @@ def manifest(
         "run_id": run_id,
         "git_commit": "0123456789abcdef",
         "git_dirty": False,
+        "python_version": "3.12.4",
         "environment": "backtest",
         "symbol": "USDJPY",
         "strategy_id": "post_event_failed_breakout",
@@ -238,6 +239,20 @@ def test_verify_comparable_rejects_dataset_mismatch():
                 run_metrics(),
                 [],
             ),
+        )
+
+
+def test_verify_comparable_rejects_python_version_mismatch():
+    with_manifest = manifest("with-run", {})
+    without_manifest = manifest(
+        "without-run", {"macro_confirmation_enabled": False}
+    )
+    without_manifest["python_version"] = "3.13.1"
+
+    with pytest.raises(SystemExit, match="python_version"):
+        verify_comparable(
+            RunArtifacts(with_manifest, run_metrics(), []),
+            RunArtifacts(without_manifest, run_metrics(), []),
         )
 
 

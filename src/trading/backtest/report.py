@@ -7,10 +7,12 @@ every run still writes a human-readable directory:
         manifest.json   -- reproduction inputs (commit, config, dataset, seed)
         summary.json    -- metrics + rejection counts
         trades.json     -- fill-by-fill record
+        trades.csv      -- round-trip record (one row per closed quantity)
         equity.json     -- equity curve
 """
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -39,6 +41,39 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
     (run_dir / "trades.json").write_text(
         _dumps([_jsonable(asdict(f)) for f in result.fills]), encoding="utf-8"
     )
+    with (run_dir / "trades.csv").open("w", newline="", encoding="utf-8") as out:
+        writer = csv.writer(out, lineterminator="\n")
+        writer.writerow(
+            [
+                "strategy_id",
+                "symbol",
+                "entry_at",
+                "exit_at",
+                "direction",
+                "quantity",
+                "entry_price",
+                "exit_price",
+                "net_pnl",
+                "carry",
+                "reason",
+            ]
+        )
+        writer.writerows(
+            [
+                trade.strategy_id,
+                trade.symbol,
+                trade.entry_at.isoformat(),
+                trade.exit_at.isoformat(),
+                trade.direction,
+                str(trade.quantity),
+                str(trade.entry_price),
+                str(trade.exit_price),
+                str(trade.net_pnl),
+                str(trade.carry),
+                trade.reason,
+            ]
+            for trade in result.trades
+        )
     (run_dir / "equity.json").write_text(
         _dumps([[at.isoformat(), str(equity)] for at, equity in result.equity_curve]),
         encoding="utf-8",

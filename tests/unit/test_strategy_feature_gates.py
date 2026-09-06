@@ -7,12 +7,16 @@ feature closes a gate rather than defaulting.
 """
 from types import SimpleNamespace
 
+from tests.support import FixedClock, make_bar, usdjpy_spec
+from trading.domain.position import PositionDirection
 from trading.intelligence import features as f
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.regime import RegimeLabel, RuleBasedRegimeService
+from trading.strategy.base import StrategyConfig, TimeframeMap
 from trading.strategy.intraday.post_event_failed_breakout import (
     PostEventFailedBreakoutStrategy,
 )
+from trading.strategy.parameters import StrategyParameters
 from trading.strategy.swing.monetary_policy_convergence import (
     MonetaryPolicyConvergenceStrategy,
 )
@@ -23,6 +27,74 @@ def ctx_with(values: dict[str, float]) -> SimpleNamespace:
     for name, value in values.items():
         store.set(name, value)
     return SimpleNamespace(features=store)
+
+
+def evaluation_context(
+    entry_bars: list,
+    setup_bars: list,
+    *,
+    macro_confirmation_enabled: bool,
+    features: dict[str, float] | None = None,
+) -> SimpleNamespace:
+    config = StrategyConfig(
+        strategy_id="post_event_failed_breakout",
+        instruments=["USDJPY"],
+        timeframes=TimeframeMap(regime="1h", setup="15m", entry="5m"),
+        parameters=StrategyParameters(
+            defaults={
+                "resistance_lookback": 3,
+                "macro_confirmation_enabled": macro_confirmation_enabled,
+            }
+        ),
+    )
+    store = InMemoryFeatureStore()
+    for name, value in (features or {}).items():
+        store.set(name, value)
+    return SimpleNamespace(
+        config=config,
+        market=SimpleNamespace(
+            instrument=lambda _symbol: usdjpy_spec(),
+            bars=lambda _symbol, timeframe, _count: (
+                entry_bars if timeframe == "5m" else setup_bars
+            ),
+        ),
+        indicators=SimpleNamespace(
+            atr=lambda _symbol, _timeframe, _period: 0.05
+        ),
+        features=store,
+        clock=FixedClock(),
+        portfolio=SimpleNamespace(position=lambda _strategy_id, _symbol: None),
+    )
+
+
+def short_failed_breakout_bars() -> tuple[list, list]:
+    setup_bars = [
+        make_bar("149.50", "150.00", "149.00", "149.50", timeframe="15m"),
+        make_bar("149.50", "150.00", "149.10", "149.60", timeframe="15m"),
+        make_bar("149.60", "150.00", "149.20", "149.70", timeframe="15m"),
+        make_bar("149.70", "149.95", "149.30", "149.80", timeframe="15m"),
+    ]
+    entry_bars = [
+        make_bar("149.70", "149.90", "149.60", "149.80", timeframe="5m"),
+        make_bar("149.80", "150.10", "149.70", "149.90", timeframe="5m"),
+        make_bar("149.90", "149.95", "149.60", "149.85", timeframe="5m"),
+    ]
+    return entry_bars, setup_bars
+
+
+def long_failed_breakout_bars() -> tuple[list, list]:
+    setup_bars = [
+        make_bar("150.00", "151.00", "149.10", "150.00", timeframe="15m"),
+        make_bar("150.00", "151.00", "149.00", "150.00", timeframe="15m"),
+        make_bar("150.00", "151.00", "149.00", "150.00", timeframe="15m"),
+        make_bar("150.00", "150.90", "149.20", "149.80", timeframe="15m"),
+    ]
+    entry_bars = [
+        make_bar("149.40", "149.60", "149.20", "149.40", timeframe="5m"),
+        make_bar("149.30", "149.40", "148.90", "149.10", timeframe="5m"),
+        make_bar("149.10", "149.45", "149.05", "149.20", timeframe="5m"),
+    ]
+    return entry_bars, setup_bars
 
 
 def test_swing_short_gate_opens_on_dovish_fed_hawkish_boj_and_intervention():
@@ -65,6 +137,12 @@ def test_intraday_short_gate_is_an_or_over_the_produced_features():
     assert not gate(ctx_with({}), eps=0.0)
 
 
+def test_intraday_short_gate_can_skip_macro_confirmation():
+    assert PostEventFailedBreakoutStrategy._short_macro_gate(
+        ctx_with({}), eps=0.0, enabled=False
+    )
+
+
 def test_intraday_long_gate_requires_both_us2y_horizons_and_calm_intervention():
     gate = PostEventFailedBreakoutStrategy._long_macro_gate
     open_values = {
@@ -82,6 +160,78 @@ def test_intraday_long_gate_requires_both_us2y_horizons_and_calm_intervention():
 
     elevated = {**open_values, f.INTERVENTION_RISK: 0.9}
     assert not gate(ctx_with(elevated), eps=0.0, intervention_max=0.5)
+
+
+def test_intraday_long_gate_keeps_intervention_ceiling_when_macro_is_skipped():
+    gate = PostEventFailedBreakoutStrategy._long_macro_gate
+
+    assert gate(
+        ctx_with({f.INTERVENTION_RISK: 0.1}),
+        eps=0.0,
+        intervention_max=0.5,
+        enabled=False,
+    )
+    assert not gate(
+        ctx_with({f.INTERVENTION_RISK: 0.9}),
+        eps=0.0,
+        intervention_max=0.5,
+        enabled=False,
+    )
+    assert not gate(
+        ctx_with({}), eps=0.0, intervention_max=0.5, enabled=False
+    )
+
+
+def test_strategy_parameter_can_disable_short_macro_confirmation():
+    entry_bars, setup_bars = short_failed_breakout_bars()
+
+    disabled = PostEventFailedBreakoutStrategy()._evaluate(
+        "USDJPY",
+        evaluation_context(
+            entry_bars,
+            setup_bars,
+            macro_confirmation_enabled=False,
+        ),
+    )
+    enabled = PostEventFailedBreakoutStrategy()._evaluate(
+        "USDJPY",
+        evaluation_context(
+            entry_bars,
+            setup_bars,
+            macro_confirmation_enabled=True,
+        ),
+    )
+
+    assert disabled is not None
+    assert disabled.desired_direction is PositionDirection.SHORT
+    assert enabled is None
+
+
+def test_strategy_keeps_long_intervention_ceiling_when_macro_is_disabled():
+    entry_bars, setup_bars = long_failed_breakout_bars()
+
+    elevated = PostEventFailedBreakoutStrategy()._evaluate(
+        "USDJPY",
+        evaluation_context(
+            entry_bars,
+            setup_bars,
+            macro_confirmation_enabled=False,
+            features={f.INTERVENTION_RISK: 0.9},
+        ),
+    )
+    calm = PostEventFailedBreakoutStrategy()._evaluate(
+        "USDJPY",
+        evaluation_context(
+            entry_bars,
+            setup_bars,
+            macro_confirmation_enabled=False,
+            features={f.INTERVENTION_RISK: 0.1},
+        ),
+    )
+
+    assert elevated is None
+    assert calm is not None
+    assert calm.desired_direction is PositionDirection.LONG
 
 
 def test_regime_labels_follow_the_statement_scores():

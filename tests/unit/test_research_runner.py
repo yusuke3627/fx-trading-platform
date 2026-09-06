@@ -1,7 +1,9 @@
 """Research runner pieces: the replay axis rewrite and the change schedule."""
+import argparse
 import io
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -10,9 +12,12 @@ from tests.support import FakeEventRepository, FakeObservationRepository
 from trading.backtest.research import (
     broker_label_to_known,
     capture_bars,
+    parse_param_override,
     reconstructed,
+    with_param_overrides,
     with_progress,
 )
+from trading.config import load_config
 from trading.data.features import StoredFeatureSource
 from trading.data.intervention.features import RECENCY_WINDOW_DAYS
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
@@ -22,9 +27,11 @@ from trading.domain.event import EventEnvelope
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
+from trading.strategy.parameters import StrategyParameters
 
 START = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 END = datetime(2026, 8, 22, 0, 0, tzinfo=UTC)
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 
 def tick(at: datetime, ingested_at: datetime) -> Tick:
@@ -73,6 +80,103 @@ def make_source(observations=(), events=()) -> StoredFeatureSource:
 def us2y_window() -> timedelta:
     """replay が US2Y を読む最も広い窓。"""
     return make_source().observation_windows()[US_TREASURY_2Y_YIELD]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("k=false", ("k", False)),
+        ("k=TRUE", ("k", True)),
+        ("k=20", ("k", 20)),
+        ("k=0.5", ("k", 0.5)),
+        ("k=usdjpy_core", ("k", "usdjpy_core")),
+    ],
+)
+def test_parse_param_override_preserves_scalar_types(text, expected):
+    parsed = parse_param_override(text)
+
+    assert parsed == expected
+    assert type(parsed[1]) is type(expected[1])
+
+
+def test_parse_param_override_requires_a_value_separator():
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_param_override("novalue")
+
+
+def test_param_overrides_replace_defaults_without_mutating_config():
+    strategy_id = "post_event_failed_breakout"
+    config = load_config("backtest", CONFIG_DIR)
+    original_strategy = config.strategies[strategy_id]
+
+    updated = with_param_overrides(
+        config,
+        strategy_id,
+        {"macro_confirmation_enabled": False, "brand_new": 1},
+    )
+
+    assert (
+        updated.strategies[strategy_id]
+        .params_for("USDJPY")
+        .param("macro_confirmation_enabled", True)
+        is False
+    )
+    assert original_strategy.params_for("USDJPY").param(
+        "macro_confirmation_enabled", False
+    ) is True
+    assert updated.strategies[strategy_id].params_for("USDJPY").param(
+        "brand_new", None
+    ) == 1
+    assert (
+        updated.strategies[strategy_id].parameters.instruments
+        == original_strategy.parameters.instruments
+    )
+    assert (
+        updated.strategies[strategy_id].timeframes,
+        updated.strategies[strategy_id].session_profiles,
+    ) == (original_strategy.timeframes, original_strategy.session_profiles)
+    for other_id, strategy in config.strategies.items():
+        if other_id != strategy_id:
+            assert updated.strategies[other_id] is strategy
+
+
+def test_param_overrides_do_not_beat_the_instrument_layer():
+    # ablation の実効値は instrument 層が最終的に勝つ。research の manifest が
+    # 解決済みの値を残すのはこのため。
+    strategy_id = "post_event_failed_breakout"
+    config = load_config("backtest", CONFIG_DIR)
+    original_strategy = config.strategies[strategy_id]
+    instrument_strategy = original_strategy.model_copy(
+        update={
+            "parameters": StrategyParameters(
+                defaults=original_strategy.parameters.defaults,
+                instruments={"USDJPY": {"macro_confirmation_enabled": True}},
+            )
+        }
+    )
+    instrument_config = config.model_copy(
+        update={"strategies": {**config.strategies, strategy_id: instrument_strategy}}
+    )
+
+    updated = with_param_overrides(
+        instrument_config, strategy_id, {"macro_confirmation_enabled": False}
+    )
+
+    assert (
+        updated.strategies[strategy_id]
+        .params_for("USDJPY")
+        .values["macro_confirmation_enabled"]
+        is True
+    )
+
+
+def test_param_override_rejects_an_unknown_session_profile():
+    with pytest.raises(SystemExit, match="session_profile"):
+        with_param_overrides(
+            load_config("backtest", CONFIG_DIR),
+            "post_event_failed_breakout",
+            {"session_profile": "no_such_profile"},
+        )
 
 
 def test_reconstructed_rewrites_known_time_from_the_broker_stamp():

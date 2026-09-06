@@ -37,6 +37,9 @@ The candles it reconstructs are written to the run directory as
 `bars_<timeframe>.csv`, one file per timeframe the strategy declares. The
 stored bar series only reaches back to the bar service's first run, so this
 is the only record of what a replay of the archive actually saw.
+
+`--param KEY=VALUE` overrides the selected strategy's parameter defaults for
+one run. A symbol-specific parameter remains the final, higher-priority layer.
 """
 from __future__ import annotations
 
@@ -45,8 +48,9 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -55,19 +59,23 @@ from typing import TextIO
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from pydantic import ValidationError
+
 from trading.backtest.costs import STRESS_SCENARIOS
 from trading.backtest.data import TickDigest
 from trading.backtest.engine import ENGINE_VERSION, BacktestEngine
 from trading.backtest.report import write_report
 from trading.backtest.rollover import swap_dataset_fingerprint
 from trading.backtest.run import git_state, synthetic_usdjpy_spec
-from trading.config import load_config
+from trading.config import AppConfig, load_config
 from trading.data.features import ReplayFeatureTimeline, StoredFeatureSource
 from trading.data.market.bars import BarBuilder
 from trading.data.policy.risk_windows import central_bank_calendar
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
+from trading.strategy.base import StrategyConfig
+from trading.strategy.parameters import ParamValue, StrategyParameters
 from trading.strategy.registry import STRATEGIES
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -331,6 +339,52 @@ def warmup_days(value: str) -> float:
     return days
 
 
+def parse_param_override(text: str) -> tuple[str, ParamValue]:
+    """Parse one CLI strategy-parameter override without losing its scalar type."""
+    if "=" not in text:
+        raise argparse.ArgumentTypeError(f"{text!r} must be KEY=VALUE")
+    key, value = text.split("=", 1)
+    lowered = value.lower()
+    if lowered == "true":
+        return key, True
+    if lowered == "false":
+        return key, False
+    if re.fullmatch(r"[+-]?\d+", value):
+        return key, int(value)
+    try:
+        return key, float(value)
+    except ValueError:
+        return key, value
+
+
+def with_param_overrides(
+    config: AppConfig,
+    strategy_id: str,
+    overrides: Mapping[str, ParamValue],
+) -> AppConfig:
+    """Override defaults; symbol-specific parameters remain higher priority.
+
+    The rebuilt StrategyConfig runs its validators so an unknown session_profile
+    fails at the configuration boundary (ADR-023).
+    """
+    strategy = config.strategies[strategy_id]
+    parameters = StrategyParameters(
+        defaults={**strategy.parameters.defaults, **overrides},
+        instruments=strategy.parameters.instruments,
+    )
+    try:
+        new_strategy = StrategyConfig.model_validate(
+            {**dict(strategy), "parameters": parameters}
+        )
+    except ValidationError as error:
+        raise SystemExit(
+            f"invalid --param override for {strategy_id}: {error}"
+        ) from error
+    return config.model_copy(
+        update={"strategies": {**config.strategies, strategy_id: new_strategy}}
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="research backtest over recorded ticks")
     parser.add_argument("--env", default="backtest")
@@ -354,6 +408,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--out", default="reports")
     parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        type=parse_param_override,
+    )
+    parser.add_argument(
         "--warmup-days",
         type=warmup_days,
         default=None,
@@ -366,6 +427,10 @@ def main() -> None:
         parser.error("--from must be earlier than --to")
 
     config = load_config(args.env)
+    overrides = dict(args.param)
+    if args.strategy not in config.strategies:
+        raise SystemExit(f"config for env {args.env!r} has no strategy {args.strategy!r}")
+    config = with_param_overrides(config, args.strategy, overrides)
     symbol = args.symbol or config.market.primary_instruments[0]
     if symbol != "USDJPY":
         # The only dataset spec wired is the vertical slice's USD/JPY one;
@@ -375,9 +440,7 @@ def main() -> None:
             f"only USDJPY has a dataset spec; {symbol!r} needs a persisted "
             "broker spec first"
         )
-    strategy_config = config.strategies.get(args.strategy)
-    if strategy_config is None:
-        raise SystemExit(f"config for env {args.env!r} has no strategy {args.strategy!r}")
+    strategy_config = config.strategies[args.strategy]
     if symbol not in strategy_config.instruments:
         # The strategy evaluates its configured instruments, not the loaded
         # series; a mismatch would replay one symbol while the strategy waits
@@ -516,6 +579,8 @@ def main() -> None:
         "engine_version": ENGINE_VERSION,
         "scenario": scenario,
         "seed": seed,
+        "param_overrides": overrides,
+        "resolved_parameters": dict(strategy_config.params_for(symbol).values),
         "tick_count": digest.count,
         "period_from": args.start.isoformat(),
         "period_to": args.end.isoformat(),
@@ -537,7 +602,12 @@ def main() -> None:
     }
     run_dir = write_report(result, manifest, Path(args.out))
 
-    print(json.dumps({"run_dir": str(run_dir), **result.metrics}, indent=2))
+    print(
+        json.dumps(
+            {"run_dir": str(run_dir), "param_overrides": overrides, **result.metrics},
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

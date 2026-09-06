@@ -180,10 +180,33 @@ class FillRecord:
     origin: str
 
 
+@dataclass(frozen=True)
+class TradeRecord:
+    """One closed quantity measured at fill prices in the quote currency.
+
+    net_pnl includes spread and slippage but excludes carry. carry is the
+    overnight swap attributed to this closed quantity (ADR-016); their sum is
+    this trade's contribution to realized PnL.
+    """
+
+    strategy_id: str
+    symbol: str
+    entry_at: datetime
+    exit_at: datetime
+    direction: str
+    quantity: Decimal
+    entry_price: Decimal
+    exit_price: Decimal
+    net_pnl: Decimal
+    carry: Decimal
+    reason: str
+
+
 @dataclass
 class BacktestResult:
     symbol: str
     fills: list[FillRecord]
+    trades: list[TradeRecord]
     equity_curve: list[tuple[datetime, Decimal]]
     snapshots: list[AccountSnapshot]
     risk_rejections: list[tuple[datetime, tuple[str, ...]]]
@@ -236,6 +259,7 @@ class _RunState:
     high_water_mark: Decimal = Decimal(0)
     snapshots: list[AccountSnapshot] = field(default_factory=list)
     fills: list[FillRecord] = field(default_factory=list)
+    trades: list[TradeRecord] = field(default_factory=list)
     equity_curve: list[tuple[datetime, Decimal]] = field(default_factory=list)
     risk_rejections: list[tuple[datetime, tuple[str, ...]]] = field(default_factory=list)
     rejected_commands: int = 0
@@ -245,6 +269,7 @@ class _RunState:
     # ticket -> owning strategy / entry marks for PnL attribution; a strategy
     # can hold several tickets (INCREASE opens a new one on hedging).
     ticket_owner: dict[str, str] = field(default_factory=dict)
+    entry_at: dict[str, datetime] = field(default_factory=dict)
     entry_price: dict[str, Decimal] = field(default_factory=dict)
     entry_mid: dict[str, Decimal] = field(default_factory=dict)
     open_tickets: dict[tuple[str, str], list[str]] = field(default_factory=dict)
@@ -592,11 +617,13 @@ class BacktestEngine:
         ticket: str,
         quantity: Decimal,
         at: datetime,
-    ) -> None:
+    ) -> Decimal:
         """決済数量ぶんの計上記録を消し込み、broker 時刻が rollover より
         前だった決済（遅着 tick で後から判明する）は carry を按分で戻す。
         snapshot が無く unpriced と数えた boundary も、跨いでいなかったと
         判明した数量を取り消す。
+
+        戻り値は決済数量へ帰属した carry。
 
         訂正が直すのは金額（realized / carry_total）と同 instant の
         snapshot まで。計上と訂正の間の instant に記録済みの経路依存の
@@ -607,16 +634,20 @@ class BacktestEngine:
         負の carry の取り消しで max_drawdown が過大でも報告が悪化する側）
         に倒れる（ADR-016）。"""
         adjusted = False
+        attributed = Decimal(0)
         charged = state.carry_charged.get(ticket)
         if charged:
             remaining: list[_ChargedCarry] = []
             for entry in charged:
                 consumed = min(quantity, entry.quantity)
-                if consumed and at < entry.midnight_label:
-                    reversal = entry.per_unit * consumed
-                    state.realized -= reversal
-                    state.carry_total -= reversal
-                    adjusted = True
+                if consumed:
+                    carry = entry.per_unit * consumed
+                    if at < entry.midnight_label:
+                        state.realized -= carry
+                        state.carry_total -= carry
+                        adjusted = True
+                    else:
+                        attributed += carry
                 entry.quantity -= consumed
                 if entry.quantity > 0:
                     remaining.append(entry)
@@ -641,6 +672,7 @@ class BacktestEngine:
                 state.unpriced_rollovers -= 1
         if adjusted:
             self._refresh_same_instant_snapshots(state, w)
+        return attributed
 
     def _refresh_same_instant_snapshots(self, state: _RunState, w: _Wiring) -> None:
         """現 instant の保存済み snapshot を訂正後の値で置き換える。
@@ -681,6 +713,7 @@ class BacktestEngine:
                 action="PROTECTION_CLOSE",
                 side=fill.side,
                 origin=fill.origin.value,
+                reason=f"PROTECTION_CLOSE:{fill.protection_reason.value}",
             )
             state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
 
@@ -923,6 +956,7 @@ class BacktestEngine:
                 action=pending.action,
                 side=fill.side,
                 origin=fill.origin.value,
+                reason=pending.action,
             )
             state.snapshots.append(self._snapshot(state, w.simulator, w.clock.now()))
             self._barrier_step(state, w, pending.barrier, tick)
@@ -938,6 +972,7 @@ class BacktestEngine:
         ticket = result.position.position_id
         strategy_id = pending.strategy_id
         state.ticket_owner[ticket] = strategy_id
+        state.entry_at[ticket] = fill.broker_time
         state.entry_price[ticket] = fill.price
         state.entry_mid[ticket] = tick.mid
         state.open_tickets.setdefault((strategy_id, self._spec.symbol), []).append(ticket)
@@ -975,11 +1010,28 @@ class BacktestEngine:
         action: str,
         side: ExecutionSide,
         origin: str,
+        reason: str,
     ) -> None:
         strategy_id = state.ticket_owner[ticket]
         entry = state.entry_price[ticket]
-        state.realized += signed_pnl(direction, entry, price, quantity)
-        self._reverse_carry_for_close(state, w, ticket, quantity, at)
+        net_pnl = signed_pnl(direction, entry, price, quantity)
+        state.realized += net_pnl
+        carry = self._reverse_carry_for_close(state, w, ticket, quantity, at)
+        state.trades.append(
+            TradeRecord(
+                strategy_id=strategy_id,
+                symbol=self._spec.symbol,
+                entry_at=state.entry_at[ticket],
+                exit_at=at,
+                direction=direction.value,
+                quantity=quantity,
+                entry_price=entry,
+                exit_price=price,
+                net_pnl=net_pnl,
+                carry=carry,
+                reason=reason,
+            )
+        )
         state.gross_mid_closed += signed_pnl(
             direction, state.entry_mid[ticket], mid, quantity
         )
@@ -1008,6 +1060,7 @@ class BacktestEngine:
             if not tickets:
                 state.open_tickets.pop(slot, None)
             state.ticket_owner.pop(ticket, None)
+            state.entry_at.pop(ticket, None)
             state.entry_price.pop(ticket, None)
             state.entry_mid.pop(ticket, None)
 
@@ -1174,6 +1227,9 @@ class BacktestEngine:
         execution_cost = gross_mid - net + state.carry_total
 
         protection_fills = sum(1 for f in state.fills if f.origin == "PROTECTION")
+        trade_pnl = sum(
+            (trade.net_pnl + trade.carry for trade in state.trades), Decimal(0)
+        )
         metrics = {
             "initial_equity": str(state.initial_equity),
             "realized_pnl": str(state.realized),
@@ -1186,6 +1242,10 @@ class BacktestEngine:
             "unpriced_rollovers": str(state.unpriced_rollovers),
             "final_equity": str(state.initial_equity + net),
             "fills": str(len(state.fills)),
+            "trades": str(len(state.trades)),
+            "expectancy": (
+                str(trade_pnl / len(state.trades)) if state.trades else "NaN"
+            ),
             "protection_fills": str(protection_fills),
             "rejected_commands": str(state.rejected_commands),
             "risk_rejections": str(len(state.risk_rejections)),
@@ -1197,6 +1257,7 @@ class BacktestEngine:
         return BacktestResult(
             symbol=self._spec.symbol,
             fills=state.fills,
+            trades=state.trades,
             equity_curve=state.equity_curve,
             snapshots=state.snapshots,
             risk_rejections=state.risk_rejections,

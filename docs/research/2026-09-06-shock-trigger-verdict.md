@@ -45,7 +45,7 @@ VPS の保存 tick（2026-09-05 実行）。
 | 政策決定 | 34 |
 | dataset_hash | `f1a188be1b7e3f72539cd6a3abb5a22b2adcb5352dbe692a14b319cfa347d4b0` |
 | events_hash | `3cac0eaf7b3eb6b355c305a2e898f9e790fa1503bc2e42b1778bc8b998aac845` |
-| コード | commit 8ae78cc（PR #119 マージ直後）。実行時の VPS 作業ツリーに未コミット差分があり（`git_diff_sha256=d15ecc2b…`）、差分そのものは未保存。取得次第、本ノートと同じディレクトリに保存して参照を足す。それまでは、再現時に出力の `git_diff_sha256` が一致することで同一コードを確認する |
+| コード | commit 8ae78cc（PR #119 マージ直後）。出力の `git_dirty=True`（`git_diff_sha256=d15ecc2b…`）は、VPS 作業ツリーの未追跡ファイル（収集ログ 3 本と MT5 確認用スクリプト 3 本）によるもので、追跡ファイルの差分は無い（2026-09-07 に `git status --short` と `git diff --stat` で確認。`git_state()` は未追跡ファイルの名前と内容もハッシュに含める）。実行コードは commit と同一 |
 
 ## 結果
 

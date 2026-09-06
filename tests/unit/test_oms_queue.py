@@ -118,6 +118,19 @@ class FakeDispatchLock:
     def held(self) -> bool:
         return self._held
 
+    def lose(self) -> None:
+        self._held = False
+
+
+class LosingLockApproveAll(ApproveAll):
+    def __init__(self, dispatch_lock: FakeDispatchLock) -> None:
+        super().__init__()
+        self._dispatch_lock = dispatch_lock
+
+    def revalidate(self, entry: QueuedCommand, now: datetime) -> RiskDecision:
+        self._dispatch_lock.lose()
+        return super().revalidate(entry, now)
+
 
 class RiskRevalidator:
     def __init__(self, clock: FixedClock) -> None:
@@ -218,6 +231,28 @@ def test_dispatch_requires_the_single_dispatcher_lock():
         queue.dispatch()
 
     assert queue.pending() == (queued,)
+
+
+def test_dispatch_rechecks_dispatcher_lock_before_send():
+    clock = FixedClock()
+    limiter = RateLimiter(RateLimitConfig())
+    dispatch_lock = FakeDispatchLock()
+    queue = make_queue(
+        clock=clock,
+        limiter=limiter,
+        revalidator=LosingLockApproveAll(dispatch_lock),
+        dispatch_lock=dispatch_lock,
+    )
+    enqueue(queue)
+
+    with pytest.raises(
+        DispatcherNotHeldError,
+        match="^OMS dispatcher lock was lost before send$",
+    ):
+        queue.dispatch()
+
+    assert queue.pending() == ()
+    assert limiter.allows("USDJPY", market_entry=True, now=clock.now())
 
 
 def test_close_and_protection_repair_are_prioritized_over_new_entries():

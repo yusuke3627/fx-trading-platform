@@ -19,8 +19,8 @@ dispatch は 1 回で最大 1 件を処理し、次の順で判定する:
    Protection が先に決済した position へ裸の反対売買を送らない
 6. pre-trade risk の再評価 → 不承認または数量縮小なら CANCELLED。REJECTED は
    CLAIMED から到達できず、作成時の risk 拒否と broker 拒否に予約する
-7. 送信確定時刻で signal と claim lease を再検査し、処理中に失効した command は
-   送らない
+7. 送信確定時刻で signal と claim lease を再検査し、dispatcher lock の保持も
+   再確認する。処理中に失効した command や所有権を失った worker は送信しない
 
 rate limit の窓は送信が確定した command だけが消費する。fresh select や
 revalidation が例外を投げた command は queue から外れたままになり、lease 失効後に
@@ -28,9 +28,9 @@ sweep が READY へ戻す（壊れた entry が先頭で他の command を塞が
 
 失効・lease・rate limit は dispatch 開始時刻で判定する。ticket 付き exit の fresh select は
 broker への往復を挟むため、revalidation はその直後に読み直した時刻で行う。送信候補の
-確定後にもう一度時刻を読み、失効と lease を再検査したうえで、その時刻を rate limit と
-SUBMITTING に記録する。呼び出し元の `save_state` と `order_send` までの遅延は queue から
-観測できないため、この窓には含まれない。
+確定後にもう一度時刻を読み、失効と lease、dispatcher lock の所有権を再検査したうえで、
+その時刻を rate limit と SUBMITTING に記録する。呼び出し元の `save_state` と `order_send`
+までの遅延は queue から観測できないため、この窓には含まれない。
 """
 from __future__ import annotations
 
@@ -229,6 +229,10 @@ class ExecutionQueue:
                     entry,
                     command,
                     decision,
+                )
+            if not self._dispatch_lock.held():
+                raise DispatcherNotHeldError(
+                    "OMS dispatcher lock was lost before send"
                 )
             self._limiter.record(command.symbol, market_entry=market_entry, now=sent_at)
             return Dispatch(

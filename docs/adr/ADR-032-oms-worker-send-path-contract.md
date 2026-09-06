@@ -29,7 +29,8 @@ NULL になるため、従来どおり state だけを比較する。SQL は保�
 
 `ExecutionQueue` は `DispatchLock` を必須で受け取り、`dispatch()` の先頭で保持を確認する。
 未保持なら queue を変更せず `DispatcherNotHeldError` を送出する。process ごとに独立した
-rate limiter が同時に送信する構成は許可しない。
+rate limiter が同時に送信する構成は許可しない。送信確定直前にも `held()` を再確認し、
+未保持なら `DispatcherNotHeldError` を送出して broker 送信へ進まない。
 
 PostgreSQL 実装は 2 引数版 `pg_try_advisory_lock(classid, objid)` を使う。`classid` は
 subsystem ごとに割り当てる 4 byte の ASCII tag を big-endian の整数にし、4 byte 未満は
@@ -64,6 +65,8 @@ command へ復元する。`QueuedCommand` に期限を複製せず、queue は
   使う接続の session 終了まで保持される。正常な接続 close と process 終了による backend
   終了では PostgreSQL が lock を解放し、次の process が取得できる。異常切断時は server が
   切断を認識するまで解放が遅れる場合があり、その間は新 dispatcher が送信せず待つ。
+- 送信確定直前に所有権を失った command は CLAIMED のまま残り、lease 失効後に recovery
+  sweep が READY へ戻す。
 - netting の縮小と全決済は close / reduce の優先度と rate limit 区分に入り、新規 entry の
   1 秒窓を消費しない。idempotency key は元の intent action を使うため変わらない。
 - migration 0009 適用後は process 再起動や claim 回収を挟んでも signal expiry が失われず、

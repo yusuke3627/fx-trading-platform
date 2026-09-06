@@ -420,6 +420,45 @@ def test_same_time_history_keeps_the_polled_quote_before_newer_quotes():
     ]
 
 
+def test_last_matching_quote_stays_last_at_same_broker_time_for_bar_close():
+    # At one broker time the later stored row becomes the bar's close. When
+    # history contains A, B, A, the polled final A must therefore replace its
+    # last match rather than its first.
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.700", "158.704"),
+            info_tick(T0_MSC, "158.850", "158.854"),
+        ],
+        range_rows=[
+            range_row(T0_MSC, "158.850", "158.854"),
+            range_row(T0_MSC, "159.500", "159.504"),
+            range_row(T0_MSC, "158.850", "158.854"),
+        ],
+    )
+    collector, repository = make_collector(mt5)
+
+    collector.poll_once(SYMBOL)
+    collector.poll_once(SYMBOL)
+
+    assert [tick.bid for tick in repository.ticks[1:]] == [
+        Decimal("159.500"),
+        Decimal("158.850"),
+    ]
+    builder = BarBuilder(SYMBOL, "1m")
+    for tick in repository.ticks:
+        assert builder.on_tick(tick) is None
+    bar = builder.on_tick(
+        make_tick(
+            "158.900",
+            "158.904",
+            time=T0 + timedelta(minutes=1),
+            received_at=T0 + timedelta(minutes=1),
+        )
+    )
+    assert bar is not None
+    assert bar.close == Decimal("158.850")
+
+
 def test_the_first_poll_of_a_process_fills_no_gap():
     # With no previous quote there is no near edge to read from, and
     # guessing one would make every restart re-import an arbitrary span.

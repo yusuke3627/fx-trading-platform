@@ -195,20 +195,38 @@ class TickCollector:
                     f"failed: {self._mt5.last_error()}"
                 )
             history_received_at = self._clock.now()
+            history_ticks = []
+            for row in rows:
+                history_tick = tick_from_row(row, symbol, history_received_at)
+                history_quote = (
+                    history_tick.time,
+                    history_tick.bid,
+                    history_tick.ask,
+                )
+                history_ticks.append((history_tick, history_quote))
+            # The polled quote is the newest price the terminal reported, so it
+            # takes the LAST place history gives it: quotes sharing a broker
+            # time are read back in insertion order, and a price that returned
+            # to an earlier value would otherwise leave the bar closing on the
+            # value it moved away from.
+            last_polled_index = next(
+                (
+                    index
+                    for index in range(len(history_ticks) - 1, -1, -1)
+                    if history_ticks[index][1] == quote
+                ),
+                None,
+            )
             endpoint_quotes = {previous}
             gap_ticks: list[Tick] = []
-            polled_tick_added = False
-            for row in rows:
-                gap_tick = tick_from_row(row, symbol, history_received_at)
-                gap_quote = (gap_tick.time, gap_tick.bid, gap_tick.ask)
-                if gap_quote not in endpoint_quotes:
-                    endpoint_quotes.add(gap_quote)
-                    if gap_quote == quote:
+            for index, (gap_tick, gap_quote) in enumerate(history_ticks):
+                if gap_quote == quote:
+                    if index == last_polled_index:
                         gap_ticks.append(tick)
-                        polled_tick_added = True
-                    else:
-                        gap_ticks.append(gap_tick)
-            if not polled_tick_added:
+                elif gap_quote not in endpoint_quotes:
+                    endpoint_quotes.add(gap_quote)
+                    gap_ticks.append(gap_tick)
+            if last_polled_index is None:
                 gap_ticks.append(tick)
             ticks = sorted(gap_ticks, key=lambda item: item.time)
 

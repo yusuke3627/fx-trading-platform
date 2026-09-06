@@ -92,7 +92,26 @@ class PostgresDispatchLock:
         return self._acquired
 
     def held(self) -> bool:
-        return self._acquired and not self._conn.closed
+        if not self._acquired or self._conn.closed:
+            return False
+        try:
+            row = self._conn.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_locks
+                    WHERE locktype = 'advisory'
+                      AND classid = %s::oid
+                      AND objid = %s::oid
+                      AND objsubid = 2
+                      AND pid = pg_backend_pid()
+                      AND granted
+                ) AS held
+                """,
+                (_OMS_ADVISORY_LOCK_CLASS_ID, _OMS_DISPATCHER_LOCK_OBJECT_ID),
+            ).fetchone()
+        except psycopg.Error:
+            return False
+        return bool(row["held"])
 
 
 def _row_to_command(row: dict[str, Any]) -> ExecutionCommand:

@@ -273,3 +273,26 @@ def test_only_one_process_holds_the_dispatch_lock(workers):
     assert not lock_a.held()
     assert lock_b.acquire()
     assert lock_b.held()
+
+
+def test_dispatch_lock_detects_a_terminated_backend(workers):
+    from trading.storage.postgres import PostgresDispatchLock
+
+    worker, _ = workers
+    _, connection_a = worker()
+    _, connection_b = worker()
+    lock_a = PostgresDispatchLock(connection_a)
+    lock_b = PostgresDispatchLock(connection_b)
+
+    assert lock_a.acquire()
+    backend_pid = connection_a.execute(
+        "SELECT pg_backend_pid() AS backend_pid"
+    ).fetchone()["backend_pid"]
+    terminated = connection_b.execute(
+        "SELECT pg_terminate_backend(%s) AS terminated", (backend_pid,)
+    ).fetchone()
+    assert terminated["terminated"]
+    assert not connection_a.closed
+
+    assert not lock_a.held()
+    assert lock_b.acquire()

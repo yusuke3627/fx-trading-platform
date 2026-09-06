@@ -40,7 +40,9 @@ research など別 subsystem は別 tag を使うため、将来の advisory loc
 
 `PostgresDispatchLock` は構築時に渡された 1 接続だけを保持し、pool から接続を取り直さない。
 lock 取得と `held()` はその同じ接続に束縛し、queue はその lock object を通して dispatch の
-可否を判定する。`held()` は取得済みフラグと `conn.closed` だけを見て、DB へ問い合わせない。
+可否を判定する。`held()` は束縛 session 上で `pg_locks` を引き、`pg_backend_pid()` の backend
+が対象の advisory lock を granted で保持しているか確認する。問い合わせが接続エラーになった
+場合は未保持として扱う。dispatch の先頭と送信確定直前の 2 回、この確認が DB との往復を伴う。
 
 ### 3. D3（#115）: netting command は broker exposure の変化で分類する
 
@@ -67,6 +69,8 @@ command へ復元する。`QueuedCommand` に期限を複製せず、queue は
   切断を認識するまで解放が遅れる場合があり、その間は新 dispatcher が送信せず待つ。
 - 送信確定直前に所有権を失った command は CLAIMED のまま残り、lease 失効後に recovery
   sweep が READY へ戻す。
+- 送信確定時の所有権確認から実際の `order_send` までに backend が落ちる窓は残るが、broker
+  側に fencing token の受け口がないため、これ以上は縮められない。
 - netting の縮小と全決済は close / reduce の優先度と rate limit 区分に入り、新規 entry の
   1 秒窓を消費しない。idempotency key は元の intent action を使うため変わらない。
 - migration 0009 適用後は process 再起動や claim 回収を挟んでも signal expiry が失われず、

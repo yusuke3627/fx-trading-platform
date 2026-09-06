@@ -307,6 +307,36 @@ def test_an_unchanged_quote_costs_no_tick_history_call():
     assert mt5.range_calls == []
 
 
+def test_a_missed_same_millisecond_quote_is_recovered_when_broker_time_advances():
+    # The unchanged-quote return saves an MT5 round trip; it does not abandon
+    # same-millisecond history because the next advancing quote reads again
+    # from the unchanged quote's broker time.
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC + 200, "158.850", "158.854"),
+        ],
+        range_rows=[
+            range_row(T0_MSC, "158.840", "158.844"),
+            range_row(T0_MSC, "159.500", "159.504"),
+            range_row(T0_MSC + 200, "158.850", "158.854"),
+        ],
+    )
+    collector, repository = make_collector(mt5)
+
+    assert collector.poll_once(SYMBOL) == 1
+    assert collector.poll_once(SYMBOL) == 0
+    assert mt5.range_calls == []
+    assert collector.poll_once(SYMBOL) == 2
+
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("159.500"),
+        Decimal("158.850"),
+    ]
+
+
 def test_changed_quote_at_the_same_broker_time_fills_same_millisecond_history():
     # Several prices can share one broker millisecond. If polling observes
     # only the first and last, the range read must still recover the middle

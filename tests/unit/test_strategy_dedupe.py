@@ -38,3 +38,16 @@ def test_instances_do_not_share_memo():
     first, second = DedupeProbe(), DedupeProbe()
     assert first._new_setup("USDJPY", PositionDirection.SHORT, at(hours=1)) is True
     assert second._new_setup("USDJPY", PositionDirection.SHORT, at(hours=1)) is True
+
+
+def test_exit_only_setups_dedupe_in_their_own_slot():
+    probe = DedupeProbe()
+    setup_id = at(hours=1)
+
+    assert probe._new_setup(
+        "USDJPY", PositionDirection.SHORT, setup_id, exit_only=True
+    ) is True
+    assert probe._new_setup(
+        "USDJPY", PositionDirection.SHORT, setup_id, exit_only=True
+    ) is False
+    assert probe._new_setup("USDJPY", PositionDirection.SHORT, setup_id) is True

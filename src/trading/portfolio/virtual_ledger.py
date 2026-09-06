@@ -1,10 +1,11 @@
 """Virtual position ledger.
 
-Append-only snapshot history; the current position is the row with MAX(as_of)
-per (strategy_id, symbol), ties broken by insertion order (newest wins).
-Under a ReplayClock multiple fills can share one timestamp, so insertion
-order is part of the convention, not an edge case. Satisfies the strategy
-layer's read-only PortfolioView protocol.
+Keeps the current snapshot per (strategy_id, symbol): the row with MAX(as_of),
+ties broken by insertion order (newest wins). Under a ReplayClock multiple
+fills can share one timestamp, so insertion order is part of the convention,
+not an edge case. Strategies read it on every market event through the
+read-only PortfolioView protocol, so the current row is indexed rather than
+found by scanning the append-only history.
 """
 from __future__ import annotations
 
@@ -18,39 +19,27 @@ from trading.domain.position import PositionDirection, VirtualPosition
 class VirtualPositionLedger:
     def __init__(self, clock: Clock) -> None:
         self._clock = clock
-        self._snapshots: list[VirtualPosition] = []
+        self._latest: dict[tuple[str, str], VirtualPosition] = {}
 
     def record(self, snapshot: VirtualPosition) -> None:
-        self._snapshots.append(snapshot)
+        key = (snapshot.strategy_id, snapshot.symbol)
+        held = self._latest.get(key)
+        if held is None or snapshot.as_of >= held.as_of:
+            self._latest[key] = snapshot
 
     def position(self, strategy_id: str, symbol: str) -> VirtualPosition | None:
-        best: VirtualPosition | None = None
-        for s in self._snapshots:
-            if s.strategy_id != strategy_id or s.symbol != symbol:
-                continue
-            if best is None or s.as_of >= best.as_of:
-                best = s
-        return best
+        return self._latest.get((strategy_id, symbol))
 
     def positions_for_symbol(self, symbol: str) -> list[VirtualPosition]:
-        latest: dict[str, VirtualPosition] = {}
-        for s in self._snapshots:
-            if s.symbol != symbol:
-                continue
-            held = latest.get(s.strategy_id)
-            if held is None or s.as_of >= held.as_of:
-                latest[s.strategy_id] = s
-        return [p for p in latest.values() if p.quantity != 0]
+        return [
+            p
+            for (_, held_symbol), p in self._latest.items()
+            if held_symbol == symbol and p.quantity != 0
+        ]
 
     def open_positions(self) -> list[VirtualPosition]:
         """All symbols' current holdings — the portfolio-wide position count."""
-        latest: dict[tuple[str, str], VirtualPosition] = {}
-        for s in self._snapshots:
-            key = (s.strategy_id, s.symbol)
-            held = latest.get(key)
-            if held is None or s.as_of >= held.as_of:
-                latest[key] = s
-        return [p for p in latest.values() if p.quantity != 0]
+        return [p for p in self._latest.values() if p.quantity != 0]
 
     def net_exposure(self, symbol: str) -> Decimal:
         return sum(

@@ -194,15 +194,23 @@ class TickCollector:
                     f"copy_ticks_range({symbol}, {previous[0]}, {tick.time}) "
                     f"failed: {self._mt5.last_error()}"
                 )
-            endpoint_quotes = {previous, quote}
+            history_received_at = self._clock.now()
+            endpoint_quotes = {previous}
             gap_ticks: list[Tick] = []
+            polled_tick_added = False
             for row in rows:
-                gap_tick = tick_from_row(row, symbol, received_at)
+                gap_tick = tick_from_row(row, symbol, history_received_at)
                 gap_quote = (gap_tick.time, gap_tick.bid, gap_tick.ask)
                 if gap_quote not in endpoint_quotes:
                     endpoint_quotes.add(gap_quote)
-                    gap_ticks.append(gap_tick)
-            ticks = sorted([*gap_ticks, tick], key=lambda item: item.time)
+                    if gap_quote == quote:
+                        gap_ticks.append(tick)
+                        polled_tick_added = True
+                    else:
+                        gap_ticks.append(gap_tick)
+            if not polled_tick_added:
+                gap_ticks.append(tick)
+            ticks = sorted(gap_ticks, key=lambda item: item.time)
 
         self._last_quote[symbol] = quote
         return self._write(ticks)

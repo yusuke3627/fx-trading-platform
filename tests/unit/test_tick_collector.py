@@ -37,6 +37,7 @@ class FakeMT5:
         *,
         info_ticks=(),
         range_rows=(),
+        on_range_call=None,
         initialize_ok: bool = True,
         select_ok: bool = True,
     ) -> None:
@@ -44,6 +45,7 @@ class FakeMT5:
         # None is a failed fetch, not an empty one: the terminal reports both
         # and the collector has to tell them apart.
         self._range_rows = range_rows
+        self._on_range_call = on_range_call
         self._initialize_ok = initialize_ok
         self._select_ok = select_ok
         self.range_calls: list[tuple] = []
@@ -69,6 +71,8 @@ class FakeMT5:
 
     def copy_ticks_range(self, symbol, date_from, date_to, flags):
         self.range_calls.append((symbol, date_from, date_to, flags))
+        if self._on_range_call is not None:
+            self._on_range_call()
         if self._range_rows is None:
             return None
         if date_from == date_to:
@@ -329,6 +333,60 @@ def test_changed_quote_at_the_same_broker_time_fills_same_millisecond_history():
         Decimal("158.840"),
         Decimal("159.500"),
         Decimal("158.850"),
+    ]
+
+
+def test_history_ticks_are_known_after_the_tick_history_fetch_returns():
+    # The range read can take a while on a terminal that has to sync. Stamping
+    # what it returns with the time from before the call would claim the
+    # collector knew those prices earlier than it did, and a replay of the
+    # span would then see the burst's extremes ahead of time.
+    clock = FixedClock(T0)
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC + 200, "158.850", "158.854"),
+        ],
+        range_rows=[range_row(T0_MSC + 100, "159.500", "159.504")],
+        on_range_call=lambda: clock.advance(seconds=1),
+    )
+    collector, repository = make_collector(mt5, clock)
+
+    collector.poll_once(SYMBOL)
+    collector.poll_once(SYMBOL)
+
+    history_tick = repository.ticks[1]
+    polled_tick = repository.ticks[2]
+    assert history_tick.bid == Decimal("159.500")
+    assert polled_tick.bid == Decimal("158.850")
+    assert history_tick.known_time > polled_tick.known_time
+
+
+def test_same_time_history_keeps_the_polled_quote_before_newer_quotes():
+    # A quote can land between the two terminal calls, so the range read may
+    # hold prices newer than the polled one under the same millisecond. Stored
+    # ticks are read back in (event_time, id) order, so writing the polled
+    # quote after them would hand the bar an older close.
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC, "158.850", "158.854"),
+        ],
+        range_rows=[
+            range_row(T0_MSC, "158.840", "158.844"),
+            range_row(T0_MSC, "158.850", "158.854"),
+            range_row(T0_MSC, "159.500", "159.504"),
+        ],
+    )
+    collector, repository = make_collector(mt5)
+
+    collector.poll_once(SYMBOL)
+    collector.poll_once(SYMBOL)
+
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("158.850"),
+        Decimal("159.500"),
     ]
 
 

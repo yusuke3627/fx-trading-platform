@@ -242,6 +242,21 @@ def test_verify_comparable_rejects_dataset_mismatch():
         )
 
 
+def test_verify_comparable_rejects_runs_without_a_known_commit():
+    with_manifest = manifest("with-run", {})
+    without_manifest = manifest(
+        "without-run", {"macro_confirmation_enabled": False}
+    )
+    with_manifest["git_commit"] = "unknown"
+    without_manifest["git_commit"] = "unknown"
+
+    with pytest.raises(SystemExit, match="git_commit='unknown'"):
+        verify_comparable(
+            RunArtifacts(with_manifest, run_metrics(), []),
+            RunArtifacts(without_manifest, run_metrics(), []),
+        )
+
+
 def test_verify_comparable_rejects_python_version_mismatch():
     with_manifest = manifest("with-run", {})
     without_manifest = manifest(

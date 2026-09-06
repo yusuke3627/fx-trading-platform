@@ -136,6 +136,12 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
             )
 
     for arm, run in (("with", with_), ("without", without)):
+        git_commit = run.manifest.get("git_commit")
+        if not git_commit or git_commit == "unknown":
+            reasons.append(
+                f"{arm} git_commit={git_commit!r}; the run has no reproducible "
+                "source state (git unavailable or run outside the repository)"
+            )
         strategy_id = run.manifest.get("strategy_id")
         if strategy_id != ABLATION_STRATEGY:
             reasons.append(

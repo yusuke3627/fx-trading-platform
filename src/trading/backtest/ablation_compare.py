@@ -6,8 +6,9 @@
         --seed 42
 
 This CLI's --seed controls only bootstrap resampling. Research seeds drive
-slippage, rejects and partial fills; an extra fill shifts later shared orders,
-so confirm the verdict across several matching research-seed pairs.
+execution shocks derived from stable per-order keys, so an extra ablation-leg
+fill does not shift later shared orders. Orders whose identity changes, such as
+their timestamp or side, receive different shocks.
 """
 from __future__ import annotations
 

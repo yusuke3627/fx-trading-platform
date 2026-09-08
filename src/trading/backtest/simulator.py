@@ -2,10 +2,12 @@
 
 Fills execution commands against observed bid/ask tick streams with latency,
 slippage, rejects, partial fills and broker-side protection (SL/TP) fills —
-including stop-through in stressed scenarios. Deterministic under a seed.
+including stop-through in stressed scenarios. Execution shocks derive from a
+stable key for each order and are deterministic under a seed.
 """
 from __future__ import annotations
 
+import hashlib
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -62,7 +64,9 @@ class ExecutionSimulator:
     ) -> None:
         self._costs = costs
         self._spec = spec
-        self._rng = random.Random(seed)
+        self._seed = seed
+        self._order_key_counts: dict[str, int] = {}
+        self._position_shock_ids: dict[str, str] = {}
         self._mode = account_mode
         self._positions: dict[str, SimulatedPosition] = {}
 
@@ -100,10 +104,13 @@ class ExecutionSimulator:
         An exit never fills more than the held quantity, so a queued close
         can never manufacture a reversal.
         """
+        shock_id = self._order_shock_id(command)
+        rng = self._shock_rng(shock_id)
+
         if not ticks:
             return SimulationResult(fill=None, rejected=True, position=None)
 
-        if self._rng.random() < self._costs.reject_probability:
+        if rng.random() < self._costs.reject_probability:
             return SimulationResult(fill=None, rejected=True, position=None)
 
         # Latency runs from the command's creation, not from whatever history
@@ -158,10 +165,10 @@ class ExecutionSimulator:
             # Hedging exit without a position ticket never executes.
             return SimulationResult(fill=None, rejected=True, position=None)
 
-        price = self._execution_price(fill_tick, command.side)
+        price = self._execution_price(fill_tick, command.side, rng)
 
         quantity = command.quantity
-        if self._rng.random() < self._costs.partial_fill_probability:
+        if rng.random() < self._costs.partial_fill_probability:
             quantity = (
                 command.quantity / 2 // self._spec.volume_step
             ) * self._spec.volume_step
@@ -235,6 +242,7 @@ class ExecutionSimulator:
                 opened_at=fill_tick.time,
             )
             self._positions[position.position_id] = position
+            self._position_shock_ids[position.position_id] = shock_id
             return SimulationResult(fill=fill, rejected=False, position=position)
 
         # Apply the exit FIFO across the matched positions.
@@ -324,10 +332,52 @@ class ExecutionSimulator:
             received_at=tick.known_time,
         )
 
-    def _execution_price(self, tick: Tick, side: ExecutionSide) -> Decimal:
-        slippage_pips = abs(self._rng.gauss(0.0, self._costs.slippage_sigma_pips))
-        if self._rng.random() < self._costs.tail_probability:
-            slippage_pips += self._rng.uniform(0.0, self._costs.tail_max_pips)
+    def _order_shock_id(self, command: ExecutionCommand) -> str:
+        """Stable shock identity of one order.
+
+        Two runs that differ only in an extra fill still hand every shared
+        order the same rejects, slippage and partial fills — the difference
+        they measure is the strategy change, not a reshuffled shock stream.
+        An exit also incorporates the shock identity of the tranche it closes,
+        so an extra tranche in one arm cannot shift a shared tranche's exit.
+
+        New opening orders sharing a timestamp, symbol, side, action and
+        direction still require arrival order to distinguish them: command_id,
+        intent_id and idempotency_key are generated per run and cannot provide
+        a cross-run identity. broker_position_ticket is also generated per run
+        and only looks up the stable opening identity; it is not key material.
+        Quantity follows account equity and protection prices follow
+        volatility, so neither can identify a shared order.
+        """
+        base = (
+            f"{command.symbol}|{command.side.value}|{command.action.value}"
+            f"|{command.direction.value}|{command.created_at.isoformat()}"
+        )
+        position_shock_id = None
+        if (
+            command.action in (PositionAction.REDUCE, PositionAction.CLOSE)
+            and command.broker_position_ticket is not None
+        ):
+            position_shock_id = self._position_shock_ids.get(
+                command.broker_position_ticket
+            )
+        key = f"{position_shock_id}>{base}" if position_shock_id else base
+        occurrence = self._order_key_counts.get(key, 0)
+        self._order_key_counts[key] = occurrence + 1
+        return f"{key}#{occurrence}"
+
+    def _shock_rng(self, shock_id: str) -> random.Random:
+        derived = hashlib.blake2b(
+            f"{self._seed}|{shock_id}".encode(), digest_size=16
+        ).digest()
+        return random.Random(int.from_bytes(derived, "big"))
+
+    def _execution_price(
+        self, tick: Tick, side: ExecutionSide, rng: random.Random
+    ) -> Decimal:
+        slippage_pips = abs(rng.gauss(0.0, self._costs.slippage_sigma_pips))
+        if rng.random() < self._costs.tail_probability:
+            slippage_pips += rng.uniform(0.0, self._costs.tail_max_pips)
         slippage = Decimal(str(round(slippage_pips, 3))) * self._spec.pip_size
         if side is ExecutionSide.BUY:
             return self._stressed_ask(tick) + slippage

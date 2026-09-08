@@ -66,6 +66,11 @@ class ExecutionCommand(BaseModel):
     # opposite market order.
     broker_position_ticket: str | None = None
 
+    # Deadline the originating signal is valid until. Persisted with the row so
+    # a worker that re-claims after a lease recovery restores it instead of
+    # sending an order the signal no longer backs.
+    expires_at: datetime | None = None
+
     state: CommandState = CommandState.CREATED
 
     claimed_by: str | None = None

@@ -17,9 +17,10 @@ from tests.support import (
     usdjpy_spec,
 )
 from trading.data.market import InMemoryMarketData
-from trading.domain.order import CommandState, ExecutionSide
+from trading.domain.order import CommandState, ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel, RiskDecision
+from trading.oms.dispatch_lock import DispatcherNotHeldError
 from trading.oms.queue import (
     DispatchOutcome,
     ExecutionQueue,
@@ -110,6 +111,27 @@ class RejectAll:
         )
 
 
+class FakeDispatchLock:
+    def __init__(self, *, held: bool = True) -> None:
+        self._held = held
+
+    def held(self) -> bool:
+        return self._held
+
+    def lose(self) -> None:
+        self._held = False
+
+
+class LosingLockApproveAll(ApproveAll):
+    def __init__(self, dispatch_lock: FakeDispatchLock) -> None:
+        super().__init__()
+        self._dispatch_lock = dispatch_lock
+
+    def revalidate(self, entry: QueuedCommand, now: datetime) -> RiskDecision:
+        self._dispatch_lock.lose()
+        return super().revalidate(entry, now)
+
+
 class RiskRevalidator:
     def __init__(self, clock: FixedClock) -> None:
         self.quote = make_tick("158.840", "158.844", time=clock.now())
@@ -152,12 +174,14 @@ def make_queue(
     limiter: RateLimiter | None = None,
     revalidator: ApproveAll | RejectAll | RiskRevalidator | None = None,
     broker: FakeBroker | None = None,
+    dispatch_lock: FakeDispatchLock | None = None,
 ) -> ExecutionQueue:
     return ExecutionQueue(
         clock=clock or FixedClock(),
         rate_limiter=limiter or RateLimiter(RateLimitConfig()),
         revalidator=revalidator or ApproveAll(),
         broker=broker or FakeBroker(),
+        dispatch_lock=dispatch_lock or FakeDispatchLock(),
     )
 
 
@@ -187,6 +211,7 @@ def enqueue(
         symbol=symbol,
         quantity=quantity,
         broker_position_ticket=ticket,
+        expires_at=expires_at,
         claim_expires_at=claim_expires_at,
     )
     intent = make_intent(action=action, direction=direction, symbol=symbol)
@@ -195,8 +220,39 @@ def enqueue(
         intent,
         priority=priority if priority is not None else priority_for(command),
         arbitration_rank=rank,
-        expires_at=expires_at,
     )
+
+
+def test_dispatch_requires_the_single_dispatcher_lock():
+    queue = make_queue(dispatch_lock=FakeDispatchLock(held=False))
+    queued = enqueue(queue)
+
+    with pytest.raises(DispatcherNotHeldError, match="dispatcher lock is not held"):
+        queue.dispatch()
+
+    assert queue.pending() == (queued,)
+
+
+def test_dispatch_rechecks_dispatcher_lock_before_send():
+    clock = FixedClock()
+    limiter = RateLimiter(RateLimitConfig())
+    dispatch_lock = FakeDispatchLock()
+    queue = make_queue(
+        clock=clock,
+        limiter=limiter,
+        revalidator=LosingLockApproveAll(dispatch_lock),
+        dispatch_lock=dispatch_lock,
+    )
+    enqueue(queue)
+
+    with pytest.raises(
+        DispatcherNotHeldError,
+        match="^OMS dispatcher lock was lost before send$",
+    ):
+        queue.dispatch()
+
+    assert queue.pending() == ()
+    assert limiter.allows("USDJPY", market_entry=True, now=clock.now())
 
 
 def test_close_and_protection_repair_are_prioritized_over_new_entries():
@@ -317,6 +373,26 @@ def test_four_market_entries_wait_one_second_and_keep_arbitration_rank():
             clock.advance(seconds=1)
 
     assert symbols == ["USDJPY", "EURUSD", "GBPUSD", "GBPJPY"]
+
+
+def test_netting_shrink_does_not_consume_the_market_entry_window():
+    # A netting shrink carries no ticket and reaches the queue as REDUCE, so it
+    # is not a market new entry and must not wait behind another symbol's one.
+    clock = FixedClock()
+    queue = make_queue(clock=clock)
+    enqueue(queue, symbol="EURUSD")
+
+    market_entry = queue.dispatch()
+    assert market_entry is not None
+    assert market_entry.outcome is DispatchOutcome.SEND
+
+    reduction = enqueue(queue, action=PositionAction.REDUCE)
+    assert reduction.priority is QueuePriority.CLOSE_REDUCE
+    dispatched = queue.dispatch()
+
+    assert dispatched is not None
+    assert dispatched.outcome is DispatchOutcome.SEND
+    assert dispatched.entry is reduction
 
 
 def test_per_symbol_limit_skips_blocked_exit_for_another_symbol():
@@ -648,3 +724,22 @@ def test_emergency_still_obeys_per_symbol_rate_limit():
     dispatched = queue.dispatch()
     assert dispatched is not None
     assert dispatched.outcome is DispatchOutcome.SEND
+
+
+def test_expiry_survives_a_reclaim_and_is_not_passed_to_enqueue():
+    # What a worker re-claiming after a lease recovery holds: the row read back
+    # from the database, with no in-memory expiry to hand to enqueue.
+    clock = FixedClock()
+    queue = make_queue(clock=clock)
+    claimed = make_command(
+        state=CommandState.CLAIMED, expires_at=at(seconds=2)
+    )
+    reclaimed = ExecutionCommand.model_validate(claimed.model_dump(mode="json"))
+    queue.enqueue(reclaimed, make_intent(), priority=QueuePriority.NEW_ENTRY)
+    clock.advance(seconds=3)
+
+    dispatched = queue.dispatch()
+
+    assert dispatched is not None
+    assert dispatched.outcome is DispatchOutcome.EXPIRED
+    assert dispatched.command.state is CommandState.EXPIRED

@@ -25,7 +25,7 @@ from trading.domain.order import (
     ExecutionSide,
     execution_side,
 )
-from trading.domain.position import BrokerPosition, PositionAction
+from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 
 
 class NakedExitError(RuntimeError):
@@ -77,6 +77,7 @@ class OMSService:
         intent: PositionIntent,
         volume_step: Decimal,
         sequence: int = 0,
+        expires_at: datetime | None = None,
     ) -> ExecutionCommand | None:
         """Difference-only order for a netting account; None when the delta is
         below one volume step.
@@ -120,8 +121,31 @@ class OMSService:
         if crosses_zero:
             quantity = abs(current_net)
         side = ExecutionSide.BUY if delta > 0 else ExecutionSide.SELL
+        # On a netting book the intent's action describes the strategy's wish,
+        # not what the order does to the broker exposure: a LONG OPEN that
+        # shrinks a net short is risk reduction. Execution downstream (queue
+        # priority, the market-entry rate window) grades the order, so the
+        # command is labelled by the exposure change instead. The position
+        # direction is the side being unwound, which is the sign of the
+        # current net — never the intent's direction.
+        resulting_net = Decimal(0) if crosses_zero else desired_net
+        action, direction = intent.action, intent.direction
+        if abs(resulting_net) < abs(current_net):
+            action = (
+                PositionAction.CLOSE if resulting_net == 0 else PositionAction.REDUCE
+            )
+            direction = (
+                PositionDirection.LONG if current_net > 0 else PositionDirection.SHORT
+            )
         return self._command(
-            intent, symbol=symbol, side=side, quantity=quantity, sequence=sequence
+            intent,
+            symbol=symbol,
+            side=side,
+            action=action,
+            direction=direction,
+            quantity=quantity,
+            sequence=sequence,
+            expires_at=expires_at,
         )
 
     def command_for_entry(
@@ -131,6 +155,7 @@ class OMSService:
         symbol: str,
         quantity: Decimal,
         sequence: int = 0,
+        expires_at: datetime | None = None,
     ) -> ExecutionCommand:
         """Entry command (OPEN/INCREASE) for the risk-approved quantity."""
         if intent.action not in (PositionAction.OPEN, PositionAction.INCREASE):
@@ -139,8 +164,11 @@ class OMSService:
             intent,
             symbol=symbol,
             side=execution_side(intent.direction, intent.action),
+            action=intent.action,
+            direction=intent.direction,
             quantity=quantity,
             sequence=sequence,
+            expires_at=expires_at,
         )
 
     def prepare_exit(self, ticket: str) -> ExitPlan:
@@ -163,6 +191,7 @@ class OMSService:
         ticket: str,
         quantity: Decimal | None = None,
         sequence: int = 0,
+        expires_at: datetime | None = None,
     ) -> ExecutionCommand | None:
         """Ticket-referenced REDUCE/CLOSE for a hedging account."""
         if self._mode is not AccountMode.HEDGING:
@@ -194,9 +223,12 @@ class OMSService:
             intent,
             symbol=plan.position.symbol,
             side=execution_side(plan.position.direction, intent.action),
+            action=intent.action,
+            direction=intent.direction,
             quantity=exit_quantity,
             ticket=ticket,
             sequence=sequence,
+            expires_at=expires_at,
         )
 
     def validate_command(self, command: ExecutionCommand) -> None:
@@ -218,9 +250,12 @@ class OMSService:
         *,
         symbol: str,
         side: ExecutionSide,
+        action: PositionAction,
+        direction: PositionDirection,
         quantity: Decimal,
         ticket: str | None = None,
         sequence: int = 0,
+        expires_at: datetime | None = None,
     ) -> ExecutionCommand:
         """`sequence` distinguishes legitimate follow-up commands from the
         same intent (e.g. a re-delta after a partial fill), and the ticket
@@ -236,8 +271,8 @@ class OMSService:
             ),
             symbol=symbol,
             side=side,
-            action=intent.action,
-            direction=intent.direction,
+            action=action,
+            direction=direction,
             quantity=quantity,
             stop_loss_price=(
                 intent.protection.stop_loss_price if intent.protection else None
@@ -246,6 +281,7 @@ class OMSService:
                 intent.protection.take_profit_price if intent.protection else None
             ),
             broker_position_ticket=ticket,
+            expires_at=expires_at,
             state=CommandState.CREATED,
             created_at=now,
         )

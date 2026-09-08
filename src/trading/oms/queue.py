@@ -2,20 +2,25 @@
 
 DB の claim は READY 行を created_at 順に 1 行ずつ取るだけで、複数の command を
 見比べて順位を付けられない。そこで worker が claim した CLAIMED の command を
-ここに載せ、送信順・送信間隔・送信直前の再確認をまとめて担う。
+ここに載せ、DB から復元した signal 失効時刻も含め、送信順・送信間隔・送信直前の
+再確認をまとめて担う。
+
+複数 process が個別の rate limiter を持って broker 上限を超えないよう、dispatch は
+単一 dispatcher lock を保持する worker だけが実行できる。
 
 dispatch は 1 回で最大 1 件を処理し、次の順で判定する:
 
-1. signal の失効（expires_at）→ EXPIRED。rate limit の有無に関わらず送らない
-2. claim lease の失効 → 送らず捨てる（回収は recovery sweep の責務。同じ行を
+1. 単一 dispatcher lock の保持 → 未保持なら queue を変更せず拒否する
+2. signal の失効（command.expires_at）→ EXPIRED。rate limit の有無に関わらず送らない
+3. claim lease の失効 → 送らず捨てる（回収は recovery sweep の責務。同じ行を
    2 経路から送らないため、状態遷移もしない）
-3. rate limit → 待ちの command は飛ばし、別の窓に属する command を先に見る
-4. ticket 付き exit の fresh select → position が無ければ NOOP（CANCELLED）。
+4. rate limit → 待ちの command は飛ばし、別の窓に属する command を先に見る
+5. ticket 付き exit の fresh select → position が無ければ NOOP（CANCELLED）。
    Protection が先に決済した position へ裸の反対売買を送らない
-5. pre-trade risk の再評価 → 不承認または数量縮小なら CANCELLED。REJECTED は
+6. pre-trade risk の再評価 → 不承認または数量縮小なら CANCELLED。REJECTED は
    CLAIMED から到達できず、作成時の risk 拒否と broker 拒否に予約する
-6. 送信確定時刻で signal と claim lease を再検査し、処理中に失効した command は
-   送らない
+7. 送信確定時刻で signal と claim lease を再検査し、dispatcher lock の保持も
+   再確認する。処理中に失効した command や所有権を失った worker は送信しない
 
 rate limit の窓は送信が確定した command だけが消費する。fresh select や
 revalidation が例外を投げた command は queue から外れたままになり、lease 失効後に
@@ -23,9 +28,9 @@ sweep が READY へ戻す（壊れた entry が先頭で他の command を塞が
 
 失効・lease・rate limit は dispatch 開始時刻で判定する。ticket 付き exit の fresh select は
 broker への往復を挟むため、revalidation はその直後に読み直した時刻で行う。送信候補の
-確定後にもう一度時刻を読み、失効と lease を再検査したうえで、その時刻を rate limit と
-SUBMITTING に記録する。呼び出し元の `save_state` と `order_send` までの遅延は queue から
-観測できないため、この窓には含まれない。
+確定後にもう一度時刻を読み、失効と lease、dispatcher lock の所有権を再検査したうえで、
+その時刻を rate limit と SUBMITTING に記録する。呼び出し元の `save_state` と `order_send`
+までの遅延は queue から観測できないため、この窓には含まれない。
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ from trading.domain.order import CommandState, ExecutionCommand
 from trading.domain.position import PositionAction
 from trading.domain.risk import RiskDecision
 from trading.oms.claim import mark_submitting
+from trading.oms.dispatch_lock import DispatcherNotHeldError, DispatchLock
 from trading.oms.rate_limit import RateLimiter
 from trading.oms.service import BrokerPositionReader
 from trading.oms.state_machine import transition
@@ -75,7 +81,6 @@ class QueuedCommand:
     priority: QueuePriority
     sequence: int
     arbitration_rank: int | None = None
-    expires_at: datetime | None = None
 
     def sort_key(self) -> tuple[int, int, int, int]:
         # 同 priority では Arbitrator の rank 付きを rank 順で先に、rank 無しは
@@ -115,11 +120,13 @@ class ExecutionQueue:
         rate_limiter: RateLimiter,
         revalidator: Revalidator,
         broker: BrokerPositionReader,
+        dispatch_lock: DispatchLock,
     ) -> None:
         self._clock = clock
         self._limiter = rate_limiter
         self._revalidator = revalidator
         self._broker = broker
+        self._dispatch_lock = dispatch_lock
         self._entries: list[QueuedCommand] = []
         self._sequence = count()
 
@@ -130,7 +137,6 @@ class ExecutionQueue:
         *,
         priority: QueuePriority,
         arbitration_rank: int | None = None,
-        expires_at: datetime | None = None,
     ) -> QueuedCommand:
         if command.state is not CommandState.CLAIMED:
             raise ValueError("execution queue accepts only CLAIMED commands")
@@ -143,7 +149,6 @@ class ExecutionQueue:
             priority=priority,
             sequence=next(self._sequence),
             arbitration_rank=arbitration_rank,
-            expires_at=expires_at,
         )
         self._entries.append(entry)
         return entry
@@ -156,11 +161,13 @@ class ExecutionQueue:
 
     def dispatch(self) -> Dispatch | None:
         """優先順で最初に送れる 1 件を処理する。None は空か全件 rate limit 待ち。"""
+        if not self._dispatch_lock.held():
+            raise DispatcherNotHeldError("OMS dispatcher lock is not held")
         # 失効・lease・rate limit は同じ dispatch 開始時刻で判定する。
         now = self._clock.now()
         for entry in sorted(self._entries, key=QueuedCommand.sort_key):
             command = entry.command
-            if entry.expires_at is not None and now >= entry.expires_at:
+            if command.expires_at is not None and now >= command.expires_at:
                 self._entries.remove(entry)
                 expired = transition(command, CommandState.EXPIRED, now=now)
                 return Dispatch(DispatchOutcome.EXPIRED, entry, expired)
@@ -210,7 +217,7 @@ class ExecutionQueue:
                 )
 
             sent_at = self._clock.now()
-            if entry.expires_at is not None and sent_at >= entry.expires_at:
+            if command.expires_at is not None and sent_at >= command.expires_at:
                 expired = transition(command, CommandState.EXPIRED, now=sent_at)
                 return Dispatch(DispatchOutcome.EXPIRED, entry, expired, decision)
             if (
@@ -222,6 +229,10 @@ class ExecutionQueue:
                     entry,
                     command,
                     decision,
+                )
+            if not self._dispatch_lock.held():
+                raise DispatcherNotHeldError(
+                    "OMS dispatcher lock was lost before send"
                 )
             self._limiter.record(command.symbol, market_entry=market_entry, now=sent_at)
             return Dispatch(

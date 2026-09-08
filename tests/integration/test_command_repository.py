@@ -20,6 +20,7 @@ import pytest
 
 from tests.support import make_command
 from trading.domain.order import CommandState
+from trading.oms.state_machine import transition
 from trading.storage.repository import StaleCommandStateError
 
 DSN = os.environ.get("TRADING_DB_DSN")
@@ -59,8 +60,9 @@ def workers():
     # Release first: a test that left a row locked would otherwise block the
     # delete until this connection went away, which is only after the timeout.
     for conn in connections:
-        conn.rollback()
-        conn.close()
+        if not conn.closed:
+            conn.rollback()
+            conn.close()
     cleanup = connect(DSN)
     cleanup.execute(
         "DELETE FROM execution_commands WHERE idempotency_key LIKE %s", (f"{prefix}%",)
@@ -90,6 +92,19 @@ def test_a_command_round_trips_through_the_database(workers):
     repo.insert(written)
 
     assert repo.get(str(written.command_id)) == written
+
+
+def test_signal_expiry_round_trips_through_the_database(workers):
+    worker, prefix = workers
+    repo, _ = worker()
+    expires_at = T0 + timedelta(minutes=5)
+    written = command(prefix, 1).model_copy(update={"expires_at": expires_at})
+
+    repo.insert(written)
+
+    restored = repo.get(str(written.command_id))
+    assert restored is not None
+    assert restored.expires_at == expires_at
 
 
 def test_claiming_takes_the_oldest_ready_command(workers):
@@ -159,12 +174,64 @@ def test_a_state_that_moved_underneath_the_caller_is_refused(workers):
         )
 
 
+def test_a_write_from_a_worker_whose_claim_was_taken_over_is_refused(workers):
+    worker, prefix = workers
+    worker_a, _ = worker()
+    worker_b, _ = worker()
+    written = command(prefix, 1)
+    worker_a.insert(written)
+    claimed_by_a = worker_a.claim_next("worker-a", 30, T0)
+    assert claimed_by_a is not None
+
+    released = transition(
+        claimed_by_a, CommandState.READY, now=T0 + timedelta(seconds=31)
+    )
+    worker_a.save_state(released, CommandState.CLAIMED)
+    claimed_by_b = worker_b.claim_next(
+        "worker-b", 30, T0 + timedelta(seconds=31)
+    )
+    assert claimed_by_b is not None
+
+    stale_write = claimed_by_a.model_copy(update={"state": CommandState.SUBMITTING})
+    with pytest.raises(StaleCommandStateError):
+        worker_a.save_state(stale_write, CommandState.CLAIMED)
+
+    stored = worker_b.get(str(written.command_id))
+    assert stored is not None
+    assert stored.state is CommandState.CLAIMED
+    assert stored.claimed_by == "worker-b"
+    assert stored.claim_expires_at == T0 + timedelta(seconds=61)
+
+
+def test_releasing_an_expired_claim_still_writes(workers):
+    worker, prefix = workers
+    repo, _ = worker()
+    written = command(prefix, 1)
+    repo.insert(written)
+    claimed = repo.claim_next("worker-a", 30, T0)
+    assert claimed is not None
+    released = transition(
+        claimed, CommandState.READY, now=T0 + timedelta(seconds=31)
+    )
+
+    repo.save_state(released, CommandState.CLAIMED)
+
+    stored = repo.get(str(written.command_id))
+    assert stored is not None
+    assert stored.state is CommandState.READY
+    assert stored.claimed_by is None
+    assert stored.claimed_at is None
+    assert stored.claim_expires_at is None
+
+
 def test_save_state_persists_send_time_adjusted_quantity(workers):
     worker, prefix = workers
     repo, _ = worker()
-    written = command(prefix, 1, state=CommandState.CLAIMED)
+    written = command(prefix, 1)
     repo.insert(written)
-    adjusted = written.model_copy(
+    claimed = repo.claim_next("worker-a", 30, T0)
+    assert claimed is not None
+    adjusted = claimed.model_copy(
         update={"state": CommandState.SUBMITTING, "quantity": Decimal(400)}
     )
 
@@ -185,3 +252,47 @@ def test_commands_can_be_listed_by_state(workers):
     listed = repo.in_state(CommandState.READY)
 
     assert [c.command_id for c in listed] == [ready.command_id]
+
+
+def test_only_one_process_holds_the_dispatch_lock(workers):
+    from trading.storage.postgres import PostgresDispatchLock
+
+    worker, _ = workers
+    _, connection_a = worker()
+    _, connection_b = worker()
+    lock_a = PostgresDispatchLock(connection_a)
+    lock_b = PostgresDispatchLock(connection_b)
+
+    assert lock_a.acquire()
+    assert lock_a.held()
+    assert not lock_b.acquire()
+    assert not lock_b.held()
+
+    connection_a.close()
+
+    assert not lock_a.held()
+    assert lock_b.acquire()
+    assert lock_b.held()
+
+
+def test_dispatch_lock_detects_a_terminated_backend(workers):
+    from trading.storage.postgres import PostgresDispatchLock
+
+    worker, _ = workers
+    _, connection_a = worker()
+    _, connection_b = worker()
+    lock_a = PostgresDispatchLock(connection_a)
+    lock_b = PostgresDispatchLock(connection_b)
+
+    assert lock_a.acquire()
+    backend_pid = connection_a.execute(
+        "SELECT pg_backend_pid() AS backend_pid"
+    ).fetchone()["backend_pid"]
+    terminated = connection_b.execute(
+        "SELECT pg_terminate_backend(%s) AS terminated", (backend_pid,)
+    ).fetchone()
+    assert terminated["terminated"]
+    assert not connection_a.closed
+
+    assert not lock_a.held()
+    assert lock_b.acquire()

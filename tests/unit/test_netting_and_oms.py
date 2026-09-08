@@ -9,7 +9,7 @@ from trading.data.market import InMemoryMarketData
 from trading.domain.account import AccountMode
 from trading.domain.intent import PositionIntent
 from trading.domain.money import Currency
-from trading.domain.order import ExecutionSide
+from trading.domain.order import ExecutionSide, execution_side
 from trading.domain.position import (
     BrokerPosition,
     PositionAction,
@@ -93,6 +93,8 @@ def test_netting_command_orders_the_delta_not_raw_quantity():
         volume_step=Decimal(1000),
     )
     assert command is not None
+    assert command.action is PositionAction.OPEN
+    assert command.direction is PositionDirection.SHORT
     assert command.side is ExecutionSide.SELL
     assert command.quantity == Decimal(30000)
 
@@ -144,7 +146,7 @@ def test_netting_reversal_open_waits_for_flat_book():
     assert command.quantity == Decimal(1000)
 
 
-def test_netting_same_sign_reduction_is_ordered():
+def test_netting_shrink_delta_is_a_reduce_command():
     # An opposite-direction strategy shrinking the net (-80k -> -60k via a
     # LONG add) is an ordinary same-sign delta: BUY 20,000 goes out, no wait.
     oms = OMSService(
@@ -161,8 +163,32 @@ def test_netting_same_sign_reduction_is_ordered():
         volume_step=Decimal(1000),
     )
     assert command is not None
+    assert command.action is PositionAction.REDUCE
+    assert command.direction is PositionDirection.SHORT
     assert command.side is ExecutionSide.BUY
     assert command.quantity == Decimal(20000)
+
+
+def test_netting_flatten_delta_is_a_close_command():
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(-80000)),
+        clock=SystemClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(0),
+        intent=make_intent(
+            action=PositionAction.CLOSE, direction=PositionDirection.SHORT
+        ),
+        volume_step=Decimal(1000),
+    )
+
+    assert command is not None
+    assert command.action is PositionAction.CLOSE
+    assert command.direction is PositionDirection.SHORT
+    assert command.side is ExecutionSide.BUY
+    assert command.quantity == Decimal(80000)
 
 
 def test_netting_zero_cross_flattens_only():
@@ -180,8 +206,40 @@ def test_netting_zero_cross_flattens_only():
         volume_step=Decimal(1000),
     )
     assert command is not None
+    assert command.action is PositionAction.CLOSE
+    assert command.direction is PositionDirection.LONG
     assert command.side is ExecutionSide.SELL
     assert command.quantity == Decimal(1000)
+
+
+@pytest.mark.parametrize(
+    ("current_net", "desired_net", "intent_action", "intent_direction"),
+    [
+        ("-80000", "-60000", PositionAction.OPEN, PositionDirection.LONG),
+        ("-80000", "0", PositionAction.CLOSE, PositionDirection.SHORT),
+        ("1000", "-1000", PositionAction.CLOSE, PositionDirection.SHORT),
+        ("-80000", "-110000", PositionAction.OPEN, PositionDirection.SHORT),
+    ],
+)
+def test_netting_command_side_matches_action_and_direction(
+    current_net, desired_net, intent_action, intent_direction
+):
+    # direction is a PositionDirection and side an ExecutionSide: relabelling a
+    # shrink must not leave the two disagreeing about which way the order goes.
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(current_net)),
+        clock=SystemClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(desired_net),
+        intent=make_intent(action=intent_action, direction=intent_direction),
+        volume_step=Decimal(1000),
+    )
+
+    assert command is not None
+    assert execution_side(command.direction, command.action) is command.side
 
 
 def test_netting_exit_after_protection_close_is_noop_not_reversal():
@@ -321,6 +379,46 @@ def test_hedging_exit_idempotency_key_distinguishes_tickets():
     assert first is not None and second is not None and retry is not None
     assert first.idempotency_key != second.idempotency_key
     assert first.idempotency_key == retry.idempotency_key
+
+
+def test_oms_command_carries_the_signal_expiry():
+    netting = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(0)),
+        clock=SystemClock(),
+    )
+    entry = netting.command_for_entry(
+        intent=make_intent(),
+        symbol="USDJPY",
+        quantity=Decimal(1000),
+        expires_at=T0,
+    )
+    netting_command = netting.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(-1000),
+        intent=make_intent(direction=PositionDirection.SHORT),
+        volume_step=Decimal(1000),
+        expires_at=T0,
+    )
+
+    hedging = OMSService(
+        account_mode=AccountMode.HEDGING,
+        broker=FakeBroker({"1001": short_position()}),
+        clock=SystemClock(),
+    )
+    hedging_exit = hedging.command_for_hedging_exit(
+        intent=make_intent(
+            action=PositionAction.CLOSE, direction=PositionDirection.SHORT
+        ),
+        ticket="1001",
+        expires_at=T0,
+    )
+
+    assert netting_command is not None
+    assert hedging_exit is not None
+    assert entry.expires_at == T0
+    assert netting_command.expires_at == T0
+    assert hedging_exit.expires_at == T0
 
 
 def test_naked_exit_command_is_rejected_on_hedging():

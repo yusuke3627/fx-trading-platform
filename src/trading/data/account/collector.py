@@ -7,6 +7,9 @@ can see when the window's start has none — so a gap in the series does not
 disable a limit, it moves the baseline and reports a different loss than the
 real one. The series has to be kept, not merely available.
 
+Daily realized P&L is summed from MT5 trade deals rather than inferred from a
+balance change, so deposits and withdrawals do not become trading results.
+
 The MT5 module is injected rather than the execution adapter, exactly as the
 tick collector does it: an object able to send orders has no business inside a
 process whose only job is to observe.
@@ -24,19 +27,29 @@ from __future__ import annotations
 
 import argparse
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from trading.backtest.clock import Clock, SystemClock
+from trading.data.account.realized_pnl import realized_pnl_between
 from trading.data.cli import poll_interval
+from trading.data.market.dukascopy import known_to_broker_label
 from trading.domain.account import AccountSnapshot
-from trading.execution.mt5.adapter import MT5ConnectionError, load_mt5_module
+from trading.execution.mt5.adapter import (
+    BROKER_TIME_MARGIN,
+    MT5ConnectionError,
+    load_mt5_module,
+)
 from trading.execution.mt5.mapper import account_key_from_info
 from trading.risk.limits import jst_day_start
 from trading.storage.repository import AccountSnapshotRepository
 
 DEFAULT_INTERVAL_SECONDS = 60.0
+
+# Published MT5 success code, duplicated like the constants in
+# execution/mt5/mapper.py so the module stays testable off Windows.
+RES_S_OK = 1
 
 
 def build_snapshot(
@@ -44,13 +57,11 @@ def build_snapshot(
     *,
     observed_at: datetime,
     previous: AccountSnapshot | None,
-    day_baseline: AccountSnapshot | None,
+    realized_pnl_day: Decimal,
 ) -> AccountSnapshot:
     """One observation of the account, placed against what came before it.
 
-    `previous` carries the high-water mark forward and `day_baseline` fixes
-    where the JST day started; both come from the stored series rather than
-    from the terminal, which knows neither.
+    `previous` carries the high-water mark forward from the stored series.
     """
     balance = _money(info.balance)
     equity = _money(info.equity)
@@ -59,12 +70,6 @@ def build_snapshot(
     # every drawdown; taking the max of the window being read would let it
     # decay as old rows age out and quietly forgive the drawdown.
     high_water_mark = max(previous.high_water_mark, equity) if previous else equity
-    # The day's balance move since its first snapshot. Trading is not the only
-    # thing that moves balance — a deposit or a withdrawal moves it too, and
-    # this figure cannot tell them apart, so on a day with a funding
-    # transaction it is not the trading result (issue #36). Risk does not read
-    # it: every limit is measured on equity.
-    day_open_balance = day_baseline.balance if day_baseline else balance
     return AccountSnapshot(
         observed_at=observed_at,
         balance=balance,
@@ -76,7 +81,7 @@ def build_snapshot(
         # differently.
         margin_level=_money(info.margin_level) if margin > 0 else None,
         unrealized_pnl=_money(info.profit),
-        realized_pnl_day=balance - day_open_balance,
+        realized_pnl_day=realized_pnl_day,
         high_water_mark=high_water_mark,
         drawdown_from_hwm=max(high_water_mark - equity, Decimal(0)),
         broker_connected=True,
@@ -92,10 +97,12 @@ class AccountSnapshotCollector:
         self,
         repository: AccountSnapshotRepository,
         *,
+        server_ahead_of_ny_hours: float,
         clock: Clock | None = None,
         mt5_module: Any | None = None,
     ) -> None:
         self._repository = repository
+        self._server_ahead_of_ny = timedelta(hours=server_ahead_of_ny_hours)
         self._clock = clock or SystemClock()
         self._mt5 = mt5_module if mt5_module is not None else load_mt5_module()
 
@@ -112,15 +119,34 @@ class AccountSnapshotCollector:
             raise MT5ConnectionError(f"account_info failed: {self._mt5.last_error()}")
         account_id = account_key_from_info(info)
         now = self._clock.now()
-        today = self._repository.known_before(account_id, now, jst_day_start(now))
         snapshot = build_snapshot(
             info,
             observed_at=now,
             previous=self._repository.latest_known_before(account_id, now),
-            day_baseline=today[0] if today else None,
+            realized_pnl_day=self._realized_pnl_day(jst_day_start(now), now),
         )
         self._repository.insert(account_id, snapshot)
         return snapshot
+
+    def _realized_pnl_day(self, day_start: datetime, now: datetime) -> Decimal:
+        start = known_to_broker_label(day_start, self._server_ahead_of_ny)
+        end = known_to_broker_label(now, self._server_ahead_of_ny)
+        raw = self._mt5.history_deals_get(
+            start - BROKER_TIME_MARGIN, end + BROKER_TIME_MARGIN
+        )
+        # 執行系の adapter は MT5 の None を無条件で失敗として扱う。あちらは取得失敗を
+        # 「建玉が無い」と読むと exit が生きた建玉を飛ばすからで、ここは害の向きが逆になる
+        # ―― 監視用の系列なので、約定の無い日に落ちれば系列そのものが欠測する。空区間に
+        # None と空タプルのどちらが返るかは Windows 実機でしか確かめられず、issue #130 で
+        # 追跡している。
+        if raw is None:
+            code, description = self._mt5.last_error()
+            if code != RES_S_OK:
+                raise MT5ConnectionError(
+                    f"history_deals_get failed: ({code}, {description})"
+                )
+            raw = ()
+        return realized_pnl_between(raw, start=start, end=end)
 
     def run(self, interval_seconds: float) -> None:
         while True:
@@ -153,7 +179,10 @@ def main() -> None:
     # Imported here so the module stays unit-testable without the db extra.
     from trading.storage.postgres import PostgresAccountSnapshotRepository, connect
 
-    collector = AccountSnapshotCollector(PostgresAccountSnapshotRepository(connect(dsn)))
+    collector = AccountSnapshotCollector(
+        PostgresAccountSnapshotRepository(connect(dsn)),
+        server_ahead_of_ny_hours=config.market.broker_server_ahead_of_ny_hours,
+    )
     collector.connect()
     try:
         if args.once:

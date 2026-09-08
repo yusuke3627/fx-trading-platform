@@ -1,15 +1,23 @@
 """Account snapshots: the high-water mark carries forward, the JST day does not."""
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 
 from tests.support import T0, FakeAccountSnapshotRepository, FixedClock, at, make_snapshot
-from trading.data.account.collector import AccountSnapshotCollector, build_snapshot
+from trading.data.account.collector import (
+    RES_S_OK,
+    AccountSnapshotCollector,
+    build_snapshot,
+)
+from trading.data.market.dukascopy import known_to_broker_label
 from trading.execution.mt5.adapter import MT5ConnectionError
 
 # T0 is 09:00 JST, so the JST day it belongs to opened nine hours earlier.
 JST_DAY_START = at(hours=-9)
+SERVER_AHEAD_OF_NY_HOURS = 7.0
+SERVER_AHEAD_OF_NY = timedelta(hours=SERVER_AHEAD_OF_NY_HOURS)
 
 
 DEMO_LOGIN = 10000001
@@ -41,8 +49,18 @@ def account_info(
 
 
 class FakeMt5:
-    def __init__(self, info: SimpleNamespace | None = None) -> None:
+    def __init__(
+        self,
+        info: SimpleNamespace | None = None,
+        *,
+        deals: tuple[SimpleNamespace, ...] = (),
+        history_deals_none: bool = False,
+        error: tuple[int, str] = (-1, "fake terminal"),
+    ) -> None:
         self.info = info if info is not None else account_info()
+        self.deals = deals
+        self.history_deals_none = history_deals_none
+        self.error = error
         self.initialized = False
         self.was_shut_down = False
 
@@ -56,13 +74,29 @@ class FakeMt5:
     def account_info(self) -> SimpleNamespace | None:
         return self.info
 
+    def history_deals_get(
+        self, date_from, date_to
+    ) -> tuple[SimpleNamespace, ...] | None:
+        if self.history_deals_none:
+            return None
+        return tuple(
+            deal
+            for deal in self.deals
+            if date_from.timestamp() <= deal.time <= date_to.timestamp()
+        )
+
     def last_error(self) -> tuple[int, str]:
-        return (-1, "fake terminal")
+        return self.error
 
 
-def snapshot_of(info: SimpleNamespace, *, previous=None, day_baseline=None):
+def snapshot_of(
+    info: SimpleNamespace, *, previous=None, realized_pnl_day=Decimal(0)
+):
     return build_snapshot(
-        info, observed_at=T0, previous=previous, day_baseline=day_baseline
+        info,
+        observed_at=T0,
+        previous=previous,
+        realized_pnl_day=realized_pnl_day,
     )
 
 
@@ -93,34 +127,50 @@ def test_the_high_water_mark_survives_a_drawdown():
     assert snapshot.drawdown_from_hwm == Decimal(20000)
 
 
-def test_the_day_result_is_the_balance_move_since_the_days_first_snapshot():
-    opening = make_snapshot("1000000", observed_at=at(hours=-8), balance="1000000")
-
+def test_snapshot_records_the_realized_pnl_supplied_from_deal_history():
     snapshot = snapshot_of(
         account_info(balance="1000500", equity="1002000"),
-        previous=opening,
-        day_baseline=opening,
+        realized_pnl_day=Decimal("-125.5"),
     )
 
-    assert snapshot.realized_pnl_day == Decimal(500)
-    # The open book's swing belongs to unrealized, not to the day's result.
+    assert snapshot.realized_pnl_day == Decimal("-125.5")
     assert snapshot.unrealized_pnl == Decimal(0)
 
 
-def test_the_day_result_starts_from_zero_when_the_jst_day_has_no_snapshot_yet():
-    # Yesterday's rows are not a baseline for today: the JST rollover resets
-    # what "the day's result" means. The mark is not reset by it — it belongs to
-    # the account's whole history, not to a calendar day.
-    yesterday = make_snapshot(
-        "1000000", observed_at=at(hours=-10), balance="900000", high_water_mark="1050000"
+def test_funding_deals_are_excluded_from_the_collected_day_result():
+    # The balance the terminal reports includes a 100,000 deposit, so the old
+    # balance-difference figure would have booked the deposit as a win. The
+    # deals say the trading result was 100.
+    broker_time = known_to_broker_label(T0, SERVER_AHEAD_OF_NY).timestamp()
+    terminal = FakeMt5(
+        account_info(balance="1100100"),
+        deals=(
+            SimpleNamespace(
+                type=0,
+                time=broker_time,
+                profit=125.0,
+                commission=-5.0,
+                swap=-20.0,
+            ),
+            SimpleNamespace(
+                type=2,
+                time=broker_time,
+                profit=100000.0,
+                commission=0.0,
+                swap=0.0,
+            ),
+        ),
+    )
+    collector = AccountSnapshotCollector(
+        FakeAccountSnapshotRepository(),
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=FixedClock(T0),
+        mt5_module=terminal,
     )
 
-    snapshot = snapshot_of(
-        account_info(balance="1000500"), previous=yesterday, day_baseline=None
-    )
+    snapshot = collector.collect_once()
 
-    assert snapshot.realized_pnl_day == Decimal(0)
-    assert snapshot.high_water_mark == Decimal(1050000)
+    assert snapshot.realized_pnl_day == Decimal(100)
 
 
 def test_margin_level_is_absent_when_nothing_is_committed_to_margin():
@@ -137,7 +187,10 @@ def test_collect_once_appends_the_observation_to_the_series():
     repository = FakeAccountSnapshotRepository()
     terminal = FakeMt5(account_info(equity="1000000"))
     collector = AccountSnapshotCollector(
-        repository, clock=FixedClock(T0), mt5_module=terminal
+        repository,
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=FixedClock(T0),
+        mt5_module=terminal,
     )
 
     snapshot = collector.collect_once()
@@ -154,7 +207,12 @@ def test_switching_the_terminal_to_another_account_starts_a_new_series():
     repository = FakeAccountSnapshotRepository()
     terminal = FakeMt5(account_info(equity="1000000", login=DEMO_LOGIN))
     clock = FixedClock(T0)
-    collector = AccountSnapshotCollector(repository, clock=clock, mt5_module=terminal)
+    collector = AccountSnapshotCollector(
+        repository,
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=clock,
+        mt5_module=terminal,
+    )
     collector.collect_once()
 
     clock.advance(minutes=1)
@@ -171,7 +229,12 @@ def test_the_same_login_on_another_server_is_another_account():
     repository = FakeAccountSnapshotRepository()
     terminal = FakeMt5(account_info(equity="1000000", server=DEMO_SERVER))
     clock = FixedClock(T0)
-    collector = AccountSnapshotCollector(repository, clock=clock, mt5_module=terminal)
+    collector = AccountSnapshotCollector(
+        repository,
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=clock,
+        mt5_module=terminal,
+    )
     collector.collect_once()
 
     clock.advance(minutes=1)
@@ -185,11 +248,27 @@ def test_successive_collections_carry_the_mark_and_the_day_forward():
     repository = FakeAccountSnapshotRepository()
     terminal = FakeMt5(account_info(balance="1000000", equity="1010000"))
     clock = FixedClock(JST_DAY_START)
-    collector = AccountSnapshotCollector(repository, clock=clock, mt5_module=terminal)
+    collector = AccountSnapshotCollector(
+        repository,
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=clock,
+        mt5_module=terminal,
+    )
     collector.collect_once()
 
     clock.advance(hours=5)
     terminal.info = account_info(balance="1005000", equity="1002000")
+    terminal.deals = (
+        SimpleNamespace(
+            type=1,
+            time=known_to_broker_label(
+                JST_DAY_START + timedelta(hours=4), SERVER_AHEAD_OF_NY
+            ).timestamp(),
+            profit=5000.0,
+            commission=0.0,
+            swap=0.0,
+        ),
+    )
     second = collector.collect_once()
 
     assert second.high_water_mark == Decimal(1010000)
@@ -201,17 +280,61 @@ def test_a_terminal_that_reports_no_account_raises():
     terminal = FakeMt5()
     terminal.info = None
     collector = AccountSnapshotCollector(
-        FakeAccountSnapshotRepository(), clock=FixedClock(T0), mt5_module=terminal
+        FakeAccountSnapshotRepository(),
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=FixedClock(T0),
+        mt5_module=terminal,
     )
 
     with pytest.raises(MT5ConnectionError):
         collector.collect_once()
 
 
+def test_history_fetch_failure_raises():
+    terminal = FakeMt5(
+        history_deals_none=True,
+        error=(-10004, "history unavailable"),
+    )
+    collector = AccountSnapshotCollector(
+        FakeAccountSnapshotRepository(),
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=FixedClock(T0),
+        mt5_module=terminal,
+    )
+
+    with pytest.raises(
+        MT5ConnectionError,
+        match=r"history_deals_get failed: \(-10004, history unavailable\)",
+    ):
+        collector.collect_once()
+
+
+def test_no_deals_with_a_success_status_records_zero():
+    repository = FakeAccountSnapshotRepository()
+    terminal = FakeMt5(
+        history_deals_none=True,
+        error=(RES_S_OK, "Success"),
+    )
+    collector = AccountSnapshotCollector(
+        repository,
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=FixedClock(T0),
+        mt5_module=terminal,
+    )
+
+    snapshot = collector.collect_once()
+
+    assert snapshot.realized_pnl_day == Decimal(0)
+    assert repository.snapshots == [(f"{DEMO_SERVER}:{DEMO_LOGIN}", snapshot)]
+
+
 def test_connect_and_disconnect_drive_the_terminal():
     terminal = FakeMt5()
     collector = AccountSnapshotCollector(
-        FakeAccountSnapshotRepository(), clock=FixedClock(T0), mt5_module=terminal
+        FakeAccountSnapshotRepository(),
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=FixedClock(T0),
+        mt5_module=terminal,
     )
 
     collector.connect()

@@ -100,7 +100,10 @@ def build_runner(
     )
     regime = RuleBasedRegimeService(features)
     currency_regime = RuleBasedCurrencyRegimeService(features)
-    indicators = IndicatorService(market)
+    indicators = IndicatorService(
+        market,
+        broker_server_ahead_of_ny_hours=config.market.broker_server_ahead_of_ny_hours,
+    )
 
     bindings: list[StrategyBinding] = []
     for strategy_id, strategy_config in config.strategies.items():

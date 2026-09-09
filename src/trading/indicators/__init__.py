@@ -6,7 +6,10 @@ forbidden because Backtest/Live and cross-strategy results would diverge.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from trading.data.market import MarketDataService
+from trading.data.market.clock import broker_label_to_known
 from trading.indicators import market_structure as ms
 from trading.indicators.atr import atr as _atr
 from trading.indicators.ema import ema as _ema
@@ -19,9 +22,13 @@ DEFAULT_BAR_COUNT = 200
 
 
 class IndicatorService:
-    def __init__(self, market: MarketDataService, bar_count: int = DEFAULT_BAR_COUNT) -> None:
+    def __init__(
+        self, market: MarketDataService, bar_count: int = DEFAULT_BAR_COUNT,
+        *, broker_server_ahead_of_ny_hours: float = 7.0,
+    ) -> None:
         self._market = market
         self._bar_count = bar_count
+        self._server_ahead_of_ny = timedelta(hours=broker_server_ahead_of_ny_hours)
 
     def atr(self, symbol: str, timeframe: str, period: int = 14) -> float | None:
         # The read follows the requested period: a configured period beyond
@@ -45,8 +52,9 @@ class IndicatorService:
         if session is not None and bars:
             # Session anchor is derived from the latest bar time (data-driven,
             # no wall clock) so replay and live agree.
-            start = session_start(session, bars[-1].start)
-            bars = [b for b in bars if b.start >= start]
+            instants = [broker_label_to_known(b.start, self._server_ahead_of_ny) for b in bars]
+            start = session_start(session, instants[-1])
+            bars = [b for b, instant in zip(bars, instants) if instant >= start]
         return _vwap(bars)
 
     def momentum(self, symbol: str, timeframe: str, lookback: int) -> float | None:

@@ -12,8 +12,9 @@
 #   （利上げ・据え置き=hawkish / 利下げ・より大幅な利下げ=dovish）で判定する。
 #   QT・国債買入れ・声明文言・見通し別紙への反対は数えない。
 # - inflation_forecast_change は見通し公表回（BOJ=展望レポート 1/4/7/10 月、
-#   FED=SEP 3/6/9/12 月）のみ。当該年度（FED は当該暦年）のコア CPI / PCE
-#   インフレ率の中央値を前回公表と比べ、上方修正 +1 / 不変 0 / 下方修正 -1。
+#   FED=SEP 3/6/9/12 月）のみ。当該年度の BOJ コア CPI（生鮮食品除く）、
+#   当該暦年の FED 総合 PCE の中央値を前回公表と比べ、
+#   上方修正 +1 / 不変 0 / 下方修正 -1。
 # - explicit_future_hike_language は当日公表の声明本文のみで判定する（展望
 #   レポート本文・SEP・総裁会見は見ない。BOJ の展望回声明は調節方針のみの
 #   短文形式が多く、同趣旨の文言が基本的見解側にあっても false とする）。
@@ -43,7 +44,7 @@ meetings:
     rate_change_bp: 0
     hawkish_dissents: 0
     dovish_dissents: 0
-    inflation_forecast_change: 1  # SEP 2024年コアPCE 2.4→2.6
+    inflation_forecast_change: 0  # SEP 2024年総合PCE 2.4→2.4
     explicit_future_hike_language: false
     verified: true
     source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20240320a.htm
@@ -76,7 +77,7 @@ meetings:
     rate_change_bp: 0
     hawkish_dissents: 0
     dovish_dissents: 0
-    inflation_forecast_change: 1  # SEP 2024年コアPCE 2.6→2.8
+    inflation_forecast_change: 1  # SEP 2024年総合PCE 2.4→2.6
     explicit_future_hike_language: false
     verified: true
     source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20240612a.htm

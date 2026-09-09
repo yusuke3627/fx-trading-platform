@@ -8,7 +8,7 @@
 | 会合 | 金利変更 | 金利決定への反対 | 見通し改定 | 声明公表時刻（UTC） | 一次資料 |
 | --- | --- | --- | --- | --- | --- |
 | BOJ 2024-03-19 | +20bp | 緩和方向2名 | なし | 03:35 | [声明と公表時刻](https://www.boj.or.jp/en/mopo/mpmdeci/state_2024/k240319a.htm) |
-| FED 2024-03-20 | 据え置き | なし | 上方 | 18:00 | [声明](https://www.federalreserve.gov/newsevents/pressreleases/monetary20240320a.htm)・[SEP](https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20240320.htm) |
+| FED 2024-03-20 | 据え置き | なし | 不変 | 18:00 | [声明](https://www.federalreserve.gov/newsevents/pressreleases/monetary20240320a.htm)・[SEP](https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20240320.htm) |
 | BOJ 2024-04-26 | 据え置き | なし | 上方 | 03:22 | [声明と公表時刻](https://www.boj.or.jp/en/mopo/mpmdeci/state_2024/k240426a.htm)・[展望の基本的見解](https://www.boj.or.jp/en/mopo/outlook/gor2404a.pdf) |
 | FED 2024-05-01 | 据え置き | なし | なし | 18:00 | [声明](https://www.federalreserve.gov/newsevents/pressreleases/monetary20240501a.htm) |
 | FED 2024-06-12 | 据え置き | なし | 上方 | 18:00 | [声明](https://www.federalreserve.gov/newsevents/pressreleases/monetary20240612a.htm)・[SEP](https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20240612.htm) |
@@ -19,7 +19,8 @@
 枠組みの移行を含む決定であり、市場で実現した翌日物金利が20bp上昇したという意味ではない。
 採点は変更幅の符号のみを使う。
 
-3月FEDの当年コアPCE見通し中央値は2.4%から2.6%、6月は2.6%から2.8%へ上方修正された。
+FEDの見通し改定は、既存エントリと同じ総合PCEを使う。
+3月の当年中央値は2.4%で不変、6月は2.4%から2.6%へ上方修正された。
 4月BOJの2024年度コアCPI見通し中央値は、展望の基本的見解の付表で2.4%から2.8%へ上方修正されている。
 6月BOJの国債買入れ減額方針への反対1名は、金利据え置きへの反対に数えない。
 追加6件には声明本文での明示的な将来利上げ予告がないため、該当フラグはfalseとする。

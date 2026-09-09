@@ -36,6 +36,8 @@ class SimulatedPosition:
     # Broker time of the opening fill: protection never evaluates ticks from
     # before the position existed.
     opened_at: datetime
+    # Netting 統合後の数量と Protection を、それ以前の tick に適用しない。
+    protection_effective_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ class ExecutionSimulator:
         ]
 
     def submit(
-        self, command: ExecutionCommand, ticks: Sequence[Tick]
+        self, command: ExecutionCommand, ticks: Sequence[Tick], *, strategy_id: str = ""
     ) -> SimulationResult:
         """Fill a market command at the first tick after latency.
 
@@ -104,7 +106,7 @@ class ExecutionSimulator:
         An exit never fills more than the held quantity, so a queued close
         can never manufacture a reversal.
         """
-        shock_id = self._order_shock_id(command)
+        shock_id = self._order_shock_id(command, strategy_id)
         rng = self._shock_rng(shock_id)
 
         if not ticks:
@@ -217,6 +219,10 @@ class ExecutionSimulator:
                     merged = replace(
                         existing,
                         quantity=total,
+                        protection_effective_at=max(
+                            existing.protection_effective_at or existing.opened_at,
+                            fill_tick.time,
+                        ),
                         entry_price=average,
                         stop_loss=(
                             command.stop_loss_price
@@ -275,10 +281,8 @@ class ExecutionSimulator:
         if held is None:
             return None
         position = held
-        # Reception-ordered replay can deliver a tick whose broker time
-        # predates the position: protection must not fire at a price from
-        # before the position existed.
-        if tick.time < position.opened_at:
+        # 遅着 tick に建玉作成または Netting 統合後の状態を遡及適用しない。
+        if tick.time < (position.protection_effective_at or position.opened_at):
             return None
         pip = self._spec.pip_size
         through = Decimal(str(self._costs.stop_through_pips)) * pip
@@ -332,7 +336,7 @@ class ExecutionSimulator:
             received_at=tick.known_time,
         )
 
-    def _order_shock_id(self, command: ExecutionCommand) -> str:
+    def _order_shock_id(self, command: ExecutionCommand, strategy_id: str) -> str:
         """Stable shock identity of one order.
 
         Two runs that differ only in an extra fill still hand every shared
@@ -341,16 +345,13 @@ class ExecutionSimulator:
         An exit also incorporates the shock identity of the tranche it closes,
         so an extra tranche in one arm cannot shift a shared tranche's exit.
 
-        New opening orders sharing a timestamp, symbol, side, action and
-        direction still require arrival order to distinguish them: command_id,
-        intent_id and idempotency_key are generated per run and cannot provide
-        a cross-run identity. broker_position_ticket is also generated per run
-        and only looks up the stable opening identity; it is not key material.
+        The caller supplies the stable strategy identity for simultaneous
+        entries. Per-run command and broker IDs are never key material.
         Quantity follows account equity and protection prices follow
         volatility, so neither can identify a shared order.
         """
         base = (
-            f"{command.symbol}|{command.side.value}|{command.action.value}"
+            f"{strategy_id}|{command.symbol}|{command.side.value}|{command.action.value}"
             f"|{command.direction.value}|{command.created_at.isoformat()}"
         )
         position_shock_id = None

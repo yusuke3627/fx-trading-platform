@@ -362,3 +362,17 @@ def test_no_snapshots_keeps_carry_zero_and_counts_boundaries():
     assert result.metrics["carry_total"] == "0"
     assert result.metrics["unpriced_rollovers"] == "1"
     assert len(result.fills) == 1
+
+
+def test_daily_carry_resets_at_jst_midnight_without_resetting_run_pnl():
+    result = _run(
+        [_snapshot(MONDAY_BOUNDARY - timedelta(hours=4), "-2.2")],
+        _plain_ticks(_times_across(MONDAY_BOUNDARY) + [
+            datetime(2026, 8, 11, 15, 0, tzinfo=UTC),
+        ]),
+    )
+    expected = Decimal(result.metrics["carry_total"])
+    assert expected < 0
+    assert any(s.realized_pnl_day == expected for s in result.snapshots)
+    assert result.snapshots[-1].realized_pnl_day == 0
+    assert result.snapshots[-1].balance == Decimal(result.metrics["initial_equity"]) + expected

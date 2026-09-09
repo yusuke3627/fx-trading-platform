@@ -49,6 +49,7 @@ from trading.backtest.rollover import (
 from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
 from trading.data.features import ReplayFeatureTimeline
 from trading.data.market.bars import BarBuilder
+from trading.data.market.dukascopy import known_to_broker_label
 from trading.domain.account import AccountMode, AccountSnapshot
 from trading.domain.event import EventEnvelope
 from trading.domain.exposure import OpenPositionExposure
@@ -74,6 +75,7 @@ from trading.portfolio.virtual_ledger import VirtualPositionLedger
 from trading.risk.conversion import MarketQuoteConversionService
 from trading.risk.engine import PreTradeContext, RiskConfig, RiskEngine
 from trading.risk.event_risk import EventRiskCalendar
+from trading.risk.limits import jst_day_start
 from trading.strategy.base import (
     Strategy,
     StrategyConfig,
@@ -81,7 +83,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.6.0"
+ENGINE_VERSION = "0.7.0"
 
 
 class ScriptedStrategy(Strategy):
@@ -186,9 +188,11 @@ class TradeRecord:
 
     net_pnl includes spread and slippage but excludes carry. carry is the
     overnight swap attributed to this closed quantity (ADR-016); their sum is
-    this trade's contribution to realized PnL.
+    this trade's contribution to realized PnL. Rows sharing entry_id belong
+    to one entry and must be aggregated before statistical resampling.
     """
 
+    entry_id: str
     strategy_id: str
     symbol: str
     entry_at: datetime
@@ -256,6 +260,7 @@ class _ChargedCarry:
 class _RunState:
     initial_equity: Decimal
     realized: Decimal = Decimal(0)
+    realized_by_date: dict[date, dict[datetime, Decimal]] = field(default_factory=dict)
     high_water_mark: Decimal = Decimal(0)
     snapshots: list[AccountSnapshot] = field(default_factory=list)
     fills: list[FillRecord] = field(default_factory=list)
@@ -269,6 +274,8 @@ class _RunState:
     # ticket -> owning strategy / entry marks for PnL attribution; a strategy
     # can hold several tickets (INCREASE opens a new one on hedging).
     ticket_owner: dict[str, str] = field(default_factory=dict)
+    entry_ids: dict[str, str] = field(default_factory=dict)
+    entry_counts: dict[tuple[str, datetime], int] = field(default_factory=dict)
     entry_at: dict[str, datetime] = field(default_factory=dict)
     entry_price: dict[str, Decimal] = field(default_factory=dict)
     entry_mid: dict[str, Decimal] = field(default_factory=dict)
@@ -568,7 +575,7 @@ class BacktestEngine:
             day=day,
         )
         carry = per_unit * position.quantity
-        state.realized += carry
+        self._record_realized(state, carry, midnight_label)
         state.carry_total += carry
         state.carry_charged.setdefault(position.position_id, []).append(
             _ChargedCarry(midnight_label, per_unit, position.quantity)
@@ -643,7 +650,7 @@ class BacktestEngine:
                 if consumed:
                     carry = entry.per_unit * consumed
                     if at < entry.midnight_label:
-                        state.realized -= carry
+                        self._record_realized(state, -carry, entry.midnight_label)
                         state.carry_total -= carry
                         adjusted = True
                     else:
@@ -937,7 +944,9 @@ class BacktestEngine:
                 self._barrier_step(state, w, pending.barrier, tick)
                 self._release_deferred(state, w, pending.strategy_id, tick)
                 return
-            result = w.simulator.submit(pending.command, [tick])
+            result = w.simulator.submit(
+                pending.command, [tick], strategy_id=pending.strategy_id
+            )
             if result.fill is None:
                 state.rejected_commands += 1
                 self._barrier_step(state, w, pending.barrier, tick)
@@ -963,7 +972,9 @@ class BacktestEngine:
             self._release_deferred(state, w, pending.strategy_id, tick)
             return
 
-        result = w.simulator.submit(pending.command, [tick])
+        result = w.simulator.submit(
+            pending.command, [tick], strategy_id=pending.strategy_id
+        )
         if result.fill is None or result.position is None:
             state.rejected_commands += 1
             self._release_deferred(state, w, pending.strategy_id, tick)
@@ -972,6 +983,12 @@ class BacktestEngine:
         ticket = result.position.position_id
         strategy_id = pending.strategy_id
         state.ticket_owner[ticket] = strategy_id
+        entry_key = (strategy_id, pending.command.created_at)
+        occurrence = state.entry_counts.get(entry_key, 0)
+        state.entry_counts[entry_key] = occurrence + 1
+        state.entry_ids[ticket] = (
+            f"{strategy_id}|{pending.command.created_at.isoformat()}|{occurrence}"
+        )
         state.entry_at[ticket] = fill.broker_time
         state.entry_price[ticket] = fill.price
         state.entry_mid[ticket] = tick.mid
@@ -1015,10 +1032,11 @@ class BacktestEngine:
         strategy_id = state.ticket_owner[ticket]
         entry = state.entry_price[ticket]
         net_pnl = signed_pnl(direction, entry, price, quantity)
-        state.realized += net_pnl
+        self._record_realized(state, net_pnl, at)
         carry = self._reverse_carry_for_close(state, w, ticket, quantity, at)
         state.trades.append(
             TradeRecord(
+                entry_id=state.entry_ids[ticket],
                 strategy_id=strategy_id,
                 symbol=self._spec.symbol,
                 entry_at=state.entry_at[ticket],
@@ -1060,6 +1078,7 @@ class BacktestEngine:
             if not tickets:
                 state.open_tickets.pop(slot, None)
             state.ticket_owner.pop(ticket, None)
+            state.entry_ids.pop(ticket, None)
             state.entry_at.pop(ticket, None)
             state.entry_price.pop(ticket, None)
             state.entry_mid.pop(ticket, None)
@@ -1184,6 +1203,31 @@ class BacktestEngine:
     def _equity(self, state: _RunState, simulator: ExecutionSimulator) -> Decimal:
         return state.initial_equity + state.realized + self._unrealized(state, simulator)
 
+    @staticmethod
+    def _record_realized(state: _RunState, amount: Decimal, at: datetime) -> None:
+        state.realized += amount
+        day = state.realized_by_date.setdefault(at.date(), {})
+        day[at] = day.get(at, Decimal(0)) + amount
+
+    def _realized_pnl_day(self, state: _RunState, now: datetime) -> Decimal:
+        # live collector と同じ JST 日境界を broker ラベルへ写す。
+        ahead = timedelta(hours=self._server_ahead_hours)
+        start = known_to_broker_label(jst_day_start(now), ahead)
+        end = known_to_broker_label(now, ahead)
+        total = Decimal(0)
+        day = start.date()
+        while day <= end.date():
+            total += sum(
+                (
+                    amount
+                    for at, amount in state.realized_by_date.get(day, {}).items()
+                    if start <= at <= end
+                ),
+                Decimal(0),
+            )
+            day += timedelta(days=1)
+        return total
+
     def _snapshot(
         self,
         state: _RunState,
@@ -1201,7 +1245,7 @@ class BacktestEngine:
             free_margin=equity,
             margin_level=None,
             unrealized_pnl=unrealized,
-            realized_pnl_day=state.realized,
+            realized_pnl_day=self._realized_pnl_day(state, now),
             high_water_mark=hwm,
             drawdown_from_hwm=max(hwm - equity, Decimal(0)),
             broker_connected=True,

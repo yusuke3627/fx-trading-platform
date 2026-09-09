@@ -533,3 +533,46 @@ def test_shared_tranche_close_keeps_shock_with_extra_older_tranche():
     assert shared_close_with_extra.fill is not None
     assert shared_close_without_extra.fill is not None
     assert shared_close_with_extra.fill.price == shared_close_without_extra.fill.price
+
+
+def test_shared_simultaneous_strategy_entry_keeps_execution_shock():
+    costs = CostModel(
+        latency_ms=0.0, slippage_sigma_pips=0.8,
+        partial_fill_probability=0.5, reject_probability=0.25,
+    )
+    ticks = [make_tick("158.840", "158.844")]
+    for seed in range(20):
+        with_extra = ExecutionSimulator(costs, usdjpy_spec(), seed=seed)
+        without_extra = ExecutionSimulator(costs, usdjpy_spec(), seed=seed)
+        with_extra.submit(make_command(), ticks, strategy_id="extra")
+        left = with_extra.submit(make_command(), ticks, strategy_id="shared")
+        right = without_extra.submit(make_command(), ticks, strategy_id="shared")
+        assert left.rejected == right.rejected
+        assert (left.fill is None) == (right.fill is None)
+        if left.fill is not None:
+            assert left.fill.price == right.fill.price
+            assert left.fill.quantity == right.fill.quantity
+
+
+def test_netting_protection_ignores_tick_before_latest_increase():
+    sim = ExecutionSimulator(
+        deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING
+    )
+    first = sim.submit(
+        make_command(stop_loss="158.0", side=ExecutionSide.BUY,
+                     direction=PositionDirection.LONG),
+        [make_tick("158.840", "158.844")],
+    )
+    merged = sim.submit(
+        make_command(action=PositionAction.INCREASE, created_at=at(minutes=5),
+                     stop_loss="158.8", side=ExecutionSide.BUY,
+                     direction=PositionDirection.LONG),
+        [make_tick("158.850", "158.854", time=at(minutes=5))],
+    )
+    assert merged.position.opened_at == first.position.opened_at
+    late = make_tick("158.700", "158.704", time=at(minutes=3), received_at=at(minutes=6))
+    assert sim.check_protection(first.position, late) is None
+    current = make_tick("158.700", "158.704", time=at(minutes=6))
+    fill = sim.check_protection(first.position, current)
+    assert fill is not None
+    assert fill.quantity == merged.position.quantity

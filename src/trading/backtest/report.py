@@ -45,6 +45,7 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
         writer = csv.writer(out, lineterminator="\n")
         writer.writerow(
             [
+                "entry_id",
                 "strategy_id",
                 "symbol",
                 "entry_at",
@@ -60,6 +61,7 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
         )
         writer.writerows(
             [
+                trade.entry_id,
                 trade.strategy_id,
                 trade.symbol,
                 trade.entry_at.isoformat(),

@@ -28,6 +28,7 @@ def services():
 
 def config_with(*strategy_ids, enabled=True):
     return SimpleNamespace(
+        market=MarketConfig(),
         strategies={
             strategy_id: StrategyConfig(
                 strategy_id=strategy_id,

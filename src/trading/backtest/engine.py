@@ -784,7 +784,9 @@ class BacktestEngine:
             context=StrategyContext(
                 clock=clock,
                 market=market,
-                indicators=IndicatorService(market),
+                indicators=IndicatorService(
+                    market, broker_server_ahead_of_ny_hours=self._server_ahead_hours
+                ),
                 features=features,
                 regime=RuleBasedRegimeService(features),
                 currency_states=currency_states,

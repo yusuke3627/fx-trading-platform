@@ -7,16 +7,18 @@ feature closes a gate rather than defaulting.
 """
 from types import SimpleNamespace
 
-from tests.support import FixedClock, make_bar, usdjpy_spec
+from tests.support import (
+    evaluation_context,
+    long_failed_breakout_bars,
+    short_failed_breakout_bars,
+)
 from trading.domain.position import PositionDirection
 from trading.intelligence import features as f
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.regime import RegimeLabel, RuleBasedRegimeService
-from trading.strategy.base import StrategyConfig, TimeframeMap
 from trading.strategy.intraday.post_event_failed_breakout import (
     PostEventFailedBreakoutStrategy,
 )
-from trading.strategy.parameters import StrategyParameters
 from trading.strategy.swing.monetary_policy_convergence import (
     MonetaryPolicyConvergenceStrategy,
 )
@@ -27,74 +29,6 @@ def ctx_with(values: dict[str, float]) -> SimpleNamespace:
     for name, value in values.items():
         store.set(name, value)
     return SimpleNamespace(features=store)
-
-
-def evaluation_context(
-    entry_bars: list,
-    setup_bars: list,
-    *,
-    macro_confirmation_enabled: bool,
-    features: dict[str, float] | None = None,
-) -> SimpleNamespace:
-    config = StrategyConfig(
-        strategy_id="post_event_failed_breakout",
-        instruments=["USDJPY"],
-        timeframes=TimeframeMap(regime="1h", setup="15m", entry="5m"),
-        parameters=StrategyParameters(
-            defaults={
-                "resistance_lookback": 3,
-                "macro_confirmation_enabled": macro_confirmation_enabled,
-            }
-        ),
-    )
-    store = InMemoryFeatureStore()
-    for name, value in (features or {}).items():
-        store.set(name, value)
-    return SimpleNamespace(
-        config=config,
-        market=SimpleNamespace(
-            instrument=lambda _symbol: usdjpy_spec(),
-            bars=lambda _symbol, timeframe, _count: (
-                entry_bars if timeframe == "5m" else setup_bars
-            ),
-        ),
-        indicators=SimpleNamespace(
-            atr=lambda _symbol, _timeframe, _period: 0.05
-        ),
-        features=store,
-        clock=FixedClock(),
-        portfolio=SimpleNamespace(position=lambda _strategy_id, _symbol: None),
-    )
-
-
-def short_failed_breakout_bars() -> tuple[list, list]:
-    setup_bars = [
-        make_bar("149.50", "150.00", "149.00", "149.50", timeframe="15m"),
-        make_bar("149.50", "150.00", "149.10", "149.60", timeframe="15m"),
-        make_bar("149.60", "150.00", "149.20", "149.70", timeframe="15m"),
-        make_bar("149.70", "149.95", "149.30", "149.80", timeframe="15m"),
-    ]
-    entry_bars = [
-        make_bar("149.70", "149.90", "149.60", "149.80", timeframe="5m"),
-        make_bar("149.80", "150.10", "149.70", "149.90", timeframe="5m"),
-        make_bar("149.90", "149.95", "149.60", "149.85", timeframe="5m"),
-    ]
-    return entry_bars, setup_bars
-
-
-def long_failed_breakout_bars() -> tuple[list, list]:
-    setup_bars = [
-        make_bar("150.00", "151.00", "149.10", "150.00", timeframe="15m"),
-        make_bar("150.00", "151.00", "149.00", "150.00", timeframe="15m"),
-        make_bar("150.00", "151.00", "149.00", "150.00", timeframe="15m"),
-        make_bar("150.00", "150.90", "149.20", "149.80", timeframe="15m"),
-    ]
-    entry_bars = [
-        make_bar("149.40", "149.60", "149.20", "149.40", timeframe="5m"),
-        make_bar("149.30", "149.40", "148.90", "149.10", timeframe="5m"),
-        make_bar("149.10", "149.45", "149.05", "149.20", timeframe="5m"),
-    ]
-    return entry_bars, setup_bars
 
 
 def test_swing_short_gate_opens_on_dovish_fed_hawkish_boj_and_intervention():

@@ -98,3 +98,151 @@ def test_every_filter_combination_selects_what_it_claims(repo):
         e.payload["offset"] for e in both_types_windowed if e.event_type.startswith(event_type)
     ]
     assert offsets == [24, 24]
+
+
+@pytest.mark.parametrize("same_time", [False, True])
+def test_raw_archive_preserves_changes_but_skips_identical_retrievals(repo, same_time):
+    from trading.data.macro.base import raw_event
+
+    r, event_type = repo
+    saved = []
+    for index, value in enumerate(("A", "A", "B", "B", "A", "A")):
+        at = T0 if same_time else T0 + timedelta(hours=index)
+        raw = raw_event(
+            source="TEST", source_uri="https://example.invalid/raw",
+            payload={"value": value}, retrieved_at=at,
+        ).model_copy(update={"event_type": event_type})
+        inserted = r.insert_raw_archive(raw)
+        assert inserted is (index in (0, 2, 4))
+        if inserted:
+            saved.append(raw)
+    stored = r.known_before(T0 + timedelta(days=1), event_type)
+    assert {e.event_id: e for e in stored} == {e.event_id: e for e in saved}
+
+
+def test_raw_archive_scopes_comparison_by_uri_and_type(repo):
+    from trading.data.macro.base import payload_hash
+
+    r, event_type = repo
+    first = event(event_type).model_copy(update={
+        "source_uri": "https://example.invalid/one", "payload_hash": payload_hash({"offset": 0}),
+    })
+    assert r.insert_raw_archive(first)
+    for updates in ({"source_uri": "https://example.invalid/two"},
+                    {"event_type": f"{event_type}_OTHER"}):
+        assert r.insert_raw_archive(first.model_copy(update={"event_id": uuid4(), **updates}))
+    # 読み取りが開いた transaction の後でも、保存結果は別 connection に見える。
+    r.known_before(T0, event_type)
+    assert not r.insert_raw_archive(first.model_copy(update={"event_id": uuid4()}))
+    from trading.storage.postgres import connect
+    with connect(DSN) as conn:
+        assert conn.execute(
+            "SELECT count(*) AS n FROM events WHERE event_type LIKE %s",
+            (f"{event_type}%",),
+        ).fetchone()["n"] == 3
+
+
+def test_concurrent_raw_archives_store_only_one_snapshot(repo):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from trading.data.macro.base import raw_event
+    from trading.storage.postgres import PostgresEventRepository, connect
+
+    _, event_type = repo
+    barrier = Barrier(4)
+
+    def archive(_):
+        raw = raw_event(
+            source="TEST", source_uri="https://example.invalid/concurrent",
+            payload={"value": "unchanged"}, retrieved_at=T0,
+        ).model_copy(update={"event_type": event_type})
+        with connect(DSN) as conn:
+            barrier.wait(timeout=10)
+            return PostgresEventRepository(conn).insert_raw_archive(raw)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert sorted(pool.map(archive, range(4))) == [False, False, False, True]
+
+
+@pytest.mark.parametrize("field", ["source_uri", "payload_hash"])
+def test_raw_archive_requires_deduplication_metadata(repo, field):
+    r, event_type = repo
+    raw = event(event_type).model_copy(update={
+        "source_uri": "https://example.invalid/raw", "payload_hash": "digest", field: None,
+    })
+    with pytest.raises(ValueError, match="source_uri and payload_hash"):
+        r.insert_raw_archive(raw)
+
+
+def test_macro_store_skips_raw_duplicates_without_skipping_observations(repo):
+    from unittest.mock import Mock
+
+    from trading.data.macro.base import CollectionBatch, raw_event
+    from trading.data.macro.collector import _store
+
+    r, event_type = repo
+    observations = Mock()
+    observations.insert_many.return_value = 0
+    for _ in range(2):
+        raw = raw_event(
+            source="TEST", source_uri="https://example.invalid/macro",
+            payload={"observations": []}, retrieved_at=T0,
+        ).model_copy(update={"event_type": event_type})
+        assert _store(CollectionBatch(observations=(), raw_events=(raw,)), observations, r) == 0
+    assert observations.insert_many.call_count == 2
+    assert len(r.known_before(T0, event_type)) == 1
+
+
+def test_intervention_cli_archives_raw_once_and_preserves_parsed_events(repo, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from trading.data.intervention import collector
+    from trading.data.macro.base import raw_event
+
+    r, event_type = repo
+    parsed = [event(f"{event_type}_PARSED"), event(f"{event_type}_PARSED")]
+    monkeypatch.setenv("TEST_RAW_ARCHIVE_DSN", DSN)
+    monkeypatch.setattr("sys.argv", ["collector"])
+    monkeypatch.setattr("trading.config.load_config", lambda _: SimpleNamespace(
+        storage=SimpleNamespace(dsn_env="TEST_RAW_ARCHIVE_DSN"),
+    ))
+    monkeypatch.setattr(collector, "load_episodes", lambda _: [])
+    for index, collector_name in enumerate(("MOFDailyCollector", "MOFMonthlyCollector")):
+        def batch(index=index, **_):
+            raw = raw_event(
+                source="TEST", source_uri=f"https://example.invalid/intervention/{index}",
+                payload={"content": str(index)}, retrieved_at=T0,
+            ).model_copy(update={"event_type": event_type})
+            return SimpleNamespace(raw_events=(raw,), events=(parsed[index],))
+        factory = Mock()
+        factory.return_value.collect.side_effect = batch
+        monkeypatch.setattr(collector, collector_name, factory)
+    collector.main()
+    assert "parsed 2 events, stored 2 new" in capsys.readouterr().out
+    collector.main()
+    assert "parsed 2 events, stored 0 new" in capsys.readouterr().out
+    assert len(r.known_before(T0, event_type)) == 2
+    assert len(r.known_before(T0, f"{event_type}_PARSED")) == 2
+
+
+def test_raw_archive_same_time_uses_insert_time_after_an_earlier_read(repo):
+    from trading.data.macro.base import raw_event
+    from trading.storage.postgres import PostgresEventRepository, connect
+
+    r, event_type = repo
+    # r の transaction は他 connection による保存前から始まっている。
+    r.known_before(T0, event_type)
+    with connect(DSN) as conn:
+        first = raw_event(
+            source="TEST", source_uri="https://example.invalid/read-first",
+            payload={"value": "A"}, retrieved_at=T0,
+        ).model_copy(update={"event_type": event_type})
+        assert PostgresEventRepository(conn).insert_raw_archive(first)
+    second = raw_event(
+        source="TEST", source_uri=first.source_uri,
+        payload={"value": "B"}, retrieved_at=T0,
+    ).model_copy(update={"event_type": event_type})
+    assert r.insert_raw_archive(second)
+    assert not r.insert_raw_archive(second.model_copy(update={"event_id": uuid4()}))

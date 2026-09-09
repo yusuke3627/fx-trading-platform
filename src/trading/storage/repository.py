@@ -85,6 +85,10 @@ class EventRepository(Protocol):
     # (policy meeting scores), re-running is a no-op instead of an error.
     def insert_new(self, event: EventEnvelope) -> bool: ...
 
+    # 同じ source_uri・event_type の最新 raw と同値なら省略する。
+    # source_uri と payload_hash は必須。変更後に元へ戻った内容も保存する。
+    def insert_raw_archive(self, event: EventEnvelope) -> bool: ...
+
     # Insert, or bring an existing row's fact columns in line with the
     # envelope; returns "inserted" / "updated" / "unchanged". For ingests
     # whose source of truth is a curated file with deterministic event ids:

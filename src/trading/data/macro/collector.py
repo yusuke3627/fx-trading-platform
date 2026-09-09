@@ -165,7 +165,7 @@ def _store(
     event_repo: EventRepository,
 ) -> int:
     for event in batch.raw_events:
-        event_repo.insert(event)
+        event_repo.insert_raw_archive(event)
     return observation_repo.insert_many(batch.observations)
 
 

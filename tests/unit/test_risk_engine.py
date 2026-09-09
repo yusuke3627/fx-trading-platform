@@ -635,3 +635,27 @@ def test_netting_increase_reprices_the_whole_position():
     )
     assert not decision.approved
     assert "PORTFOLIO_RISK_LIMIT" in decision.reject_codes
+
+
+def test_requested_quantity_is_rounded_down_to_broker_step():
+    decision = engine(enabled_config()).evaluate(
+        make_intent(), make_context(requested_quantity=Decimal(1500))
+    )
+    assert decision.approved, decision.reject_codes
+    assert decision.approved_quantity == Decimal(1000)
+
+
+def test_symbol_headroom_is_rounded_down_to_broker_step():
+    decision = engine(enabled_config(max_units_per_symbol={"USDJPY": 1500})).evaluate(
+        make_intent(), make_context()
+    )
+    assert decision.approved, decision.reject_codes
+    assert decision.approved_quantity == Decimal(1000)
+
+
+def test_requested_quantity_below_step_does_not_round_up_to_minimum():
+    decision = engine(enabled_config()).evaluate(
+        make_intent(), make_context(requested_quantity=Decimal(999))
+    )
+    assert not decision.approved
+    assert "MINIMUM_BROKER_SIZE_EXCEEDS_RISK" in decision.reject_codes

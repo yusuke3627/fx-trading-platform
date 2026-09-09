@@ -31,7 +31,7 @@
    - `pytest` を実行（broker テストはMT5なし環境で自動skip、integration はDBなしなら対象外）
 
 4. **コードレビュー**（PR 作成前は必須）
-   - 現在の git 差分をレビューする（P0–P3 で指摘）。Claude Code は `/code-review-expert` スキル、Codex は `AGENTS.md`「AIレビュー指示」の観点で自己レビューする
+   - Claude Code・Codex ともにリポジトリの [code-review-expert](../../.agents/skills/code-review-expert/SKILL.md) を読んで現在の git 差分をレビューし、`AGENTS.md`「AIレビュー指示」の観点と重要度ラベルを適用する
    - P0（Critical）・P1（High）・P2（Medium）の指摘はユーザーへの確認を挟まず自動修正し、修正後は品質チェック（手順3）を再実行する
    - 仕様判断が必要な指摘（ASK 分類）と P3（Low）のみ、本 PR で対応するか follow-up issue 化を判断する
    - ドキュメントのみ・軽微なテキスト修正のみの変更ではスキップ可

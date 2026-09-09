@@ -1028,6 +1028,53 @@ class PostgresEventRepository:
         self._conn.commit()
         return cursor.rowcount == 1
 
+    def insert_raw_archive(self, e: EventEnvelope) -> bool:
+        ensure_json_native(e.payload)
+        if not e.source_uri or not e.payload_hash:
+            raise ValueError("raw archive requires source_uri and payload_hash")
+        with self._conn.transaction():
+            # 初回の同時取得も直列化し、ロック取得後の文で最新コミットを読む。
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                (e.event_type, e.source_uri),
+            )
+            cursor = self._conn.execute(
+                """
+                INSERT INTO events (
+                    id, event_type, source, source_uri, payload, payload_hash,
+                    raw_uri, effective_at, published_at, retrieved_at, known_at,
+                    processed_at, superseded_at, created_at
+                ) SELECT
+                    %(id)s, %(event_type)s, %(source)s, %(source_uri)s, %(payload)s,
+                    %(payload_hash)s, %(raw_uri)s, %(effective_at)s, %(published_at)s,
+                    %(retrieved_at)s, %(known_at)s, %(processed_at)s, %(superseded_at)s,
+                    clock_timestamp()
+                WHERE (
+                    SELECT payload_hash FROM events
+                    WHERE source_uri = %(source_uri)s AND event_type = %(event_type)s
+                        AND payload_hash IS NOT NULL
+                    ORDER BY known_at DESC, created_at DESC, id DESC LIMIT 1
+                ) IS DISTINCT FROM %(payload_hash)s
+                """,
+                {
+                    "id": e.event_id,
+                    "event_type": e.event_type,
+                    "source": e.source,
+                    "source_uri": e.source_uri,
+                    "payload": Jsonb(e.payload),
+                    "payload_hash": e.payload_hash,
+                    "raw_uri": e.raw_uri,
+                    "effective_at": e.effective_at,
+                    "published_at": e.published_at,
+                    "retrieved_at": e.retrieved_at,
+                    "known_at": e.known_at,
+                    "processed_at": e.processed_at,
+                    "superseded_at": e.superseded_at,
+                },
+            )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
     def upsert(self, e: EventEnvelope) -> str:
         # Fact columns only: processed_at / superseded_at belong to the
         # store's own lifecycle and must survive a re-ingest, and

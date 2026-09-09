@@ -8,7 +8,7 @@
 
 このファイル（AGENTS.md）が Codex / Claude 共通の**正本**。`.claude/rules/` には両者共通の操作手順・コマンド例の補足のみを置き、方針の二重管理を避ける。ディレクトリ名は `.claude/` だが **Codex も対象**で、作業に入る前に該当ファイルを読むこと。エージェント固有の操作は各ファイル内で「Claude Code は〜 / Codex は〜」と併記する。
 
-- 設計の正本: [`docs/SYSTEM_SPEC.md`](docs/SYSTEM_SPEC.md)（**v1.3 で凍結**。変更は本文改訂ではなく `docs/adr/` へ ADR 追加）
+- 設計の正本: [`docs/SYSTEM_SPEC.md`](docs/SYSTEM_SPEC.md)（**v2.0 で凍結**。変更は本文改訂ではなく `docs/adr/` へ ADR 追加）
 - 構成規約: [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md)
 - 相場観・研究仮説: `docs/research/`（設計に固定しない）
 

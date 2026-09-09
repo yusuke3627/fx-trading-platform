@@ -1,6 +1,9 @@
 # ADR-027: shadow cycle を複数シンボルで評価する
 
-**Status:** Accepted (2026-09-02)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§6.4](../SYSTEM_SPEC.md#s6-4)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (2026-09-02)
 
 ## Context
 

@@ -1,6 +1,9 @@
 # ADR-015: GBP/EUR 公式データ調達と PIT 方針（M2A Gate）
 
-**Status:** Accepted (2026-08-27)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§5.1](../SYSTEM_SPEC.md#s5-1)、[§5.2](../SYSTEM_SPEC.md#s5-2)、[§5.9](../SYSTEM_SPEC.md#s5-9)、[§10.2](../SYSTEM_SPEC.md#s10-2)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (2026-08-27)
 
 ## Decision
 

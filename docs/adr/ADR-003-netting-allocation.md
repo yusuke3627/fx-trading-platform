@@ -1,6 +1,9 @@
 # ADR-003: Netting conversion and deterministic fill attribution
 
-**Status:** Accepted (v1.3 frozen decision)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§7.1](../SYSTEM_SPEC.md#s7-1)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (v1.3 frozen decision)
 
 ## Decision
 

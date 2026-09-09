@@ -1,6 +1,9 @@
 # ADR-013: portfolio stop-risk 予算と通貨別 net exposure 上限
 
-**Status:** Accepted (2026-08-27)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§4.3](../SYSTEM_SPEC.md#s4-3)、[§7.2](../SYSTEM_SPEC.md#s7-2)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (2026-08-27)
 
 ## Decision
 

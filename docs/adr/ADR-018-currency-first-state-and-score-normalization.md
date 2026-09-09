@@ -1,6 +1,9 @@
 # ADR-018: Currency-first state とスコア正規化（M3 2/3）
 
-**Status:** Accepted (2026-08-27)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§5.4](../SYSTEM_SPEC.md#s5-4)、[§5.5](../SYSTEM_SPEC.md#s5-5)、[§5.6](../SYSTEM_SPEC.md#s5-6)、[§5.7](../SYSTEM_SPEC.md#s5-7)、[§5.8](../SYSTEM_SPEC.md#s5-8)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (2026-08-27)
 
 ## Decision
 

@@ -1,6 +1,9 @@
 # ADR-002: Broker-side SL/TP fills are first-class (PROTECTION_FILL)
 
-**Status:** Accepted (v1.3 frozen decision)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§8.2](../SYSTEM_SPEC.md#s8-2)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (v1.3 frozen decision)
 
 ## Decision
 

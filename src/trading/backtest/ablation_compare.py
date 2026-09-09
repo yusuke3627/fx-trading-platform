@@ -89,7 +89,7 @@ class ArmSummary:
 
 
 def load_run(run_dir: Path) -> RunArtifacts:
-    """Load one arm with carry-inclusive PnL.
+    """Load carry-inclusive PnL aggregated per entry, including partial closes.
 
     ADR-016 requires overnight swap in the distribution; omitting it would
     overstate the expectancy of an arm that holds across rollover.
@@ -103,18 +103,30 @@ def load_run(run_dir: Path) -> RunArtifacts:
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    pnls_by_entry: dict[str, Decimal] = {}
+    row_count = 0
     with trades_path.open(newline="", encoding="utf-8") as source:
-        pnls = [
-            Decimal(row["net_pnl"]) + Decimal(row["carry"])
-            for row in csv.DictReader(source)
-        ]
+        reader = csv.DictReader(source)
+        if "entry_id" not in (reader.fieldnames or []):
+            raise SystemExit("trades.csv has no entry_id; re-run with the current engine")
+        for row in reader:
+            entry_id = row["entry_id"]
+            if not entry_id:
+                raise SystemExit("trades.csv contains an empty entry_id")
+            row_count += 1
+            pnls_by_entry[entry_id] = (
+                pnls_by_entry.get(entry_id, Decimal(0))
+                + Decimal(row["net_pnl"]) + Decimal(row["carry"])
+            )
     summary_trades = int(summary["metrics"]["trades"])
-    if len(pnls) != summary_trades:
+    if row_count != summary_trades:
         raise SystemExit(
             f"trade count mismatch for {trades_path}: "
-            f"actual rows={len(pnls)}, summary metrics.trades={summary_trades}"
+            f"actual rows={row_count}, summary metrics.trades={summary_trades}"
         )
-    return RunArtifacts(manifest=manifest, metrics=summary["metrics"], pnls=pnls)
+    return RunArtifacts(
+        manifest=manifest, metrics=summary["metrics"], pnls=list(pnls_by_entry.values())
+    )
 
 
 def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:

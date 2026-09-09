@@ -11,6 +11,7 @@ from trading.backtest.ablation_compare import (
     UNDECIDED_SAMPLE,
     ArmSummary,
     RunArtifacts,
+    arm_summary,
     difference_interval,
     judge,
     load_run,
@@ -98,6 +99,7 @@ def backtest_result(
 ) -> BacktestResult:
     trades = [
         TradeRecord(
+            entry_id=f"entry-{index}",
             strategy_id="post_event_failed_breakout",
             symbol="USDJPY",
             entry_at=at(hours=index),
@@ -383,3 +385,24 @@ def test_verify_comparable_rejects_a_command_in_flight_at_period_end():
                 [],
             ),
         )
+
+
+def test_partial_closes_are_one_bootstrap_sample(tmp_path):
+    from dataclasses import replace
+
+    result = backtest_result(
+        [Decimal(10), Decimal(-5), Decimal(20)],
+        [Decimal(-1), Decimal(-2), Decimal(-3)], "0",
+    )
+    result.trades[1] = replace(result.trades[1], entry_id=result.trades[0].entry_id)
+    run_dir = write_report(result, manifest("partial", {}), tmp_path)
+    run = load_run(run_dir)
+    assert run.pnls == [Decimal(2), Decimal(17)]
+    assert arm_summary(run.pnls, Decimal(0), seed=42).count == 2
+
+
+def test_legacy_trade_csv_requires_new_replay(tmp_path):
+    run_dir = write_report(backtest_result([], [], "0"), manifest("old", {}), tmp_path)
+    (run_dir / "trades.csv").write_text("net_pnl,carry\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="no entry_id"):
+        load_run(run_dir)

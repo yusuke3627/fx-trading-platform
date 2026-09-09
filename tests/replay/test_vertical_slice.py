@@ -282,6 +282,8 @@ def test_partial_exit_keeps_remainder_tracked_and_withholds_reversal():
         stop_distance_pips=Decimal(10),
     )
     closes = [f for f in result.fills if f.action == "CLOSE"]
+    assert len(result.trades) == 2
+    assert result.trades[0].entry_id == result.trades[1].entry_id
     assert closes and closes[0].quantity == Decimal(2000)  # half of the 5000 held
     protection = [f for f in result.fills if f.origin == "PROTECTION"]
     assert protection and protection[0].quantity == Decimal(3000)  # the remainder

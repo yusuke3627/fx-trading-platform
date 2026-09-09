@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support import make_bar
-from tests.unit.test_strategy_feature_gates import (
+from tests.support import (
     evaluation_context,
     long_failed_breakout_bars,
+    make_bar,
     short_failed_breakout_bars,
 )
 from trading.intelligence import features as f

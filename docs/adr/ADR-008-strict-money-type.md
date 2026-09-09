@@ -1,6 +1,9 @@
 # ADR-008: risk domain の金額は Money 型で通貨次元を持つ
 
-**Status:** Accepted (2026-08-26)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§4.1](../SYSTEM_SPEC.md#s4-1)、[§4.2](../SYSTEM_SPEC.md#s4-2)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (2026-08-26)
 
 ## Decision
 

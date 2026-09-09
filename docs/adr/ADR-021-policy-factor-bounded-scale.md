@@ -1,6 +1,9 @@
 # ADR-021: POLICY factor は中銀声明スコアの尺度をそのまま使う（M3 3/3）
 
-**Status:** Accepted (2026-08-28)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§5.4](../SYSTEM_SPEC.md#s5-4)、[§5.5](../SYSTEM_SPEC.md#s5-5)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (2026-08-28)
 
 ## Context
 

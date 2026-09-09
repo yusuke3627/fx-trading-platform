@@ -1,6 +1,9 @@
 # ADR-020: GBP / EUR の RATES factor を公式カーブの 2 年点で賄う（M3 3/3）
 
-**Status:** Accepted (2026-08-28)
+**Status:** Superseded by SYSTEM_SPEC v2.0 [§5.2](../SYSTEM_SPEC.md#s5-2)、[§5.4](../SYSTEM_SPEC.md#s5-4)
+
+本改訂の main への取り込み時に規範を移管する。以下は旧決定の履歴であり、後続決定と現存制約は移管先を参照する。
+旧状態: Accepted (2026-08-28)
 
 ## Context
 

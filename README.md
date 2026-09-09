@@ -3,7 +3,7 @@
 個人・自己資金の FX アルゴリズム取引プラットフォーム。初期対象は USD/JPY
 （OANDA 東京サーバー / MT5 経由執行）、構造は通貨ペア非依存。
 
-- 設計は **v1.3 で凍結**: [docs/SYSTEM_SPEC.md](docs/SYSTEM_SPEC.md)。以後の
+- 設計は **v2.0 で凍結**: [docs/SYSTEM_SPEC.md](docs/SYSTEM_SPEC.md)。以後の
   変更は [docs/adr/](docs/adr/) に ADR として追加
 - 構成規約: [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
 - 相場スナップショット: [docs/research/](docs/research/)（設計に固定しない）

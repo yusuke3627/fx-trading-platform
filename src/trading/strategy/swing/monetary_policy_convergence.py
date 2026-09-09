@@ -136,7 +136,8 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
                 highs = swing_highs(bars, left, right)
                 # One signal per structural setup (identified by the bar of
                 # the last swing high), not one per market event.
-                setup_id = bars[highs[-1]].start if highs else bars[-1].start
+                setup_bar = bars[highs[-1]] if highs else bars[-1]
+                setup_id = (setup_bar.start, setup_bar.known_at)
                 structural_high = float(bars[highs[-1]].high) if highs else max(
                     float(b.high) for b in bars[-10:]
                 )
@@ -165,7 +166,7 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
                     ctx,
                     symbol=symbol,
                     direction=PositionDirection.LONG,
-                    setup_id=bars[-1].start,
+                    setup_id=(bars[-1].start, bars[-1].known_at),
                     conviction=0.4,
                     stop_distance_pips=Decimal(str(round(stop_price_distance / pip, 1))),
                     expected_horizon_seconds=horizon_seconds,

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from tests.support import T0, FixedClock, usdjpy_spec
 from trading.domain.account import AccountMode
-from trading.domain.fill import BrokerDeal
+from trading.domain.fill import BrokerDeal, ProtectionReason
 from trading.domain.order import ExecutionSide
 from trading.domain.position import BrokerPosition, PositionDirection
 from trading.execution.mt5 import mapper
@@ -106,13 +106,25 @@ def test_trade_cycle_skipped_by_default():
     assert "trade_cycle" in [m["name"] for m in report.manual_pending]
 
 
-def test_trade_cycle_requires_nonzero_magic():
-    # Manual terminal orders carry magic 0: without our own magic the cycle
-    # could never safely re-identify its positions.
-    report = run(FakeMT5(margin_mode=2, trade_mode=0), allow_trade_cycle=True)
-    open_step = step(report, "trade_cycle_open")
-    assert open_step.passed is False
-    assert "magic" in (open_step.detail or "")
+def test_each_run_uses_a_fresh_nonzero_magic(monkeypatch):
+    draws = iter([41, 81, 122])
+    monkeypatch.setattr("trading.execution.mt5.preflight.secrets.randbelow", lambda n: next(draws))
+    observed = []
+    monkeypatch.setattr(
+        "trading.execution.mt5.preflight._trade_cycle",
+        lambda adapter, spec, symbol, magic, clock, step: observed.append(magic),
+    )
+    class RecordingMT5(FakeMT5):
+        def order_check(self, request):
+            self.checked_magic = request["magic"]
+            return super().order_check(request)
+
+    for _ in range(2):
+        fake = RecordingMT5()
+        report = run(fake, allow_trade_cycle=True, magic=42)
+        assert fake.checked_magic == observed[-1]
+        assert step(report, "run_identity").measured["magic"] == observed[-1]
+    assert observed == [82, 123]
 
 
 class MissingOrderIdProbeAdapter:
@@ -217,3 +229,87 @@ def test_magic_reidentification_leaves_the_accounts_own_positions_alone():
 
     assert adapter.position("555") is not None
     assert adapter.position("666") is not None
+
+
+class InvisibleProbeAdapter(MissingOrderIdProbeAdapter):
+    def __init__(self):
+        super().__init__(magic=42)
+        self.selects = 0
+
+    def order_send(self, request):
+        result = super().order_send(request)
+        if "position" not in request:
+            return SimpleNamespace(retcode=result.retcode, order=777)
+        return result
+
+    def position(self, ticket):
+        self.selects += 1
+        if self.selects <= 4:
+            return None
+        return super().position(ticket)
+
+
+def test_invisible_probe_without_protection_deal_is_cleaned_up(monkeypatch):
+    monkeypatch.setattr("trading.execution.mt5.preflight.time.sleep", lambda _: None)
+    adapter = InvisibleProbeAdapter()
+    steps = []
+    _protection_fill_probe(
+        adapter, usdjpy_spec(), "USDJPY", 42, FixedClock(),
+        lambda *args, **kwargs: steps.append((args, kwargs)), wait_seconds=0,
+    )
+    assert adapter.position("777") is None
+    assert adapter.position("555") is not None
+    assert any(args[:2] == ("trade_cycle_protection_cleanup", True) for args, _ in steps)
+    assert any(args[:2] == ("trade_cycle_protection_fill", False) for args, _ in steps)
+
+
+def test_missing_id_cleanup_ignores_concurrent_configured_magic_order(monkeypatch):
+    configured_magic = 42
+    monkeypatch.setattr("trading.execution.mt5.preflight.secrets.randbelow", lambda n: 81)
+    adapters = []
+
+    class ConcurrentProbeAdapter(MissingOrderIdProbeAdapter):
+        def order_send(self, request):
+            result = super().order_send(request)
+            if "position" not in request:
+                self._positions["999"] = self._position("999")
+                self._deals.append(
+                    self._deal("foreign", "999", T0).model_copy(update={"magic": configured_magic})
+                )
+            return result
+
+    def cycle(adapter, spec, symbol, magic, clock, record):
+        probe = ConcurrentProbeAdapter(magic=magic)
+        adapters.append(probe)
+        _protection_fill_probe(probe, spec, symbol, magic, clock, record)
+
+    monkeypatch.setattr("trading.execution.mt5.preflight._trade_cycle", cycle)
+    report = run(FakeMT5(), allow_trade_cycle=True, magic=configured_magic, clock=FixedClock())
+    assert step(report, "run_identity").measured["magic"] == 82
+    assert adapters[0].position("777") is None
+    assert adapters[0].position("999") is not None
+
+
+def test_invisible_probe_with_confirmed_protection_fill_passes(monkeypatch):
+    monkeypatch.setattr("trading.execution.mt5.preflight.time.sleep", lambda _: None)
+    adapter = InvisibleProbeAdapter()
+    adapter._deals.append(
+        adapter._deal("sl", "777", T0).model_copy(
+            update={"protection_reason": ProtectionReason.STOP_LOSS, "reason_code": 4}
+        )
+    )
+    original_history = adapter.history_deals_for_position
+
+    def protection_history(identifier):
+        adapter._positions.pop("777", None)
+        return original_history(identifier)
+
+    monkeypatch.setattr(adapter, "history_deals_for_position", protection_history)
+    steps = []
+    _protection_fill_probe(
+        adapter, usdjpy_spec(), "USDJPY", 42, FixedClock(),
+        lambda *args, **kwargs: steps.append((args, kwargs)), wait_seconds=0,
+    )
+    assert adapter.position("777") is None
+    assert any(args[:2] == ("trade_cycle_protection_fill", True) for args, _ in steps)
+    assert not any(args[0] == "trade_cycle_protection_cleanup" for args, _ in steps)

@@ -49,12 +49,21 @@ def test_delayed_publication_does_not_move_the_vwap_session():
 
 
 def test_live_wiring_uses_the_configured_broker_anchor():
-    from tests.unit.test_live_wiring import config_with, services
+    from tests.support import FixedClock
+    from trading.config import MarketConfig
     from trading.live.wiring import build_runner
+    from trading.portfolio.virtual_ledger import VirtualPositionLedger
+    from trading.strategy.base import StrategyConfig
 
-    config = config_with("post_event_failed_breakout")
-    config.market = config.market.model_copy(update={"broker_server_ahead_of_ny_hours": 9})
-    inputs = services()
+    config = SimpleNamespace(
+        market=MarketConfig(broker_server_ahead_of_ny_hours=9),
+        strategies={
+            "post_event_failed_breakout": StrategyConfig(
+                strategy_id="post_event_failed_breakout", instruments=["USDJPY"]
+            )
+        },
+    )
+    clock = FixedClock()
     opening = datetime(2026, 7, 20, 7, tzinfo=UTC)
     bars = [
         make_bar(
@@ -64,6 +73,8 @@ def test_live_wiring_uses_the_configured_broker_anchor():
         )
         for instant, price in [(opening - timedelta(minutes=1), 90), (opening, 100)]
     ]
-    inputs["market"] = SimpleNamespace(bars=lambda *_: bars)
-    runner = build_runner(config, **inputs)
+    runner = build_runner(
+        config, market=SimpleNamespace(bars=lambda *_: bars),
+        clock=clock, ledger=VirtualPositionLedger(clock),
+    )
     assert runner.bindings[0].context.indicators.vwap("USDJPY", session=Session.LONDON) == 100

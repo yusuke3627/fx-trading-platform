@@ -12,8 +12,9 @@
 #   （利上げ・据え置き=hawkish / 利下げ・より大幅な利下げ=dovish）で判定する。
 #   QT・国債買入れ・声明文言・見通し別紙への反対は数えない。
 # - inflation_forecast_change は見通し公表回（BOJ=展望レポート 1/4/7/10 月、
-#   FED=SEP 3/6/9/12 月）のみ。当該年度（FED は当該暦年）のコア CPI / PCE
-#   インフレ率の中央値を前回公表と比べ、上方修正 +1 / 不変 0 / 下方修正 -1。
+#   FED=SEP 3/6/9/12 月）のみ。当該年度の BOJ コア CPI（生鮮食品除く）、
+#   当該暦年の FED 総合 PCE の中央値を前回公表と比べ、
+#   上方修正 +1 / 不変 0 / 下方修正 -1。
 # - explicit_future_hike_language は当日公表の声明本文のみで判定する（展望
 #   レポート本文・SEP・総裁会見は見ない。BOJ の展望回声明は調節方針のみの
 #   短文形式が多く、同趣旨の文言が基本的見解側にあっても false とする）。
@@ -22,10 +23,76 @@
 # 載っていない会合が無いと言い切れる範囲を書く。この外側では Risk はイベント
 # モードを設定の既定値（保守側）で扱う。
 covers:
-  since: 2024-07-01T00:00:00+00:00
+  since: 2024-03-01T00:00:00+00:00
   until: 2027-01-01T00:00:00+00:00
 
 meetings:
+  - bank: BOJ
+    decision_date: 2024-03-19
+    statement_published_at: 2024-03-19T03:35:00+00:00  # 公式公表 12:35 JST
+    rate_change_bp: 20  # -0.1% → 0〜0.1%。7月と同じく新誘導範囲の上限との差
+    hawkish_dissents: 0
+    dovish_dissents: 2  # マイナス金利終了・新調節方針への反対は2名
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/en/mopo/mpmdeci/state_2024/k240319a.htm
+
+  - bank: FED
+    decision_date: 2024-03-20
+    statement_published_at: 2024-03-20T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0  # SEP 2024年総合PCE 2.4→2.4
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20240320a.htm
+
+  - bank: BOJ
+    decision_date: 2024-04-26
+    statement_published_at: 2024-04-26T03:22:00+00:00  # 公式公表 12:22 JST
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # 展望 2024年度コアCPI 2.4→2.8
+    explicit_future_hike_language: false  # 声明本文は調節方針の据え置きのみ
+    verified: true
+    source_uri: https://www.boj.or.jp/en/mopo/mpmdeci/state_2024/k240426a.htm
+
+  - bank: FED
+    decision_date: 2024-05-01
+    statement_published_at: 2024-05-01T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20240501a.htm
+
+  - bank: FED
+    decision_date: 2024-06-12
+    statement_published_at: 2024-06-12T18:00:00+00:00  # 14:00 EDT
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # SEP 2024年総合PCE 2.4→2.6
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20240612a.htm
+
+  - bank: BOJ
+    decision_date: 2024-06-14
+    statement_published_at: 2024-06-14T03:23:00+00:00  # 公式公表 12:23 JST
+    rate_change_bp: 0
+    hawkish_dissents: 0
+    dovish_dissents: 0  # 国債買入れ減額方針への1名の反対は金利決定ではない
+    inflation_forecast_change: 0
+    explicit_future_hike_language: false
+    verified: true
+    source_uri: https://www.boj.or.jp/en/mopo/mpmdeci/state_2024/k240614a.htm
+
   - bank: BOJ
     decision_date: 2024-07-31
     statement_published_at: 2024-07-31T06:00:00+00:00  # 15:00 JST（保守置き）
@@ -391,7 +458,7 @@ meetings:
 
   - bank: BOJ
     decision_date: 2026-07-31
-    statement_published_at: 2026-07-31T06:00:00+00:00  # 15:00 JST（保守置き）
+    statement_published_at: 2026-07-31T03:11:00+00:00  # 公式公表 12:11 JST
     rate_change_bp: 0
     hawkish_dissents: 1  # 1名が1.25%への利上げ議案を提出
     dovish_dissents: 0
@@ -424,6 +491,24 @@ meetings:
 # 「金融政策決定会合等の日程」PDF（2024年分 mref230728a / 2025年分
 # mref240731a / 2026年分 mref250731a）。8 月は両行とも会合なし。
 schedule:
+  - bank: BOJ
+    decision_date: 2024-03-19
+    earliest_published_at: 2024-03-19T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2024-03-19T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref230728a.pdf
+
+  - bank: BOJ
+    decision_date: 2024-04-26
+    earliest_published_at: 2024-04-26T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2024-04-26T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref230728a.pdf
+
+  - bank: BOJ
+    decision_date: 2024-06-14
+    earliest_published_at: 2024-06-14T00:00:00+00:00  # 9:00 JST
+    latest_published_at: 2024-06-14T06:00:00+00:00  # 15:00 JST
+    source_uri: https://www.boj.or.jp/mopo/mpmsche_minu/m_ref/mref230728a.pdf
+
   - bank: BOJ
     decision_date: 2024-07-31
     earliest_published_at: 2024-07-31T00:00:00+00:00  # 9:00 JST

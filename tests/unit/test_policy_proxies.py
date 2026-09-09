@@ -480,3 +480,45 @@ def test_daily_period_format():
     assert spec.release_instant(date(2026, 8, 18)) == datetime(
         2026, 8, 18, 22, 0, tzinfo=UTC
     )
+
+
+@pytest.mark.parametrize(
+    "bank,decision,rate,dovish,forecast,published,score",
+    [
+        ("BOJ", "2024-03-19", 20, 2, 0, "2024-03-19T03:35:00+00:00", 1.0),
+        ("FED", "2024-03-20", 0, 0, 1, "2024-03-20T18:00:00+00:00", 0.5),
+        ("BOJ", "2024-04-26", 0, 0, 1, "2024-04-26T03:22:00+00:00", 0.5),
+        ("FED", "2024-05-01", 0, 0, 0, "2024-05-01T18:00:00+00:00", 0.0),
+        ("FED", "2024-06-12", 0, 0, 1, "2024-06-12T18:00:00+00:00", 0.5),
+        ("BOJ", "2024-06-14", 0, 0, 0, "2024-06-14T03:23:00+00:00", 0.0),
+    ],
+)
+def test_committed_2024_transition_backfill(bank, decision, rate, dovish, forecast, published, score):
+    # fixture は作らず、一次資料から転記した配布データと採点結果を保護する。
+    meeting = next(
+        m for m in load_meetings()
+        if m.bank == bank and m.decision_date == date.fromisoformat(decision)
+    )
+    assert meeting.rate_change_bp == rate
+    assert meeting.hawkish_dissents == 0
+    assert meeting.dovish_dissents == dovish
+    assert meeting.inflation_forecast_change == forecast
+    assert not meeting.explicit_future_hike_language
+    assert meeting.verified
+    assert score_meeting(meeting) == score
+    event = event_from_meeting(meeting, FixedClock(datetime(2026, 9, 9, tzinfo=UTC)))
+    assert event.known_at == datetime.fromisoformat(published)
+
+
+def test_committed_backfill_retains_boj_announced_windows():
+    coverage = load_coverage()
+    assert coverage.since == datetime(2024, 3, 1, tzinfo=UTC)
+    meetings = [m for m in load_meetings() if m.bank == "BOJ"]
+    schedule = {(s.bank, s.decision_date): s for s in load_schedule()}
+    for meeting in meetings:
+        window = schedule[(meeting.bank, meeting.decision_date)]
+        assert window.earliest_published_at <= meeting.statement_published_at
+        assert meeting.statement_published_at <= window.latest_published_at
+        assert window.latest_published_at - window.earliest_published_at == timedelta(hours=6)
+    july = next(m for m in meetings if m.decision_date == date(2026, 7, 31))
+    assert july.statement_published_at == datetime(2026, 7, 31, 3, 11, tzinfo=UTC)

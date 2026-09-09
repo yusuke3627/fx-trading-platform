@@ -64,7 +64,7 @@ def main() -> None:
     ]
 
     for batch_raw in (*daily.raw_events, *monthly.raw_events):
-        repository.insert(batch_raw)
+        repository.insert_raw_archive(batch_raw)
     stored = sum(
         1
         for event in (*daily.events, *monthly.events, *recognitions)

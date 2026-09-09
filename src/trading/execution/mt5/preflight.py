@@ -17,6 +17,7 @@ Usage (Windows host with MT5 terminal):
 from __future__ import annotations
 
 import json
+import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -88,12 +89,19 @@ def run_preflight(
     clock: Clock | None = None,
     magic: int = 0,
 ) -> PreflightReport:
+    """設定の magic と異なる実行専用 magic で接続・注文経路を検証する。"""
     clock = clock or SystemClock()
     report = PreflightReport(started_at=clock.now())
+    configured_magic = magic
+    magic = secrets.randbelow(2**63 - 1) + 1
+    while magic == configured_magic:
+        magic = secrets.randbelow(2**63 - 1) + 1
 
     def step(name: str, passed: bool, measured: dict | None = None, detail: str | None = None):
         report.steps.append(StepResult(name, passed, measured or {}, detail))
         return passed
+
+    step("run_identity", True, {"magic": magic, "configured_magic": configured_magic})
 
     # 1. Terminal connection + account info
     try:
@@ -194,19 +202,6 @@ def run_preflight(
 def _trade_cycle(adapter, spec, symbol: str, magic: int, clock: Clock, step) -> None:
     """OPEN volume_min + one step with SL/TP -> verify protection -> modify
     SL/TP -> partial REDUCE -> full CLOSE -> history check."""
-    # Manual terminal orders carry magic 0: without our own nonzero magic the
-    # cycle could never safely re-identify its positions from deal history.
-    if magic == 0:
-        step(
-            "trade_cycle_open",
-            False,
-            detail=(
-                "refused: a nonzero magic number is required so the cycle can "
-                "always re-identify its own positions"
-            ),
-        )
-        return
-
     # On a netting account an OPEN merges into any existing position on the
     # symbol: the cycle could then neither track its own position nor restore
     # the prior exposure. Require a flat symbol before touching it.
@@ -485,9 +480,8 @@ def _own_position_tickets_from_history(
     — the safe lookup when the broker result lacks an order id (a foreign
     position can never match our magic).
 
-    Magic alone is not enough to identify them: the account's own trading uses
-    the same magic. Two filters narrow it to this run's own position, and both
-    are needed because whatever survives gets a close order sent to it.
+    Each run uses a fresh random magic distinct from the configured trading
+    magic. Snapshot and recency filters further limit the lookup.
 
     Positions the account already held when the order went out are excluded
     outright — no matter how recently they were opened, they are not ours.
@@ -688,20 +682,30 @@ def _protection_fill_probe(
     identifier = probed.broker_position_identifier if probed is not None else ticket
 
     deadline = time.monotonic() + wait_seconds
-    fired = probed is None
-    while not fired and time.monotonic() < deadline:
-        if adapter.position(ticket) is None:
-            fired = True
+    protection_deals = []
+    while True:
+        current = adapter.position(ticket)
+        if current is not None:
+            identifier = current.broker_position_identifier
+        else:
+            protection_deals = [
+                d
+                for d in adapter.history_deals_for_position(identifier)
+                if d.protection_reason is not None
+            ]
+            if protection_deals:
+                break
+        if time.monotonic() >= deadline:
             break
         time.sleep(2)
 
-    if not fired:
+    if not protection_deals:
         _cleanup_leftover_ticket(
             adapter,
             spec,
             symbol,
             magic,
-            ticket,
+            ticket if current is not None else "0",
             clock,
             step,
             "trade_cycle_protection_cleanup",
@@ -711,17 +715,12 @@ def _protection_fill_probe(
             "trade_cycle_protection_fill",
             False,
             detail=(
-                f"unverified: broker-side SL did not fire within {wait_seconds}s; "
+                f"unverified: broker-side SL was not confirmed within {wait_seconds}s; "
                 "PROTECTION_FILL remains unverified"
             ),
         )
         return
 
-    protection_deals = [
-        d
-        for d in adapter.history_deals_for_position(identifier)
-        if d.protection_reason is not None
-    ]
     step(
         "trade_cycle_protection_fill",
         bool(protection_deals),

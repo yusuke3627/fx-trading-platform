@@ -366,7 +366,7 @@ class RiskEngine:
             allowed = (allowed / 2 // spec.volume_step) * spec.volume_step
 
         requested = ctx.requested_quantity if ctx.requested_quantity > 0 else allowed
-        quantity = min(requested, allowed)
+        quantity = (min(requested, allowed) // spec.volume_step) * spec.volume_step
 
         # The broker minimum never overrides risk: if the smallest tradable
         # size already exceeds the allowance, reject instead of trading it.

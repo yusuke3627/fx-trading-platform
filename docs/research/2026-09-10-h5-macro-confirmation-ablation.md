@@ -66,7 +66,7 @@ H5 は「日中の failed breakout にマクロ確認（米 2 年金利の 1 日
 
 つまり H5 の「質が上がる」は、腕全体の損失を減らすという意味では否定されないが、取引可能な優位性になるという意味では裏付けられない。確認ありの平均 CI90 も腕間差の CI90 も 0 をまたぐので、この結果だけでは検出力不足と優位性不在を区別できず、「優位性が無い」とまでは言えない。言えるのは **`post_event_failed_breakout` を live へ昇格させる根拠が現時点で無い**ことまで。
 
-「維持したまま再測定」は、何を再測定するかで意味が変わる。seed は 2 種類ある。比較 CLI の `--seed` は bootstrap の再標本化だけを決めるので、これを増やしても CI の乱数誤差が縮むだけで、差そのものは動かない。一方、research の `--seed` は `ExecutionSimulator._shock_rng()` に入って reject・slippage・partial fill を決める。安定注文キーで共通注文のショックは腕をまたいで揃えてあるが、片腕にしか無い注文と、約定後の状態遷移には執行乱数が残る。**本ノートは research seed を 1 組（42）しか測っていない**ので、差の分散のうち執行由来がどれだけかは判定できていない。再測定するなら、対応した research seed を複数ペア流して執行感応度を確かめるのが先で、これは腕 2 本を並列で流すだけなので安い。標本を増やす意味での再測定は期間がすでに 2 年分で頭打ちなので、時間を待つより、決済のほぼ全部が protection fill になっている構造（利確・損切りの設計）を先に見直すべき。
+「維持したまま再測定」は、何を再測定するかで意味が変わる。seed は 2 種類ある。比較 CLI の `--seed` は bootstrap の再標本化に使う乱数系列を選ぶだけで、変えても CI の値が乱数誤差の範囲で揺れるだけで、精度は上がらず差そのものも動かない（精度を上げるのは `BOOTSTRAP_SAMPLES` を増やすこと）。一方、research の `--seed` は `ExecutionSimulator._shock_rng()` に入って reject・slippage・partial fill を決める。安定注文キーで共通注文のショックは腕をまたいで揃えてあるが、片腕にしか無い注文と、約定後の状態遷移には執行乱数が残る。**本ノートは research seed を 1 組（42）しか測っていない**ので、差の分散のうち執行由来がどれだけかは判定できていない。再測定するなら、対応した research seed を複数ペア流して執行感応度を確かめるのが先で、これは腕 2 本を並列で流すだけなので安い。標本を増やす意味での再測定は期間がすでに 2 年分で頭打ちなので、時間を待つより、決済のほぼ全部が protection fill になっている構造（利確・損切りの設計）を先に見直すべき。
 
 ## 教訓
 
@@ -83,7 +83,7 @@ H5 は「日中の failed breakout にマクロ確認（米 2 年金利の 1 日
 
 ## 再現
 
-VPS で collector を止めたうえで、2 つのターミナルからほぼ同時に:
+VPS で YAML 由来の collector（policy / intervention）を先に流し切り、`fx-macro` だけを止めたうえで（tick / bar / account / shadow のタスクは止めない）、2 つのターミナルからほぼ同時に:
 
 ```
 python -m trading.backtest.research --env backtest --symbol USDJPY --strategy post_event_failed_breakout --from 2024-08-01T00:00:00+00:00 --to 2026-08-29T00:00:00+00:00 --seed 42 --out reports/h5_with3

@@ -27,11 +27,12 @@ H5 は「日中の failed breakout にマクロ確認（米 2 年金利の 1 日
 
 | 項目 | 値 |
 |---|---|
-| コード | commit `4945335`（PR #140 マージ直後の main）。両腕とも `git_dirty=True` だが `git_diff_sha256` は一致（VPS 直下の未追跡ファイルによるもので、比較 CLI の検証を通過） |
+| コード | commit `4945335c21f1456f7e69a67e0050ae4b1cfef223`（PR #140 マージ直後の main）。両腕とも `git_dirty=True` だが `git_diff_sha256` は一致（VPS 直下の未追跡ファイルによるもので、比較 CLI の検証を通過）。値は run ディレクトリの `manifest.json` を正本とし、本ノートには転記していない |
 | 期間 | 2024-08-01 〜 2026-08-29（broker ラベル、終端は排他） |
-| tick | `dataset_hash=2432a1cd…`（同じハッシュの run で 98,892,247 本） |
-| PIT 行 | `feature_dataset_hash=5d0d0827…`（両腕で一致） |
-| scenario / seed | normal / 42 |
+| tick | `dataset_hash=2432a1cdc8b9a08aa725f52696af792ace049e773a9dfc4a9884b5135f72fcf6`（同じハッシュの run で 98,892,247 本） |
+| PIT 行 | `feature_dataset_hash=5d0d082788427d30f7866b26f969104d947ec1d5499398bb353ed047788f6d88`（両腕で一致） |
+| swap snapshot | `swap_dataset_hash` は両腕で一致（比較 CLI の検証を通過）。値は `manifest.json` を正本とし、本ノートには転記していない |
+| scenario / seed | normal / 42（seed は research の `--seed`。比較 CLI の `--seed` も 42） |
 | 確認あり | `reports/h5_with3/43fe0895-97f8-4fb8-afb7-451b1c4d2150` |
 | 確認なし | `reports/h5_without3/09ffb244-b22d-41fc-af2c-10a6464edcd5` |
 
@@ -90,4 +91,4 @@ python -m trading.backtest.research --env backtest --symbol USDJPY --strategy po
 python -m trading.backtest.ablation_compare --with reports/h5_with3/<run_id> --without reports/h5_without3/<run_id> --seed 42
 ```
 
-比較 CLI の冒頭に出る `git_commit` / `dataset_hash` / `feature_dataset_hash` が本ノートの値と一致すれば同じ結果になる。
+同じ結果と言えるのは、両腕の `manifest.json` で `ablation_compare.COMPARABLE_FIELDS` の全項目が本ノートの run と一致するとき ―― `git_commit` / `git_dirty` / `git_diff_sha256` / `python_version` / `environment` / `symbol` / `strategy_id` / `strategy_version` / `engine_version` / `scenario` / `seed` / `tick_count` / `period_from` / `period_to` / `warmup_days` / `broker_server_ahead_of_ny_hours` / `dataset_hash` / `feature_dataset_hash` / `swap_dataset_hash`。比較 CLI の冒頭に出るのはこのうち一部だけで、残りは上記 run ディレクトリの `manifest.json` を正本とする。`config_sha256` も manifest に記録されるので、あわせて照合する。

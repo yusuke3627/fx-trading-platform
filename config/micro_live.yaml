@@ -1,5 +1,7 @@
 # Micro live: 1,000-unit cap, broker-side SL mandatory. Requires every item
 # of the Production Gate checklist (docs/SYSTEM_SPEC.md) verified first.
+# 現時点で live_eligible（MICRO_LIVE / LIMITED_LIVE / PRODUCTION）な戦略は無く、
+# この overlay で起動しても実注文は出ない。
 risk:
   trading_enabled: true
   max_open_positions_per_symbol: 1
@@ -10,6 +12,8 @@ risk:
   require_broker_stop_loss: true
 
 strategies:
+  # H5 判定（docs/research/2026-09-10-h5-macro-confirmation-ablation.md）で昇格根拠なし。
+  # 再測定で裏付けが出るまで SHADOW。
   post_event_failed_breakout:
     enabled: true
-    status: MICRO_LIVE
+    status: SHADOW

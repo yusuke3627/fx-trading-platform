@@ -5,8 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support import T0, FixedClock, at, make_event
-from tests.unit.test_portfolio_manager import held, manager_with, sizing
+from tests.support import T0, FixedClock, at, held, make_event, manager_with, sizing
 from tests.unit.test_session_entry_gate import OFF_SESSION, TOKYO_ONLY, USDJPY_CORE
 from trading.domain.position import PositionAction, PositionDirection
 from trading.strategy.base import (

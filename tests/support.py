@@ -7,6 +7,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
+from trading.data.market import InMemoryMarketData
 from trading.domain.account import AccountSnapshot
 from trading.domain.arbitration import ArbitrationDecision
 from trading.domain.event import EventEnvelope
@@ -15,10 +16,13 @@ from trading.domain.intent import PositionIntent, ProtectionSpec
 from trading.domain.market import TIMEFRAME_SECONDS, Bar, Tick
 from trading.domain.money import Currency
 from trading.domain.order import CommandState, ExecutionCommand, ExecutionSide
-from trading.domain.position import PositionAction, PositionDirection
+from trading.domain.position import PositionAction, PositionDirection, VirtualPosition
 from trading.domain.risk import RiskDecision
 from trading.domain.signal import StrategySignal
 from trading.intelligence.features import InMemoryFeatureStore
+from trading.portfolio.manager import PortfolioManager, SizingInput
+from trading.portfolio.virtual_ledger import VirtualPositionLedger
+from trading.risk.conversion import MarketQuoteConversionService
 from trading.strategy.base import StrategyConfig, TimeframeMap
 from trading.strategy.parameters import StrategyParameters
 
@@ -153,6 +157,42 @@ def make_bar(
         close=Decimal(close),
         tick_volume=tick_volume,
         known_at=known_at if known_at is not None else end,
+    )
+
+
+def sizing(**overrides) -> SizingInput:
+    values = {
+        "equity": Decimal(1_000_000),
+        "max_risk_per_trade_pct": Decimal("0.05"),
+        "pip_size": Decimal("0.01"),
+        "quote_currency": Currency.JPY,
+        "volume_step": Decimal(1000),
+        "entry_price": Decimal("158.840"),
+    }
+    values.update(overrides)
+    return SizingInput(**values)
+
+
+def manager_with(
+    *positions: VirtualPosition, market: InMemoryMarketData | None = None
+) -> PortfolioManager:
+    ledger = VirtualPositionLedger(FixedClock())
+    for p in positions:
+        ledger.record(p)
+    return PortfolioManager(
+        ledger,
+        FixedClock(),
+        MarketQuoteConversionService(market or InMemoryMarketData(), [usdjpy_spec()]),
+    )
+
+
+def held(direction: PositionDirection) -> VirtualPosition:
+    return VirtualPosition(
+        strategy_id="test_strategy",
+        symbol="USDJPY",
+        direction=direction,
+        quantity=Decimal(1000),
+        as_of=T0,
     )
 
 

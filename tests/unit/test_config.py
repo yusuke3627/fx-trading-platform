@@ -10,7 +10,7 @@ from trading.config import (
     MarketConfig,
     load_config,
 )
-from trading.strategy.base import StrategyStatus
+from trading.strategy.base import LIVE_ELIGIBLE_STATUSES, StrategyStatus
 from trading.strategy.sessions import SessionEntryPolicy
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
@@ -71,10 +71,25 @@ def test_micro_live_overlay_caps_and_enables():
     assert config.risk.require_broker_stop_loss is True
 
     strategy = config.strategies["post_event_failed_breakout"]
-    assert strategy.status is StrategyStatus.MICRO_LIVE
+    assert strategy.status is StrategyStatus.SHADOW
     assert strategy.enabled is True
     # Base parameters survive the overlay merge.
     assert strategy.params_for("USDJPY").param("resistance_lookback", 0) == 20
+
+
+def test_micro_live_has_no_live_eligible_strategy_until_one_is_promoted():
+    # live_eligible な status は実注文を出す側（runner.StrategyBinding.live_eligible）。
+    # 昇格判定を通った戦略は現時点で無い（post_event_failed_breakout は H5 判定で
+    # 根拠なし）ので、合成後の設定に live 対象の status が無いことをここで固定する。
+    # 昇格判定済みの戦略が出たら、その strategy_id をこの期待値に足す。
+    config = load_config("micro_live", CONFIG_DIR)
+
+    live_eligible = sorted(
+        strategy_id
+        for strategy_id, strategy in config.strategies.items()
+        if strategy.status in LIVE_ELIGIBLE_STATUSES
+    )
+    assert live_eligible == []
 
 
 def test_backtest_enables_risk_gate_for_simulated_orders():

@@ -554,3 +554,65 @@ def test_curve_ends_on_the_closing_equity_with_duplicate_final_instants():
 
     assert result.fills and result.fills[-1].at == ticks[-1].known_time
     assert result.equity_curve[-1][1] == Decimal(result.metrics["final_equity"])
+
+
+class HorizonProbe(ScriptedStrategy):
+    async def on_event(self, event, context):
+        signal = self._horizon_exit(
+            context, context.config.instruments[0], default_horizon_seconds=60
+        )
+        if signal is not None:
+            return [signal]
+        return await super().on_event(event, context)
+
+
+def test_horizon_exit_closes_without_opening_reverse_position():
+    engine = BacktestEngine(
+        risk_config=slice_risk_config(),
+        spec=usdjpy_spec(),
+        costs=STRESS_SCENARIOS["normal"],
+        seed=7,
+        strategy_factory=lambda: HorizonProbe(
+            {300: PositionDirection.LONG}, stop_distance_pips=Decimal(200)
+        ),
+        strategy_config=StrategyConfig(
+            strategy_id=ScriptedStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+            parameters={"horizon_exit_enabled": True, "expected_horizon_seconds": 60},
+        ),
+    )
+    result = engine.run(synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=2000, seed=7))
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.reason == "CLOSE"
+    assert trade.direction == "LONG"
+    assert trade.exit_at - trade.entry_at >= timedelta(seconds=60)
+    fills = [(fill.action, fill.side, fill.direction) for fill in result.fills]
+    assert ("OPEN", "BUY", "LONG") in fills
+    assert ("CLOSE", "SELL", "LONG") in fills
+    assert ("OPEN", "SELL", "SHORT") not in fills
+    assert result.metrics["open_positions_at_end"] == "0"
+
+
+def test_disabled_horizon_exit_preserves_replay_results():
+    engine = BacktestEngine(
+        risk_config=slice_risk_config(),
+        spec=usdjpy_spec(),
+        costs=STRESS_SCENARIOS["normal"],
+        seed=7,
+        strategy_factory=lambda: HorizonProbe(
+            {300: PositionDirection.LONG, 1200: PositionDirection.SHORT},
+            stop_distance_pips=Decimal(200),
+        ),
+        strategy_config=StrategyConfig(
+            strategy_id=ScriptedStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+        ),
+    )
+    result = engine.run(synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=2000, seed=7))
+    baseline = run_slice(STRESS_SCENARIOS["normal"])
+    assert result.fills == baseline.fills
+    assert result.trades == baseline.trades
+    assert result.metrics == baseline.metrics

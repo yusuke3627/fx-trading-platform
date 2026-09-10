@@ -31,7 +31,9 @@ from trading.strategy.spread_gate import SpreadGate
 
 class FailedSpikeReversalStrategy(Strategy):
     strategy_id = "failed_spike_reversal"
-    strategy_version = "0.1.0"
+    # 0.2.0: 時間切れ決済により、過去の記録済み signal と
+    # 同じ戦略として比較できないため版を分ける。
+    strategy_version = "0.2.0"
     horizon = StrategyHorizon.SCALP
 
     @classmethod
@@ -71,6 +73,10 @@ class FailedSpikeReversalStrategy(Strategy):
             return []
         signals = []
         for symbol in context.config.instruments:
+            signal = self._horizon_exit(context, symbol, default_horizon_seconds=300)
+            if signal is not None:
+                signals.append(signal)
+                continue
             if not self._session_permits_evaluation(context, symbol):
                 continue
             signal = self._evaluate(symbol, context)

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import ClassVar, Protocol
@@ -52,6 +52,9 @@ LIVE_ELIGIBLE_STATUSES = frozenset(
 # gate 閉鎖中に反転 setup が成立し、entry の代わりに決済専用 signal を出したことを
 # 決定記録（reason_codes）から読めるようにする印。
 SESSION_CLOSED_EXIT_ONLY = "SESSION_CLOSED_EXIT_ONLY"
+
+# 保有期限による決済を、setup による決済と決定記録で区別する印。
+HORIZON_EXPIRED = "HORIZON_EXPIRED"
 
 
 class StrategyHorizon(StrEnum):
@@ -244,6 +247,41 @@ class Strategy(ABC):
         if position is None or position.quantity == 0:
             return None
         return position
+
+    def _horizon_exit(
+        self, ctx: StrategyContext, symbol: str, *, default_horizon_seconds: int
+    ) -> StrategySignal | None:
+        memo: dict[str, tuple[PositionDirection, datetime, bool]] = self.__dict__.setdefault(
+            "_horizon_exits", {}
+        )
+        position = self._held_position(ctx, symbol)
+        if position is None:
+            memo.pop(symbol, None)
+            return None
+        if symbol not in memo or memo[symbol][0] is not position.direction:
+            memo[symbol] = (position.direction, position.as_of, False)
+        direction, held_since, fired = memo[symbol]
+        params = ctx.config.params_for(symbol)
+        if not bool(params.param("horizon_exit_enabled", False)) or fired:
+            return None
+        horizon_seconds = int(params.param("expected_horizon_seconds", default_horizon_seconds))
+        if ctx.clock.now() - held_since < timedelta(seconds=horizon_seconds):
+            return None
+        memo[symbol] = (direction, held_since, True)
+        return self.make_signal(
+            ctx,
+            symbol=symbol,
+            direction=(
+                PositionDirection.SHORT
+                if direction is PositionDirection.LONG
+                else PositionDirection.LONG
+            ),
+            conviction=1.0,
+            stop_distance_pips=Decimal(0),
+            expected_horizon_seconds=horizon_seconds,
+            reason_codes=[HORIZON_EXPIRED],
+            exit_only=True,
+        )
 
     def _session_permits_evaluation(self, ctx: StrategyContext, symbol: str) -> bool:
         """gate が閉じていても、保有があれば決済判定のため評価へ進む。"""

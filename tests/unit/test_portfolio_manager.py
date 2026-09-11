@@ -1,14 +1,12 @@
 from decimal import Decimal
 from uuid import uuid4
 
-from tests.support import T0, FixedClock, make_tick, usdjpy_spec
+from tests.support import T0, held, make_tick, manager_with, sizing
 from trading.data.market import InMemoryMarketData
 from trading.domain.money import Currency
 from trading.domain.position import PositionAction, PositionDirection, VirtualPosition
 from trading.domain.signal import StrategySignal
-from trading.portfolio.manager import PortfolioManager, SizingInput
-from trading.portfolio.virtual_ledger import VirtualPositionLedger
-from trading.risk.conversion import MarketQuoteConversionService
+from trading.portfolio.manager import SizingInput
 
 
 def make_signal(
@@ -29,42 +27,6 @@ def make_signal(
         reason_codes=["TEST"],
         exit_only=exit_only,
         generated_at=T0,
-    )
-
-
-def sizing(**overrides) -> SizingInput:
-    values = {
-        "equity": Decimal(1_000_000),
-        "max_risk_per_trade_pct": Decimal("0.05"),
-        "pip_size": Decimal("0.01"),
-        "quote_currency": Currency.JPY,
-        "volume_step": Decimal(1000),
-        "entry_price": Decimal("158.840"),
-    }
-    values.update(overrides)
-    return SizingInput(**values)
-
-
-def manager_with(
-    *positions: VirtualPosition, market: InMemoryMarketData | None = None
-) -> PortfolioManager:
-    ledger = VirtualPositionLedger(FixedClock())
-    for p in positions:
-        ledger.record(p)
-    return PortfolioManager(
-        ledger,
-        FixedClock(),
-        MarketQuoteConversionService(market or InMemoryMarketData(), [usdjpy_spec()]),
-    )
-
-
-def held(direction: PositionDirection) -> VirtualPosition:
-    return VirtualPosition(
-        strategy_id="test_strategy",
-        symbol="USDJPY",
-        direction=direction,
-        quantity=Decimal(1000),
-        as_of=T0,
     )
 
 

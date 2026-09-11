@@ -148,6 +148,7 @@ strategies:
         stop_buffer_atr: 0.5
         long_side_enabled: false
         expected_horizon_seconds: 300
+        horizon_exit_enabled: false
         spread_gate:
           max_spread_to_atr: "0.5"
       instruments:
@@ -171,6 +172,7 @@ strategies:
       macro_confirmation_enabled: true
       intervention_risk_max_for_long: 0.5
       expected_horizon_seconds: 21600
+      horizon_exit_enabled: false
 
   monetary_policy_convergence:
     enabled: false

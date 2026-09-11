@@ -84,6 +84,10 @@ class PostEventFailedBreakoutStrategy(Strategy):
             return []
         signals = []
         for symbol in context.config.instruments:
+            signal = self._horizon_exit(context, symbol, default_horizon_seconds=21600)
+            if signal is not None:
+                signals.append(signal)
+                continue
             if not self._session_permits_evaluation(context, symbol):
                 continue
             signal = self._evaluate(symbol, context)

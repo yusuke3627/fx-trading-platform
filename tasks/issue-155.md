@@ -41,12 +41,14 @@
 
 ## 変更範囲
 
-対象は次の 2 ファイルだけ。他の研究ノート・コード・設定・ADR には触れない。
-並行作業（`config/`・`docs/adr/`・`src/trading/backtest/`）と重ならない。
+対象は次の 3 ファイルだけ。他の研究ノート・コード・設定には触れない。
+`docs/adr/ADR-037-backtest-account-level-loss-halts.md` は当初対象外としていたが、
+実測で H5 が旧閾値による打ち切りではないと確定したため、例外的に該当箇所だけ直す。
 
 | ファイル | 変更内容 |
 | --- | --- |
 | `docs/research/2026-09-10-h5-macro-confirmation-ablation.md` | 下記 1〜6 |
+| `docs/adr/ADR-037-backtest-account-level-loss-halts.md` | Context と Consequences の H5 に関する記述 |
 | `tasks/issue-155.md` | 本ファイル |
 
 ### ノートへの編集
@@ -111,12 +113,13 @@
 
 ## 完了条件
 
-- `git diff --stat` が上記 2 ファイルだけを示す
+- `git diff --stat` が上記 3 ファイルだけを示す
 - `.venv/bin/ruff check .` が無指摘
 
 ## やらないこと
 
 - 判定・数値の書き換え、他ノートの変更、コード・設定の変更、H5 の再測定
+- ADR-037 の Decision の変更（H5 に関する事実記述だけを直し、決定そのものには触れない）
 
 ## 実測で確定した事実（本節が上の記述に優先する）
 

@@ -1,4 +1,5 @@
 import math
+import sys
 from decimal import Decimal
 
 import pytest
@@ -15,6 +16,7 @@ from trading.backtest.ablation_compare import (
     difference_interval,
     judge,
     load_run,
+    main,
     report,
     verify_comparable,
 )
@@ -135,9 +137,11 @@ def manifest(
     param_overrides: dict,
     *,
     resolved_enabled: bool | None = None,
+    param: str = "macro_confirmation_enabled",
+    strategy_id: str = "post_event_failed_breakout",
 ) -> dict:
     if resolved_enabled is None:
-        resolved_enabled = param_overrides.get("macro_confirmation_enabled", True)
+        resolved_enabled = param_overrides.get(param, True)
     return {
         "run_id": run_id,
         "git_commit": "0123456789abcdef",
@@ -145,7 +149,7 @@ def manifest(
         "python_version": "3.12.4",
         "environment": "backtest",
         "symbol": "USDJPY",
-        "strategy_id": "post_event_failed_breakout",
+        "strategy_id": strategy_id,
         "strategy_version": "0.2.0",
         "engine_version": "0.5.0",
         "scenario": "normal",
@@ -160,7 +164,7 @@ def manifest(
         "broker_server_ahead_of_ny_hours": 7.0,
         "param_overrides": param_overrides,
         "resolved_parameters": {
-            "macro_confirmation_enabled": resolved_enabled,
+            param: resolved_enabled,
         },
     }
 
@@ -182,7 +186,7 @@ def test_load_run_and_report_round_trip_trade_pnls_and_provenance(tmp_path):
 
     with_run = load_run(with_dir)
     without_run = load_run(without_dir)
-    rendered = report(with_run, without_run, seed=42)
+    rendered = report(with_run, without_run, "macro_confirmation_enabled", seed=42)
 
     assert with_run.pnls == [Decimal("11.0"), Decimal("-2.5")]
     assert without_run.pnls == without_pnls
@@ -241,6 +245,7 @@ def test_verify_comparable_rejects_dataset_mismatch():
                 run_metrics(),
                 [],
             ),
+            "macro_confirmation_enabled",
         )
 
 
@@ -256,6 +261,7 @@ def test_verify_comparable_rejects_runs_without_a_known_commit():
         verify_comparable(
             RunArtifacts(with_manifest, run_metrics(), []),
             RunArtifacts(without_manifest, run_metrics(), []),
+            "macro_confirmation_enabled",
         )
 
 
@@ -270,6 +276,7 @@ def test_verify_comparable_rejects_python_version_mismatch():
         verify_comparable(
             RunArtifacts(with_manifest, run_metrics(), []),
             RunArtifacts(without_manifest, run_metrics(), []),
+            "macro_confirmation_enabled",
         )
 
 
@@ -286,6 +293,7 @@ def test_verify_comparable_requires_disabled_without_arm():
                 run_metrics(),
                 [],
             ),
+            "macro_confirmation_enabled",
         )
 
 
@@ -308,6 +316,7 @@ def test_verify_comparable_rejects_instrument_override_of_without_arm():
                 run_metrics(),
                 [],
             ),
+            "macro_confirmation_enabled",
         )
 
 
@@ -327,20 +336,20 @@ def test_verify_comparable_rejects_other_override_mismatch_without_mutation():
                 run_metrics(),
                 [],
             ),
+            "macro_confirmation_enabled",
         )
 
     assert without_manifest["param_overrides"] == without_overrides
 
 
-def test_verify_comparable_requires_the_ablation_strategy():
+def test_verify_comparable_rejects_strategy_id_mismatch():
     with_manifest = manifest("with-run", {})
     without_manifest = manifest(
         "without-run", {"macro_confirmation_enabled": False}
     )
-    with_manifest["strategy_id"] = "failed_spike_reversal"
     without_manifest["strategy_id"] = "failed_spike_reversal"
 
-    with pytest.raises(SystemExit, match="post_event_failed_breakout"):
+    with pytest.raises(SystemExit, match="strategy_id"):
         verify_comparable(
             RunArtifacts(
                 with_manifest,
@@ -352,6 +361,7 @@ def test_verify_comparable_requires_the_ablation_strategy():
                 run_metrics(),
                 [],
             ),
+            "macro_confirmation_enabled",
         )
 
 
@@ -368,6 +378,7 @@ def test_verify_comparable_rejects_an_open_position_at_period_end():
                 run_metrics(open_positions_at_end="1"),
                 [],
             ),
+            "macro_confirmation_enabled",
         )
 
 
@@ -384,6 +395,7 @@ def test_verify_comparable_rejects_a_command_in_flight_at_period_end():
                 run_metrics(pending_commands_at_end="1"),
                 [],
             ),
+            "macro_confirmation_enabled",
         )
 
 
@@ -406,3 +418,117 @@ def test_legacy_trade_csv_requires_new_replay(tmp_path):
     (run_dir / "trades.csv").write_text("net_pnl,carry\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="no entry_id"):
         load_run(run_dir)
+
+
+def test_verify_comparable_accepts_another_strategy_and_parameter():
+    with_manifest = manifest(
+        "with-run", {"horizon_exit_enabled": True},
+        resolved_enabled=True,
+        param="horizon_exit_enabled",
+        strategy_id="failed_spike_reversal",
+    )
+    without_manifest = manifest(
+        "without-run", {"horizon_exit_enabled": False},
+        resolved_enabled=False,
+        param="horizon_exit_enabled",
+        strategy_id="failed_spike_reversal",
+    )
+
+    verify_comparable(
+        RunArtifacts(with_manifest, run_metrics(), []),
+        RunArtifacts(without_manifest, run_metrics(), []),
+        "horizon_exit_enabled",
+    )
+
+
+def test_verify_comparable_requires_disabled_without_arm_for_another_parameter():
+    with_manifest = manifest(
+        "with-run", {"horizon_exit_enabled": True},
+        resolved_enabled=True,
+        param="horizon_exit_enabled",
+        strategy_id="failed_spike_reversal",
+    )
+    without_manifest = manifest(
+        "without-run", {},
+        resolved_enabled=False,
+        param="horizon_exit_enabled",
+        strategy_id="failed_spike_reversal",
+    )
+
+    with pytest.raises(SystemExit, match="param_overrides.horizon_exit_enabled"):
+        verify_comparable(
+            RunArtifacts(with_manifest, run_metrics(), []),
+            RunArtifacts(without_manifest, run_metrics(), []),
+            "horizon_exit_enabled",
+        )
+
+
+def test_verify_comparable_rejects_missing_resolved_parameter_in_with_arm():
+    with_manifest = manifest(
+        "with-run", {"horizon_exit_enabled": True},
+        resolved_enabled=True,
+        param="horizon_exit_enabled",
+        strategy_id="failed_spike_reversal",
+    )
+    without_manifest = manifest(
+        "without-run", {"horizon_exit_enabled": False},
+        resolved_enabled=False,
+        param="horizon_exit_enabled",
+        strategy_id="failed_spike_reversal",
+    )
+    del with_manifest["resolved_parameters"]["horizon_exit_enabled"]
+
+    with pytest.raises(SystemExit, match="resolved_parameters.horizon_exit_enabled"):
+        verify_comparable(
+            RunArtifacts(with_manifest, run_metrics(), []),
+            RunArtifacts(without_manifest, run_metrics(), []),
+            "horizon_exit_enabled",
+        )
+
+
+def test_main_requires_param(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys, "argv", ["ablation_compare", "--with", "with-run", "--without", "without-run"]
+    )
+
+    with pytest.raises(SystemExit) as error:
+        main()
+
+    assert error.value.code == 2
+    assert "--param" in capsys.readouterr().err
+
+
+def test_main_compares_another_parameter_with_requested_seed(tmp_path, monkeypatch, capsys):
+    with_dir = write_report(
+        backtest_result([Decimal(3), Decimal(4)], [Decimal(0)] * 2, "0"),
+        manifest(
+            "with-run", {"horizon_exit_enabled": True},
+            resolved_enabled=True,
+            param="horizon_exit_enabled",
+            strategy_id="failed_spike_reversal",
+        ),
+        tmp_path,
+    )
+    without_dir = write_report(
+        backtest_result([Decimal(1), Decimal(2)], [Decimal(0)] * 2, "0"),
+        manifest(
+            "without-run", {"horizon_exit_enabled": False},
+            resolved_enabled=False,
+            param="horizon_exit_enabled",
+            strategy_id="failed_spike_reversal",
+        ),
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "ablation_compare", "--with", str(with_dir), "--without", str(without_dir),
+            "--param", "horizon_exit_enabled", "--seed", "43",
+        ],
+    )
+
+    main()
+
+    rendered = capsys.readouterr().out
+    assert "seed=43" in rendered
+    assert "verdict:" in rendered

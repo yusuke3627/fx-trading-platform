@@ -10,6 +10,7 @@ from trading.config import (
     MarketConfig,
     load_config,
 )
+from trading.domain.risk import EventRiskMode
 from trading.strategy.base import LIVE_ELIGIBLE_STATUSES, StrategyStatus
 from trading.strategy.sessions import SessionEntryPolicy
 
@@ -97,6 +98,36 @@ def test_backtest_enables_risk_gate_for_simulated_orders():
     # trading_enabled must not zero out simulated fills.
     config = load_config("backtest", CONFIG_DIR)
     assert config.risk.trading_enabled is True
+
+
+def test_backtest_relaxes_account_level_loss_halts() -> None:
+    config = load_config("backtest", CONFIG_DIR)
+    assert config.risk.daily_loss_halt_pct == Decimal("100.00")
+    assert config.risk.rolling_24h_loss_halt_pct == Decimal("100.00")
+    assert config.risk.high_water_mark_drawdown_halt_pct == Decimal("100.00")
+
+    # 研究でも建玉・数量・イベントモードの制約は緩和しない。
+    assert config.risk.max_open_positions_per_symbol == 1
+    assert config.risk.max_units_per_symbol["USDJPY"] == 1000
+    assert config.risk.event_mode_default is EventRiskMode.REDUCED
+
+    # demo は trading_enabled だけを上書きするため、その他の risk 設定を比較できる。
+    demo = load_config("demo", CONFIG_DIR)
+    excluded = {
+        "trading_enabled",
+        "daily_loss_halt_pct",
+        "rolling_24h_loss_halt_pct",
+        "high_water_mark_drawdown_halt_pct",
+    }
+    assert config.risk.model_dump(exclude=excluded) == demo.risk.model_dump(exclude=excluded)
+
+
+def test_live_and_shadow_overlays_keep_account_level_loss_halts() -> None:
+    for env in ("shadow", "demo", "micro_live", "production"):
+        config = load_config(env, CONFIG_DIR)
+        assert config.risk.daily_loss_halt_pct == Decimal("0.75")
+        assert config.risk.rolling_24h_loss_halt_pct == Decimal("1.00")
+        assert config.risk.high_water_mark_drawdown_halt_pct == Decimal("3.00")
 
 
 @pytest.mark.parametrize("interval", [0, -0.1, float("inf"), float("nan")])

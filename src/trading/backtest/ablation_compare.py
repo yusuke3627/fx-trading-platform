@@ -20,6 +20,7 @@ import random
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -28,12 +29,17 @@ from trading.backtest.policy_event_study import (
     BOOTSTRAP_SAMPLES,
     bootstrap_interval,
 )
+from trading.backtest.run_coverage import run_coverage
 
 KEEP = "有効のまま維持（寄与あり）"
 REMOVE = "無効にする（絞るだけで質が上がらない）"
 UNDECIDED_SAMPLE = "判定不能（標本不足）。維持したまま再測定"
 UNDECIDED_DIFFERENCE = "判定不能（差が検出できない）。維持したまま再測定"
 MIN_TRADES = 10
+# H4 の時間切れ決済 ablation は有効側に 25 か月中 15 か月（60%）の末尾空白があり、
+# H5 は両腕とも最終月まで建玉があった。その間を分ける比較基準として 10% を採る。
+# 最後の建玉から period_to までの空白で比較を制限し、停止原因は断定しない。
+TRAILING_BLACKOUT_MAX_RATIO = 0.1
 
 COMPARABLE_FIELDS = (
     "git_commit",
@@ -74,6 +80,7 @@ class RunArtifacts:
     manifest: dict
     metrics: dict[str, str]
     pnls: list[Decimal]
+    entry_ats: list[datetime]
 
 
 @dataclass(frozen=True)
@@ -103,16 +110,20 @@ def load_run(run_dir: Path) -> RunArtifacts:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     pnls_by_entry: dict[str, Decimal] = {}
+    entry_ats: list[datetime] = []
     row_count = 0
     with trades_path.open(newline="", encoding="utf-8") as source:
         reader = csv.DictReader(source)
         if "entry_id" not in (reader.fieldnames or []):
             raise SystemExit("trades.csv has no entry_id; re-run with the current engine")
+        if "entry_at" not in (reader.fieldnames or []):
+            raise SystemExit("trades.csv has no entry_at; re-run with the current engine")
         for row in reader:
             entry_id = row["entry_id"]
             if not entry_id:
                 raise SystemExit("trades.csv contains an empty entry_id")
             row_count += 1
+            entry_ats.append(datetime.fromisoformat(row["entry_at"]))
             pnls_by_entry[entry_id] = (
                 pnls_by_entry.get(entry_id, Decimal(0))
                 + Decimal(row["net_pnl"]) + Decimal(row["carry"])
@@ -124,7 +135,17 @@ def load_run(run_dir: Path) -> RunArtifacts:
             f"actual rows={row_count}, summary metrics.trades={summary_trades}"
         )
     return RunArtifacts(
-        manifest=manifest, metrics=summary["metrics"], pnls=list(pnls_by_entry.values())
+        manifest=manifest, metrics=summary["metrics"], pnls=list(pnls_by_entry.values()),
+        entry_ats=entry_ats,
+    )
+
+
+def _period(manifest: dict) -> tuple[datetime, datetime] | None:
+    if "period_from" not in manifest or "period_to" not in manifest:
+        return None
+    return (
+        datetime.fromisoformat(manifest["period_from"]),
+        datetime.fromisoformat(manifest["period_to"]),
     )
 
 
@@ -147,6 +168,11 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
                 f"{field}: with={with_value!r}, without={without_value!r}"
             )
 
+    coverage_details = {
+        "with": "with coverage unavailable",
+        "without": "without coverage unavailable",
+    }
+    trailing_blackout_reasons = []
     for arm, run in (("with", with_), ("without", without)):
         git_commit = run.manifest.get("git_commit")
         if not git_commit or git_commit == "unknown":
@@ -175,6 +201,44 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
                 f"{arm} pending_commands_at_end={pending!r}; "
                 "re-run with a period end where no command is in flight"
             )
+        period = _period(run.manifest)
+        if period is None:
+            reasons.append(
+                f"{arm} manifest has no period_from/period_to; "
+                "re-run with the current engine"
+            )
+            continue
+        period_from, period_to = period
+        outside_period = [
+            at for at in run.entry_ats if not period_from <= at < period_to
+        ]
+        if outside_period:
+            reasons.append(
+                f"{arm} has {len(outside_period)} entry_at outside "
+                f"[{period_from.isoformat()}, {period_to.isoformat()}): "
+                f"first={outside_period[0].isoformat()}"
+            )
+            continue
+        coverage = run_coverage(run.entry_ats, period_from, period_to)
+        first_at = coverage.first_trade_at
+        last_at = coverage.last_trade_at
+        coverage_details[arm] = (
+            f"{arm} first_trade_at={first_at.isoformat() if first_at else None} "
+            f"last_trade_at={last_at.isoformat() if last_at else None} "
+            f"empty_months={len(coverage.empty_months)}/{coverage.months_in_period}"
+        )
+        if (
+            last_at is not None
+            and period_to - last_at > TRAILING_BLACKOUT_MAX_RATIO * (period_to - period_from)
+        ):
+            ratio = (period_to - last_at) / (period_to - period_from)
+            trailing_blackout_reasons.append(
+                f"{arm} last_trade_at={last_at.isoformat()} is "
+                f"{coverage.trailing_blackout_days:.1f} days before "
+                f"period_to={period_to.isoformat()} "
+                f"({ratio:.1%} of the period, limit {TRAILING_BLACKOUT_MAX_RATIO:.0%}); "
+                "the trailing gap exceeds the comparison limit."
+            )
 
     with_overrides = dict(with_.manifest.get("param_overrides", {}))
     without_overrides = dict(without.manifest.get("param_overrides", {}))
@@ -196,6 +260,10 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
             f"with={with_overrides!r}, without={without_overrides!r}"
         )
 
+    reasons.extend(
+        f"{reason} coverage: {coverage_details['with']}; {coverage_details['without']}"
+        for reason in trailing_blackout_reasons
+    )
     if reasons:
         raise SystemExit("runs are not comparable:\n- " + "\n- ".join(reasons))
 
@@ -284,6 +352,25 @@ def report(with_: RunArtifacts, without: RunArtifacts, param: str, seed: int) ->
         lines.extend(
             f"  {field:<22} {_manifest_value(run.manifest, field)}"
             for field in MANIFEST_FIELDS
+        )
+        period_from, period_to = _period(run.manifest)
+        coverage = run_coverage(run.entry_ats, period_from, period_to)
+        lines.extend(
+            f"  {field:<22} {value}"
+            for field, value in (
+                (
+                    "first_trade_at",
+                    coverage.first_trade_at.isoformat() if coverage.first_trade_at else None,
+                ),
+                (
+                    "last_trade_at",
+                    coverage.last_trade_at.isoformat() if coverage.last_trade_at else None,
+                ),
+                (
+                    "months_with_trades",
+                    f"{coverage.months_with_trades}/{coverage.months_in_period}",
+                ),
+            )
         )
     lines.extend(
         [

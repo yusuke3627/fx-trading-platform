@@ -9,15 +9,22 @@ every run still writes a human-readable directory:
         trades.json     -- fill-by-fill record
         trades.csv      -- round-trip record (one row per closed quantity)
         equity.json     -- equity curve
+
+Coverage describes entry times in closed trade records.
+Risk rejections record all failed codes per decision, so codes can co-occur, e.g.
+minimum-lot violations when both position-count and quantity limits are reached.
+Do not interpret the sum of code counts as independent rejection reasons.
 """
 from __future__ import annotations
 
 import csv
 import json
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from trading.backtest.engine import BacktestResult
+from trading.backtest.run_coverage import run_coverage
 
 
 def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
@@ -25,17 +32,34 @@ def write_report(result: BacktestResult, manifest: dict, out_dir: Path) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     (run_dir / "manifest.json").write_text(_dumps(manifest), encoding="utf-8")
+    summary = {
+        "symbol": result.symbol,
+        "metrics": result.metrics,
+        "risk_rejections": [
+            {"at": at.isoformat(), "codes": list(codes)}
+            for at, codes in result.risk_rejections
+        ],
+    }
+    if "period_from" in manifest and "period_to" in manifest:
+        coverage = run_coverage(
+            (trade.entry_at for trade in result.trades),
+            datetime.fromisoformat(manifest["period_from"]),
+            datetime.fromisoformat(manifest["period_to"]),
+        )
+        summary["coverage"] = {
+            "first_trade_at": (
+                coverage.first_trade_at.isoformat() if coverage.first_trade_at else None
+            ),
+            "last_trade_at": (
+                coverage.last_trade_at.isoformat() if coverage.last_trade_at else None
+            ),
+            "months_with_trades": coverage.months_with_trades,
+            "months_in_period": coverage.months_in_period,
+            "empty_months": list(coverage.empty_months),
+            "trailing_blackout_days": coverage.trailing_blackout_days,
+        }
     (run_dir / "summary.json").write_text(
-        _dumps(
-            {
-                "symbol": result.symbol,
-                "metrics": result.metrics,
-                "risk_rejections": [
-                    {"at": at.isoformat(), "codes": list(codes)}
-                    for at, codes in result.risk_rejections
-                ],
-            }
-        ),
+        _dumps(summary),
         encoding="utf-8",
     )
     (run_dir / "trades.json").write_text(

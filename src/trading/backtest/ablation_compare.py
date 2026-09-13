@@ -1,8 +1,9 @@
-"""Compare research runs with and without one strategy confirmation leg.
+"""Compare two research runs that differ only in one ablated parameter.
 
     python -m trading.backtest.ablation_compare \
         --with reports/h5_with/<run_id> \
         --without reports/h5_without/<run_id> \
+        --param macro_confirmation_enabled \
         --seed 42
 
 This CLI's --seed controls only bootstrap resampling. Research seeds drive
@@ -28,13 +29,11 @@ from trading.backtest.policy_event_study import (
     bootstrap_interval,
 )
 
-KEEP = "確認レッグを維持（寄与あり）"
-REMOVE = "確認レッグを外す（絞るだけで質が上がらない）"
+KEEP = "有効のまま維持（寄与あり）"
+REMOVE = "無効にする（絞るだけで質が上がらない）"
 UNDECIDED_SAMPLE = "判定不能（標本不足）。維持したまま再測定"
 UNDECIDED_DIFFERENCE = "判定不能（差が検出できない）。維持したまま再測定"
 MIN_TRADES = 10
-ABLATION_PARAM = "macro_confirmation_enabled"
-ABLATION_STRATEGY = "post_event_failed_breakout"
 
 COMPARABLE_FIELDS = (
     "git_commit",
@@ -129,7 +128,7 @@ def load_run(run_dir: Path) -> RunArtifacts:
     )
 
 
-def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
+def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) -> None:
     """Require identical reproduction inputs outside the ablated parameter.
 
     config_sha256 is excluded because the parameter override necessarily changes
@@ -155,20 +154,12 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
                 f"{arm} git_commit={git_commit!r}; the run has no reproducible "
                 "source state (git unavailable or run outside the repository)"
             )
-        strategy_id = run.manifest.get("strategy_id")
-        if strategy_id != ABLATION_STRATEGY:
-            reasons.append(
-                f"{arm} strategy_id must be {ABLATION_STRATEGY!r}, "
-                f"got {strategy_id!r}"
-            )
         resolved = run.manifest.get("resolved_parameters", {})
         expected_enabled = arm == "with"
-        resolved_enabled = resolved.get(
-            ABLATION_PARAM, True if arm == "with" else None
-        )
+        resolved_enabled = resolved.get(param)
         if resolved_enabled is not expected_enabled:
             reasons.append(
-                f"{arm} resolved_parameters.{ABLATION_PARAM} must be "
+                f"{arm} resolved_parameters.{param} must be "
                 f"{expected_enabled}, got {resolved_enabled!r}; "
                 "instrument-specific parameters override defaults"
             )
@@ -188,17 +179,17 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts) -> None:
     with_overrides = dict(with_.manifest.get("param_overrides", {}))
     without_overrides = dict(without.manifest.get("param_overrides", {}))
     if (
-        ABLATION_PARAM in with_overrides
-        and with_overrides[ABLATION_PARAM] is not True
+        param in with_overrides
+        and with_overrides[param] is not True
     ):
         reasons.append(
-            f"with param_overrides.{ABLATION_PARAM} must be omitted or True"
+            f"with param_overrides.{param} must be omitted or True"
         )
-    if without_overrides.get(ABLATION_PARAM) is not False:
-        reasons.append(f"without param_overrides.{ABLATION_PARAM} must be False")
+    if without_overrides.get(param) is not False:
+        reasons.append(f"without param_overrides.{param} must be False")
 
-    with_overrides.pop(ABLATION_PARAM, None)
-    without_overrides.pop(ABLATION_PARAM, None)
+    with_overrides.pop(param, None)
+    without_overrides.pop(param, None)
     if with_overrides != without_overrides:
         reasons.append(
             "non-ablation param_overrides differ: "
@@ -273,8 +264,8 @@ def _manifest_value(manifest: dict, field: str) -> str:
     return str(manifest.get(field))
 
 
-def report(with_: RunArtifacts, without: RunArtifacts, seed: int) -> str:
-    verify_comparable(with_, without)
+def report(with_: RunArtifacts, without: RunArtifacts, param: str, seed: int) -> str:
+    verify_comparable(with_, without, param)
     with_summary = arm_summary(
         with_.pnls, Decimal(with_.metrics["max_drawdown"]), seed
     )
@@ -327,10 +318,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="compare two research ablation runs")
     parser.add_argument("--with", dest="with_run", type=Path, required=True)
     parser.add_argument("--without", dest="without_run", type=Path, required=True)
+    parser.add_argument(
+        "--param", required=True,
+        help="boolean ablation parameter name (with=True, without=False)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    print(report(load_run(args.with_run), load_run(args.without_run), args.seed))
+    print(report(load_run(args.with_run), load_run(args.without_run), args.param, args.seed))
 
 
 if __name__ == "__main__":

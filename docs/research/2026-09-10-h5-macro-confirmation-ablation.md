@@ -88,7 +88,7 @@ VPS で YAML 由来の collector（policy / intervention）を先に流し切り
 ```
 python -m trading.backtest.research --env backtest --symbol USDJPY --strategy post_event_failed_breakout --from 2024-08-01T00:00:00+00:00 --to 2026-08-29T00:00:00+00:00 --seed 42 --out reports/h5_with3
 python -m trading.backtest.research --env backtest --symbol USDJPY --strategy post_event_failed_breakout --from 2024-08-01T00:00:00+00:00 --to 2026-08-29T00:00:00+00:00 --seed 42 --param macro_confirmation_enabled=false --out reports/h5_without3
-python -m trading.backtest.ablation_compare --with reports/h5_with3/<run_id> --without reports/h5_without3/<run_id> --seed 42
+python -m trading.backtest.ablation_compare --with reports/h5_with3/<run_id> --without reports/h5_without3/<run_id> --param macro_confirmation_enabled --seed 42
 ```
 
 同じ結果と言えるのは、両腕の `manifest.json` で `ablation_compare.COMPARABLE_FIELDS` の全項目が本ノートの run と一致するとき ―― `git_commit` / `git_dirty` / `git_diff_sha256` / `python_version` / `environment` / `symbol` / `strategy_id` / `strategy_version` / `engine_version` / `scenario` / `seed` / `tick_count` / `period_from` / `period_to` / `warmup_days` / `broker_server_ahead_of_ny_hours` / `dataset_hash` / `feature_dataset_hash` / `swap_dataset_hash`。比較 CLI の冒頭に出るのはこのうち一部だけで、残りは上記 run ディレクトリの `manifest.json` を正本とする。`config_sha256` も manifest に記録されるので、あわせて照合する。

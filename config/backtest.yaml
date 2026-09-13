@@ -4,6 +4,11 @@
 # ExecutionAdapter を組み込まず Simulator のみが注文を受ける）。
 risk:
   trading_enabled: true
+  # 戦略のエッジ測定を運用開始用の損失上限で打ち切らないため、研究では緩和する。
+  # 100.00 は無効化の便宜値であり、正の基準資産に対して資産がゼロ以下なら拒否する。
+  daily_loss_halt_pct: 100.00
+  rolling_24h_loss_halt_pct: 100.00
+  high_water_mark_drawdown_halt_pct: 100.00
 
 simulator:
   scenario: normal

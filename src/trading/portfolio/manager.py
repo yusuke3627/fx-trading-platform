@@ -131,6 +131,13 @@ class PortfolioManager:
             stop_price = sizing.entry_price - stop_offset
         else:
             stop_price = sizing.entry_price + stop_offset
+        take_profit_price = None
+        if signal.take_profit_distance_pips is not None:
+            take_profit_offset = signal.take_profit_distance_pips * sizing.pip_size
+            if signal.desired_direction is PositionDirection.LONG:
+                take_profit_price = sizing.entry_price + take_profit_offset
+            else:
+                take_profit_price = sizing.entry_price - take_profit_offset
         return PositionIntent(
             intent_id=uuid4(),
             strategy_id=signal.strategy_id,
@@ -142,7 +149,7 @@ class PortfolioManager:
             delta_quantity=None,
             protection=ProtectionSpec(
                 stop_loss_price=stop_price,
-                take_profit_price=None,
+                take_profit_price=take_profit_price,
                 maximum_unprotected_seconds=sizing.max_unprotected_seconds,
                 source="STRATEGY",
             ),

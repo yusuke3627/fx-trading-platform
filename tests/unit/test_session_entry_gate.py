@@ -207,7 +207,7 @@ async def test_instrument_without_profile_reaches_evaluation(strategy_class):
     assert calls == [("USDJPY", ctx)]
 
 
-def setup_signal(probe, ctx, setup_id):
+def setup_signal(probe, ctx, setup_id, *, take_profit_distance_pips: Decimal | None = None):
     return probe._setup_signal(
         ctx,
         symbol="USDJPY",
@@ -215,12 +215,14 @@ def setup_signal(probe, ctx, setup_id):
         setup_id=setup_id,
         conviction=0.5,
         stop_distance_pips=Decimal(10),
+        take_profit_distance_pips=take_profit_distance_pips,
         expected_horizon_seconds=60,
         reason_codes=["PROBE"],
     )
 
 
-def test_open_session_setup_becomes_an_entry_signal_once():
+@pytest.mark.parametrize("take_profit_distance_pips", [None, Decimal("20.5")])
+def test_open_session_setup_becomes_an_entry_signal_once(take_profit_distance_pips):
     probe = GateProbe()
     ctx = ctx_for(
         probe.strategy_id,
@@ -229,11 +231,14 @@ def test_open_session_setup_becomes_an_entry_signal_once():
         profile=USDJPY_CORE,
     )
 
-    signal = setup_signal(probe, ctx, TOKYO_ONLY)
+    signal = setup_signal(
+        probe, ctx, TOKYO_ONLY, take_profit_distance_pips=take_profit_distance_pips
+    )
 
     assert signal is not None
     assert signal.exit_only is False
     assert signal.desired_direction is PositionDirection.SHORT
+    assert signal.take_profit_distance_pips == take_profit_distance_pips
     assert setup_signal(probe, ctx, TOKYO_ONLY) is None
 
 
@@ -256,7 +261,8 @@ def test_closed_session_setup_without_a_position_is_not_remembered():
     assert setup_signal(probe, open_ctx, TOKYO_ONLY) is not None
 
 
-def test_closed_session_reversal_setup_becomes_an_exit_only_signal():
+@pytest.mark.parametrize("take_profit_distance_pips", [None, Decimal("20.5")])
+def test_closed_session_reversal_setup_becomes_an_exit_only_signal(take_profit_distance_pips):
     probe = GateProbe()
     position = VirtualPosition(
         strategy_id=probe.strategy_id,
@@ -280,17 +286,23 @@ def test_closed_session_reversal_setup_becomes_an_exit_only_signal():
         held=position,
     )
 
-    signal = setup_signal(probe, closed_ctx, TOKYO_ONLY)
+    signal = setup_signal(
+        probe, closed_ctx, TOKYO_ONLY, take_profit_distance_pips=take_profit_distance_pips
+    )
 
     assert signal is not None
     assert signal.exit_only is True
+    assert signal.take_profit_distance_pips is None
     assert signal.desired_direction is PositionDirection.SHORT
     assert "PROBE" in signal.reason_codes
     assert SESSION_CLOSED_EXIT_ONLY in signal.reason_codes
     assert setup_signal(probe, closed_ctx, TOKYO_ONLY) is None
-    reopened_signal = setup_signal(probe, open_ctx, TOKYO_ONLY)
+    reopened_signal = setup_signal(
+        probe, open_ctx, TOKYO_ONLY, take_profit_distance_pips=take_profit_distance_pips
+    )
     assert reopened_signal is not None
     assert reopened_signal.exit_only is False
+    assert reopened_signal.take_profit_distance_pips == take_profit_distance_pips
 
 
 def test_closed_session_same_direction_setup_is_dropped():

@@ -313,6 +313,7 @@ class Strategy(ABC):
         conviction: float,
         expected_edge_r: Decimal = Decimal(1),
         stop_distance_pips: Decimal,
+        take_profit_distance_pips: Decimal | None = None,
         expected_horizon_seconds: int,
         reason_codes: list[str],
     ) -> StrategySignal | None:
@@ -332,6 +333,7 @@ class Strategy(ABC):
                 conviction=conviction,
                 expected_edge_r=expected_edge_r,
                 stop_distance_pips=stop_distance_pips,
+                take_profit_distance_pips=take_profit_distance_pips,
                 expected_horizon_seconds=expected_horizon_seconds,
                 reason_codes=reason_codes,
             )
@@ -361,6 +363,7 @@ class Strategy(ABC):
         conviction: float,
         expected_edge_r: Decimal = Decimal(1),
         stop_distance_pips: Decimal,
+        take_profit_distance_pips: Decimal | None = None,
         expected_horizon_seconds: int,
         reason_codes: list[str],
         exit_only: bool = False,
@@ -375,6 +378,7 @@ class Strategy(ABC):
             expected_edge_r=expected_edge_r,
             expected_horizon_seconds=expected_horizon_seconds,
             stop_distance_pips=stop_distance_pips,
+            take_profit_distance_pips=take_profit_distance_pips,
             reason_codes=reason_codes,
             exit_only=exit_only,
             generated_at=context.clock.now(),

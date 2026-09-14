@@ -34,6 +34,7 @@ class StrategySignal(BaseModel):
     expected_horizon_seconds: int
 
     stop_distance_pips: Decimal
+    take_profit_distance_pips: Decimal | None = Field(default=None, gt=0)
 
     reason_codes: list[str] = Field(default_factory=list)
     # True なら保有を閉じるだけの signal。desired_direction は決済の契機になった反転 setup

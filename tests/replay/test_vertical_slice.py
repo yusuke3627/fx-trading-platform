@@ -7,8 +7,11 @@ The first acceptance criterion of the backtest system is NOT profitability:
 3. The full order lifecycle (OPEN -> ticket-referenced CLOSE -> reversal
    OPEN, protection fills) flows through Risk -> OMS -> Simulator -> Ledger.
 """
+import csv
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+
+import pytest
 
 from tests.support import make_tick, usdjpy_spec
 from trading.backtest.costs import STRESS_SCENARIOS, CostModel
@@ -19,6 +22,8 @@ from trading.backtest.engine import (
     ScriptedStrategy,
     signed_pnl,
 )
+from trading.backtest.report import write_report
+from trading.domain.fill import ProtectionReason
 from trading.domain.position import PositionDirection
 from trading.domain.risk import EventRiskMode
 from trading.risk.engine import RiskConfig
@@ -51,6 +56,7 @@ def build_engine(
     seed: int = 7,
     plan: dict[int, PositionDirection] | None = None,
     stop_distance_pips: Decimal = Decimal(200),
+    take_profit_distance_pips: Decimal | None = None,
     risk_config: RiskConfig | None = None,
     event_risk: EventRiskCalendar | None = None,
 ) -> BacktestEngine:
@@ -65,7 +71,9 @@ def build_engine(
         costs=costs,
         seed=seed,
         strategy_factory=lambda: ScriptedStrategy(
-            resolved_plan, stop_distance_pips=stop_distance_pips
+            resolved_plan,
+            stop_distance_pips=stop_distance_pips,
+            take_profit_distance_pips=take_profit_distance_pips,
         ),
         strategy_config=StrategyConfig(
             strategy_id=ScriptedStrategy.strategy_id,
@@ -83,6 +91,7 @@ def run_slice(
     count: int = 2000,
     plan: dict[int, PositionDirection] | None = None,
     stop_distance_pips: Decimal = Decimal(200),
+    take_profit_distance_pips: Decimal | None = None,
     risk_config: RiskConfig | None = None,
     event_risk: EventRiskCalendar | None = None,
 ) -> BacktestResult:
@@ -94,6 +103,7 @@ def run_slice(
         seed=seed,
         plan=plan,
         stop_distance_pips=stop_distance_pips,
+        take_profit_distance_pips=take_profit_distance_pips,
         risk_config=risk_config,
         event_risk=event_risk,
     )
@@ -258,6 +268,54 @@ def test_closed_quantities_are_recorded_as_round_trips():
     ) == Decimal(result.metrics["realized_pnl"])
     assert result.metrics["trades"] == "1"
     assert result.metrics["expectancy"] == str(trade.net_pnl)
+
+
+@pytest.mark.parametrize("direction", list(PositionDirection))
+def test_take_profit_closes_as_protection_and_records_a_round_trip(direction, tmp_path):
+    # seed 7 の 1200 番目からは LONG で 2.8 pips、SHORT で 2.5 pips まで到達する。
+    result = run_slice(
+        STRESS_SCENARIOS["normal"],
+        seed=7,
+        count=2000,
+        plan={1200: direction},
+        take_profit_distance_pips=Decimal(2),
+    )
+
+    assert result.risk_rejections == []
+    assert result.rejected_commands == 0
+    assert len(result.fills) == 2
+    entry, protection = result.fills
+    assert entry.action == "OPEN"
+    assert protection.origin == "PROTECTION"
+    assert protection.action == "PROTECTION_CLOSE"
+    assert protection.quantity == entry.quantity
+    assert protection.at > entry.at
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.direction == direction.value
+    assert trade.entry_at == entry.at
+    assert trade.exit_at == protection.at
+    assert trade.entry_price == entry.price
+    assert trade.exit_price == protection.price
+    assert trade.quantity == entry.quantity
+    assert trade.reason == f"PROTECTION_CLOSE:{ProtectionReason.TAKE_PROFIT.value}"
+    assert trade.net_pnl == signed_pnl(direction, entry.price, protection.price, entry.quantity)
+    assert trade.net_pnl > 0
+    assert result.metrics["open_positions_at_end"] == "0"
+    assert result.metrics["trades"] == "1"
+    assert Decimal(result.metrics["realized_pnl"]) == trade.net_pnl
+
+    run_dir = write_report(result, {"run_id": "take-profit-probe"}, tmp_path)
+    with (run_dir / "trades.csv").open(newline="", encoding="utf-8") as report:
+        rows = list(csv.DictReader(report))
+    assert len(rows) == 1
+    assert rows[0]["entry_id"] == trade.entry_id
+    assert rows[0]["direction"] == direction.value
+    assert rows[0]["entry_at"] == entry.at.isoformat()
+    assert rows[0]["exit_at"] == protection.at.isoformat()
+    assert Decimal(rows[0]["quantity"]) == entry.quantity
+    assert Decimal(rows[0]["net_pnl"]) == trade.net_pnl
+    assert rows[0]["reason"] == trade.reason
 
 
 def test_no_closed_quantities_report_nan_expectancy():

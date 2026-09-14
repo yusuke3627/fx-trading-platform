@@ -102,9 +102,11 @@ class ScriptedStrategy(Strategy):
         self,
         plan: dict[int, PositionDirection],
         stop_distance_pips: Decimal = Decimal(10),
+        take_profit_distance_pips: Decimal | None = None,
     ) -> None:
         self._plan = dict(plan)
         self._stop = stop_distance_pips
+        self._take_profit = take_profit_distance_pips
         self._seen = 0
 
     async def on_event(
@@ -125,6 +127,7 @@ class ScriptedStrategy(Strategy):
                 direction=direction,
                 conviction=1.0,
                 stop_distance_pips=self._stop,
+                take_profit_distance_pips=self._take_profit,
                 expected_horizon_seconds=3600,
                 reason_codes=["SCRIPTED"],
             )

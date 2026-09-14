@@ -142,7 +142,9 @@ VPS の run 成果物から `trades.csv` と `summary.json` の `risk_rejections
   `MAX_OPEN_POSITIONS_PER_SYMBOL` 2,344 / `EVENT_MODE_ALLOWS_ENTRY` 212 /
   `SPREAD_ACCEPTABLE` 91 / `HWM_DRAWDOWN_WITHIN_LIMIT` 0（棄却レコード 2,427）、
   確認なしが 2,890 / 2,868 / 331 / 128 / 99（同 3,140）。
-  最小数量超過と建玉上限は多くの記録で共起するが件数は一致せず、片方だけの記録もある
+  最小数量超過と建玉上限は多くの記録で共起するが件数は一致せず、片方だけの記録もある。
+  共起は同じ建玉の占有によるもので、`_size_check` が `max_units_per_symbol` の残り枠で
+  許容数量を絞ってから broker 最小数量と比べるため。USDJPY は両方 1,000 通貨
 - 元の run で何が掛かっていたかが確定しただけで、再測定で掛からない保証ではない。
   時間切れ決済で枠が空けば取引が増え、equity と最高値の経路が変わる
 - 2026-02〜2026-03 に棄却の記録が無いのは、tick の 74 日欠損（2026-01-23〜2026-04-08）で

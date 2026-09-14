@@ -1,6 +1,9 @@
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+
 from tests.support import T0, held, make_tick, manager_with, sizing
 from trading.data.market import InMemoryMarketData
 from trading.domain.money import Currency
@@ -14,6 +17,7 @@ def make_signal(
     stop_pips: str = "10",
     symbol: str = "USDJPY",
     exit_only: bool = False,
+    take_profit_pips: str | None = None,
 ) -> StrategySignal:
     return StrategySignal(
         signal_id=uuid4(),
@@ -24,6 +28,9 @@ def make_signal(
         conviction=0.5,
         expected_horizon_seconds=3600,
         stop_distance_pips=Decimal(stop_pips),
+        take_profit_distance_pips=(
+            Decimal(take_profit_pips) if take_profit_pips is not None else None
+        ),
         reason_codes=["TEST"],
         exit_only=exit_only,
         generated_at=T0,
@@ -47,6 +54,44 @@ def test_long_stop_sits_below_entry():
         make_signal(direction=PositionDirection.LONG), sizing()
     )
     assert intents[0].protection.stop_loss_price == Decimal("158.740")
+
+
+@pytest.mark.parametrize("take_profit_pips", ["0", "-1", "NaN", "Infinity"])
+def test_signal_rejects_nonpositive_or_nonfinite_take_profit_distance(take_profit_pips):
+    with pytest.raises(ValidationError, match="take_profit_distance_pips"):
+        make_signal(take_profit_pips=take_profit_pips)
+
+
+@pytest.mark.parametrize("direction", list(PositionDirection))
+def test_entry_without_take_profit_distance_has_no_take_profit(direction):
+    signal = make_signal(direction=direction)
+    intent = manager_with().intents_from_signal(signal, sizing())[0]
+
+    assert signal.take_profit_distance_pips is None
+    assert intent.protection is not None
+    assert intent.protection.take_profit_price is None
+
+
+@pytest.mark.parametrize("action", [PositionAction.OPEN, PositionAction.INCREASE])
+@pytest.mark.parametrize(
+    ("direction", "stop_price", "take_profit_price"),
+    [
+        (PositionDirection.LONG, Decimal("158.740"), Decimal("159.045")),
+        (PositionDirection.SHORT, Decimal("158.940"), Decimal("158.635")),
+    ],
+)
+def test_take_profit_sits_opposite_the_stop(direction, stop_price, take_profit_price, action):
+    manager = (
+        manager_with(held(direction)) if action is PositionAction.INCREASE else manager_with()
+    )
+    intent = manager.intents_from_signal(
+        make_signal(direction=direction, take_profit_pips="20.5"), sizing()
+    )[0]
+
+    assert intent.action is action
+    assert intent.protection is not None
+    assert intent.protection.stop_loss_price == stop_price
+    assert intent.protection.take_profit_price == take_profit_price
 
 
 def eurusd_sizing() -> SizingInput:
@@ -129,9 +174,15 @@ def test_direction_flip_closes_then_opens():
     assert reopen.protection is not None
 
 
-def test_exit_only_signal_closes_the_held_position_without_reopening():
+@pytest.mark.parametrize("take_profit_pips", [None, "20"])
+def test_exit_only_signal_closes_the_held_position_without_reopening(take_profit_pips):
     intents = manager_with(held(PositionDirection.LONG)).intents_from_signal(
-        make_signal(direction=PositionDirection.SHORT, exit_only=True), sizing()
+        make_signal(
+            direction=PositionDirection.SHORT,
+            exit_only=True,
+            take_profit_pips=take_profit_pips,
+        ),
+        sizing(),
     )
 
     assert [intent.action for intent in intents] == [PositionAction.CLOSE]

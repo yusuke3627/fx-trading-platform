@@ -77,6 +77,9 @@ class IndicatorSpec(BaseModel):
     # 08:30 ET releases).
     release_time: time
     release_timezone: str
+    # ONS のローリング 3 か月ラベルのように、公表ラグが frequency から
+    # 導けない系列だけ指定する。
+    max_staleness_days: int | None = None
 
     def release_instant(self, vintage_date: date) -> datetime:
         """The UTC instant a vintage published on `vintage_date` became known.
@@ -211,6 +214,9 @@ INDICATORS: dict[str, IndicatorSpec] = {
             pit_classification=PIT_UNVERIFIED,
             release_time=_0700,
             release_timezone=_LONDON,
+            # 中央月ラベルのため、正常時でも最新期間の月末から 106 日経過
+            # （2026-09-14 の実測）。約 3 週の余裕を持たせる。
+            max_staleness_days=130,
         ),
         IndicatorSpec(
             series=UK_REAL_GDP_GROWTH_QOQ_SA,

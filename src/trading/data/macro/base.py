@@ -60,3 +60,7 @@ class CollectionBatch(BaseModel):
 
     observations: tuple[EconomicObservation, ...]
     raw_events: tuple[EventEnvelope, ...]
+    # 応答は返ったのに、要求した系列の観測が 1 件も含まれていなかったもの。
+    # 取得できたぶんを保存したうえで収集後に失敗を報告できるよう、例外では
+    # なくバッチに載せて運ぶ。
+    missing_series: tuple[str, ...] = ()

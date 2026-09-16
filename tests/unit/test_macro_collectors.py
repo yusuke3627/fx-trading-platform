@@ -281,6 +281,19 @@ def test_bls_key_is_optional():
     assert "registrationkey" not in transport.post_calls[0][1]
 
 
+def test_bls_missing_requested_series_raises():
+    # 系列 ID が廃止されると、status は REQUEST_SUCCEEDED のままその系列
+    # だけが Results.series から落ちる。
+    payload = _bls_payload()
+    payload["Results"]["series"] = payload["Results"]["series"][:1]
+    transport = FakeTransport([payload])
+
+    with pytest.raises(ValueError, match=US_UNEMPLOYMENT_RATE_SA):
+        BLSCollector(transport, None, clock=FixedClock(RETRIEVED)).collect(
+            [US_CPI_HEADLINE_SA, US_UNEMPLOYMENT_RATE_SA], years=[2025, 2026]
+        )
+
+
 def test_bls_failure_status_raises():
     transport = FakeTransport(
         [{"status": "REQUEST_NOT_PROCESSED", "message": ["daily threshold reached"]}]

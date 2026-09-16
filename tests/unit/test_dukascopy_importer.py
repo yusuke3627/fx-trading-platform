@@ -151,6 +151,19 @@ def test_decode_bi5_scales_points_without_float_conversion() -> None:
     assert ticks[0].received_at == clock.now()
 
 
+def test_decode_bi5_scales_five_decimal_points_without_float_conversion() -> None:
+    ticks = decode_bi5(
+        bi5_payload((107, 116345, 116343)),
+        "EURUSD",
+        T0,
+        RECEIVED_AT,
+    )
+
+    assert len(ticks) == 1
+    assert ticks[0].bid == Decimal("1.16343")
+    assert ticks[0].ask == Decimal("1.16345")
+
+
 def test_decode_bi5_rejects_partial_record() -> None:
     payload = lzma.compress(b"partial-record", format=lzma.FORMAT_ALONE)
 

@@ -45,7 +45,7 @@ CI90 は bootstrap（`BOOTSTRAP_SAMPLES` 回、seed 42）。部分決済は 1 �
 
 | 項目 | 値 |
 |---|---|
-| コード | commit `381f58e41ad0bb92f6d8476a4fb7baa0bcb5a2e6`。両腕とも `git_dirty=True` だが `git_diff_sha256=5dadf405b37daa0b179e96f7043a15d194a0ab5aa8e13bbc1cbe3cd48e1f9226` で一致（VPS 作業ツリーの未追跡ファイルによるもの） |
+| コード | commit `381f58e41ad0bb92f6d8476a4fb7baa0bcb5a2e6`。両腕とも `git_dirty=True` で、`git_diff_sha256=5dadf405b37daa0b179e96f7043a15d194a0ab5aa8e13bbc1cbe3cd48e1f9226` が一致している。作業ツリーの差分そのものは記録していない（「再現」節の限界） |
 | 実行環境 | python 3.11.9 / environment `backtest` / symbol USDJPY |
 | 戦略 | `failed_spike_reversal`、strategy_version 0.2.0、engine_version 0.7.0 |
 | scenario / seed | normal / 42（research の `--seed`。比較 CLI の `--seed` も 42） |
@@ -217,3 +217,9 @@ python -m trading.backtest.ablation_compare --with reports/h4_with2/<run_id> --w
 同じ結果と言えるのは、両腕の `manifest.json` で `ablation_compare.COMPARABLE_FIELDS` の全項目が本ノートの run と一致するときである。対象は `git_commit` / `git_dirty` / `git_diff_sha256` / `python_version` / `environment` / `symbol` / `strategy_id` / `strategy_version` / `engine_version` / `scenario` / `seed` / `tick_count` / `period_from` / `period_to` / `warmup_days` / `broker_server_ahead_of_ny_hours` / `dataset_hash` / `feature_dataset_hash` / `swap_dataset_hash` の 19 項目。比較 CLI が冒頭に出すのはこのうち一部だけなので、残りは上記 run ディレクトリの `manifest.json` を正本とする。`config_sha256` は腕ごとに違う（「データ」節）ので、照合するのは同じ腕どうしに限る。
 
 3 番目のコマンドは本ノートの run では `verify_comparable` で停止する。主判定に使った有効側の CI90 は、`ablation_compare.load_run` で有効側の run を読み、`ablation_compare.arm_summary` に seed 42 で渡して求めた。
+
+### 再現条件の限界
+
+この 2 本の run は `git_dirty=True` の作業ツリーで流しており、その差分の中身を本ノートは記録していない。`git_diff_sha256` は一方向のハッシュなので、値から元の差分を復元することもできない。したがって、上の条件は外から満たせない。クリーンな `381f58e` をチェックアウトして同じコマンドを流すと `git_dirty=False` になり、`git_diff_sha256` も違う値になるので、`verify_comparable` はこの 2 本との比較を拒否する。差分が結果に影響しないことも確かめていないので、影響しないという前提で照合対象から外すこともできない。
+
+条件を満たせるのは、当該の作業ツリーが残っている VPS 上だけである。この 2 本と直接比較できる run を外部で作りたいなら、クリーンな状態で両腕を取り直すしかない。本ノートの数値はその取り直しを経ておらず、この限界を承知したうえで読む必要がある。

@@ -70,13 +70,17 @@ class FakeMT5:
         return self._info_ticks.pop(0) if len(self._info_ticks) > 1 else self._info_ticks[0]
 
     def copy_ticks_range(self, symbol, date_from, date_to, flags):
+        """両端を秒に切り捨てた半開区間 [from, to) を返し、from == to は空。
+
+        OANDA MT5 Demo build 6140 で実測した挙動（issue #168）。
+        """
         self.range_calls.append((symbol, date_from, date_to, flags))
         if self._on_range_call is not None:
             self._on_range_call()
         if self._range_rows is None:
             return None
-        if date_from == date_to:
-            return [r for r in self._range_rows if _row_time(r) == date_from]
+        date_from = date_from.replace(microsecond=0)
+        date_to = date_to.replace(microsecond=0)
         return [r for r in self._range_rows if date_from <= _row_time(r) < date_to]
 
     def last_error(self):
@@ -358,12 +362,132 @@ def test_changed_quote_at_the_same_broker_time_fills_same_millisecond_history():
     assert collector.poll_once(SYMBOL) == 2
 
     assert len(mt5.range_calls) == 1
-    assert mt5.range_calls[0][1:3] == (T0, T0)
+    assert mt5.range_calls[0][1:3] == (T0, T0 + timedelta(seconds=1))
     assert [tick.bid for tick in repository.ticks] == [
         Decimal("158.840"),
         Decimal("159.500"),
         Decimal("158.850"),
     ]
+
+
+def test_same_millisecond_history_is_recovered_when_polled_second_advances():
+    # 実機の範囲は秒単位の半開区間なので、終端の秒まで読まないと
+    # polled と同じミリ秒にある別の価格が欠落する。
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC + 1300, "158.850", "158.854"),
+        ],
+        range_rows=[
+            range_row(T0_MSC, "158.840", "158.844"),
+            range_row(T0_MSC + 1300, "159.500", "159.504"),
+            range_row(T0_MSC + 1300, "158.850", "158.854"),
+        ],
+    )
+    collector, repository = make_collector(mt5)
+
+    assert collector.poll_once(SYMBOL) == 1
+    assert collector.poll_once(SYMBOL) == 2
+
+    assert mt5.range_calls[0][1:3] == (
+        T0, T0 + timedelta(milliseconds=1300) + timedelta(seconds=1)
+    )
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("159.500"),
+        Decimal("158.850"),
+    ]
+
+
+def test_history_earlier_in_the_polled_second_is_recovered():
+    # 実機は半開区間の終端を秒に切り捨てるため、polled より前でも
+    # 同じ秒にある価格を回収するには終端を延ばす必要がある。
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC + 1800, "158.850", "158.854"),
+        ],
+        range_rows=[
+            range_row(T0_MSC, "158.840", "158.844"),
+            range_row(T0_MSC + 1200, "159.500", "159.504"),
+            range_row(T0_MSC + 1800, "158.850", "158.854"),
+        ],
+    )
+    collector, repository = make_collector(mt5)
+
+    assert collector.poll_once(SYMBOL) == 1
+    assert collector.poll_once(SYMBOL) == 2
+
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("159.500"),
+        Decimal("158.850"),
+    ]
+    assert [tick.time for tick in repository.ticks] == sorted(
+        tick.time for tick in repository.ticks
+    )
+
+
+def test_history_is_recovered_when_both_polls_fall_in_the_same_second():
+    # 実機の半開区間は両端を秒に切り捨てるため、前回と今回が
+    # 同じ秒なら終端を延ばさない限り範囲が空になり、中間の価格が落ちる。
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC + 100, "158.840", "158.844"),
+            info_tick(T0_MSC + 700, "158.850", "158.854"),
+        ],
+        range_rows=[
+            range_row(T0_MSC + 100, "158.840", "158.844"),
+            range_row(T0_MSC + 400, "159.500", "159.504"),
+            range_row(T0_MSC + 700, "158.850", "158.854"),
+        ],
+    )
+    collector, repository = make_collector(mt5)
+
+    assert collector.poll_once(SYMBOL) == 1
+    assert collector.poll_once(SYMBOL) == 2
+
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("159.500"),
+        Decimal("158.850"),
+    ]
+
+
+def test_history_newer_than_the_polled_tick_is_left_for_the_next_poll():
+    # 秒単位の半開区間で終端の秒まで読むと、polled より新しい行も返る。
+    # その行は次のポーリングで回収し、今回の保存には含めない。
+    mt5 = FakeMT5(
+        info_ticks=[
+            info_tick(T0_MSC, "158.840", "158.844"),
+            info_tick(T0_MSC + 1200, "158.850", "158.854"),
+            info_tick(T0_MSC + 1500, "158.860", "158.864"),
+        ],
+        range_rows=[
+            range_row(T0_MSC, "158.840", "158.844"),
+            range_row(T0_MSC + 1200, "158.850", "158.854"),
+            range_row(T0_MSC + 1500, "158.860", "158.864"),
+        ],
+    )
+    collector, repository = make_collector(mt5)
+
+    assert collector.poll_once(SYMBOL) == 1
+    assert collector.poll_once(SYMBOL) == 1
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("158.850"),
+    ]
+    assert collector.poll_once(SYMBOL) == 1
+    assert [tick.bid for tick in repository.ticks] == [
+        Decimal("158.840"),
+        Decimal("158.850"),
+        Decimal("158.860"),
+    ]
+    assert len(repository.ticks) == 3
+    assert mt5.range_calls[1][1:3] == (
+        T0 + timedelta(milliseconds=1200),
+        T0 + timedelta(milliseconds=1500) + timedelta(seconds=1),
+    )
 
 
 def test_history_ticks_are_known_after_the_tick_history_fetch_returns():

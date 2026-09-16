@@ -7,7 +7,6 @@ import pytest
 
 from tests.support import T0, FakeAccountSnapshotRepository, FixedClock, at, make_snapshot
 from trading.data.account.collector import (
-    RES_S_OK,
     AccountSnapshotCollector,
     build_snapshot,
 )
@@ -309,12 +308,31 @@ def test_history_fetch_failure_raises():
         collector.collect_once()
 
 
-def test_no_deals_with_a_success_status_records_zero():
+def test_history_fetch_returning_none_raises_even_with_a_success_status():
     repository = FakeAccountSnapshotRepository()
     terminal = FakeMt5(
         history_deals_none=True,
-        error=(RES_S_OK, "Success"),
+        error=(1, "Success"),
     )
+    collector = AccountSnapshotCollector(
+        repository,
+        server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,
+        clock=FixedClock(T0),
+        mt5_module=terminal,
+    )
+
+    with pytest.raises(
+        MT5ConnectionError,
+        match=r"history_deals_get failed: \(1, Success\)",
+    ):
+        collector.collect_once()
+
+    assert repository.snapshots == []
+
+
+def test_an_empty_deal_history_records_zero_and_saves_the_snapshot():
+    repository = FakeAccountSnapshotRepository()
+    terminal = FakeMt5()
     collector = AccountSnapshotCollector(
         repository,
         server_ahead_of_ny_hours=SERVER_AHEAD_OF_NY_HOURS,

@@ -128,9 +128,9 @@ H6 が `ensure_period_covered` を通る tick 集合なら、本 PR の `read_fr
 ## 実際の run で不足していたか（H4 / H5）
 
 研究リプレイは warmup 区間の tick でも足を組み立てる（`backtest/engine.py` の
-"Warm-up ticks build bars, indicators and features but leave no trace in the outputs"）。保持上限は
-`max(BAR_CAPACITY, bar_window)` = 200 本なので、lead-in の開場時間が 200 本ぶんあれば初回評価時点で
-entry 足は 200 本埋まっている。`--from 2024-08-01`（木曜）の lead-in は月曜〜水曜の平日だけで埋まるため、
+"Warm-up ticks build bars, indicators and features but leave no trace in the outputs"）。足の保持上限は
+`max(BAR_CAPACITY, bar_window)` = 10,000 本で、`IndicatorService` が読むのは 200 本（`DEFAULT_BAR_COUNT`）。
+lead-in の開場時間が 200 本ぶんあれば、初回評価時点で entry 足は 200 本以上組み立て済みになる。`--from 2024-08-01`（木曜）の lead-in は月曜〜水曜の平日だけで埋まるため、
 **H4 / H5 の run では不足していない**。
 
 | 戦略 | 宣言値 | read_from | lead-in の開場時間 | entry 足の本数 |

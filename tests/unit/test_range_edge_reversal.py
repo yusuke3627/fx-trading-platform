@@ -652,7 +652,7 @@ def test_registry_and_default_data_declarations():
     config = StrategyConfig(strategy_id=strategy.strategy_id)
     assert STRATEGIES[strategy.strategy_id] is strategy
     assert strategy.horizon is StrategyHorizon.INTRADAY
-    assert strategy.warmup(config) == timedelta(days=3, hours=12, minutes=24)
+    assert strategy.warmup(config) == market_span_to_calendar(200 * 3600)
     assert strategy.bar_window(config) == 200
     assert strategy.tick_window_seconds(config) == 0.0
 
@@ -664,6 +664,8 @@ def test_registry_and_default_data_declarations():
         ({"ema_period": 220, "range_slope_lookback": 80}, 300, 7, 15),
         ({"atr_period": 300}, 301, 7, 301),
         ({"reentry_max_bars": 400}, 26, 401, 15),
+        # 両時間足とも宣言本数が 200 を下回る既定形。指標が読む 200 本が warmup の下限になる。
+        ({}, 26, 7, 15),
     ],
 )
 def test_data_declarations_cover_largest_instrument_override(
@@ -680,7 +682,10 @@ def test_data_declarations_cover_largest_instrument_override(
     )
     assert RangeEdgeReversalStrategy.bar_window(config) == max(200, regime_count, entry_count)
     assert RangeEdgeReversalStrategy.warmup(config) == market_span_to_calendar(
-        max(regime_count * 14400, (atr_count + entry_count) * 3600)
+        max(
+            max(regime_count, 200) * 14400,
+            max(atr_count + entry_count, 200) * 3600,
+        )
     )
 
 

@@ -61,10 +61,19 @@ class RangeEdgeReversalStrategy(Strategy):
         regime_tf = config.timeframes.role("regime", "1h")
         entry_tf = config.timeframes.role("entry", "5m")
         params = [config.params_for(symbol) for symbol in config.instruments or [""]]
+        # IndicatorService は各時間足を max(DEFAULT_BAR_COUNT, period + 1) 本読み、
+        # その全履歴で Wilder ATR と EMA を更新する。宣言した warmup より短い履歴で
+        # 始めると、期間の冒頭だけ定常状態と違う指標でレンジ適格性と損切り幅を決める。
         span = max(
             max(
-                _regime_count(item) * TIMEFRAME_SECONDS[regime_tf],
-                (int(item.param("atr_period", 14)) + 1 + int(item.param("reentry_max_bars", 6)) + 1)
+                max(_regime_count(item), DEFAULT_BAR_COUNT) * TIMEFRAME_SECONDS[regime_tf],
+                max(
+                    int(item.param("atr_period", 14))
+                    + 1
+                    + int(item.param("reentry_max_bars", 6))
+                    + 1,
+                    DEFAULT_BAR_COUNT,
+                )
                 * TIMEFRAME_SECONDS[entry_tf],
             )
             for item in params

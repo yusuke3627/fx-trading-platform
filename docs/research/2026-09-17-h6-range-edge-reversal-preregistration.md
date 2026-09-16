@@ -77,7 +77,7 @@ EMA の定義を固定する。直近 26 本（`ema_period + range_slope_lookbac
 | 期間 | 2024-08-01T00:00:00+00:00 〜 2026-08-29T00:00:00+00:00（broker ラベル、終端は排他。土曜 00:00 境界） |
 | tick | H4 / H5 と同じ保存 tick 集合（H4 の `dataset_hash=385b6bb1378fafa69096702b8eaae294e797341ed0032fafcb71a69483cc8fe5`、98,806,999 本。2026-01-23 から 2026-04-08 までの 74 日欠損を含む）。run の `manifest.json` の値が違えば、その差を結果に記す |
 | 環境 | `--env backtest`（ADR-037 により口座水準の損失停止なし）、symbol USDJPY、scenario normal、seed 42 |
-| warmup | 戦略の宣言値（26 本の 1h 足 = 26 時間 × 7/5 + 2 日 ≒ 3.5 日）。期間開始の 2024-08-01T00:00 broker は 2024-07-31 21:00 UTC でどのセッションも開いていないので、最初のレンジは Tokyo 開始で作られる |
+| warmup | 戦略の宣言値 13 日 16 時間（`IndicatorService` が読む 200 本の 1h 足 = 200 時間 × 7/5 + 2 日）。レンジと EMA が要求するのは 26 本だが、ATR と EMA は読んだ全履歴で更新されるため、期間の冒頭を定常状態と同じ指標値で始めるには 200 本ぶんを遡って読む必要がある。期間開始の 2024-08-01T00:00 broker は 2024-07-31 21:00 UTC でどのセッションも開いていないので、最初のレンジは Tokyo 開始で作られる |
 | 腕 | 4 本を並列に流す（`feature_dataset_hash` を揃えるため）。A = 全規則 / A−利確 = `take_profit_enabled=false` / A−時間切れ = `horizon_exit_enabled=false` / A−帯 = `entry_band_fraction=1.0` |
 
 腕の違いはパラメータ上書きだけで、コード・データ・期間・seed は共通である。

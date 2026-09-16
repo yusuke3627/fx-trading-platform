@@ -263,3 +263,46 @@ def test_base_config_fixes_arbitrator_coefficients():
 
     assert config.arbitrator.existing_exposure_penalty_r == Decimal("0.10")
     assert config.arbitrator.max_pairs_per_triangle == 2
+
+
+def test_range_edge_reversal_loads_preregistered_parameters():
+    config = load_config("backtest", CONFIG_DIR)
+    strategy = config.strategies["range_edge_reversal"]
+    assert strategy.enabled is False
+    assert strategy.status is StrategyStatus.RESEARCH_ONLY
+    assert strategy.instruments == ["USDJPY"]
+    assert strategy.timeframes.role("regime") == "1h"
+    assert strategy.timeframes.role("entry") == "5m"
+    expected = {
+        "range_lookback_bars": 24,
+        "range_stale_hours": 72,
+        "range_slope_lookback": 6,
+        "range_slope_max_atr": 0.5,
+        "range_width_min_atr": 1.5,
+        "ema_period": 20,
+        "atr_period": 14,
+        "reentry_max_bars": 6,
+        "entry_band_fraction": 0.2,
+        "stop_buffer_atr": 0.25,
+        "min_reward_to_risk": 1.5,
+        "take_profit_enabled": True,
+        "horizon_exit_enabled": True,
+        "expected_horizon_seconds": 3600,
+        "session_end_buffer_seconds": 3600,
+        "spread_gate": {"max_spread_to_atr": "0.5"},
+    }
+    params = strategy.params_for("USDJPY")
+    for key, value in expected.items():
+        actual = params.param(key, None)
+        assert actual == value, key
+        assert type(actual) is type(value), key
+    assert params.param("absolute_max_spread_pips", None) == "1.5"
+    assert strategy.session_profile_for("USDJPY") == config.session_profiles["usdjpy_core"]
+
+
+@pytest.mark.parametrize("environment", ["backtest", "demo", "shadow", "micro_live", "production"])
+def test_range_edge_reversal_stays_disabled_in_every_overlay(environment):
+    strategy = load_config(environment, CONFIG_DIR).strategies["range_edge_reversal"]
+    assert strategy.enabled is False
+    assert strategy.status is StrategyStatus.RESEARCH_ONLY
+    assert strategy.runs is False

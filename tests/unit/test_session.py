@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta, timezone
 
-from trading.indicators.session import Session, session_start, sessions_at
+import pytest
+
+from trading.indicators.session import Session, session_end, session_start, sessions_at
 
 
 def test_tokyo_session_is_active_only_in_its_local_window() -> None:
@@ -63,6 +65,7 @@ def test_session_results_are_independent_of_fixed_broker_offset() -> None:
     assert sessions_at(server_timestamp) == sessions_at(utc_timestamp)
     for session in Session:
         assert session_start(session, server_timestamp) == session_start(session, utc_timestamp)
+        assert session_end(session, server_timestamp) == session_end(session, utc_timestamp)
 
 
 def test_session_start_uses_previous_local_day_before_window() -> None:
@@ -72,3 +75,37 @@ def test_session_start_uses_previous_local_day_before_window() -> None:
 
     assert start == datetime(2026, 1, 15, 0, 0, tzinfo=UTC)
     assert start.utcoffset() == timedelta(0)
+
+
+@pytest.mark.parametrize(
+    ("session", "timestamp", "expected"),
+    [
+        (Session.LONDON, "2026-01-15T12:00", "2026-01-15T17:00"),
+        (Session.LONDON, "2026-07-15T12:00", "2026-07-15T16:00"),
+        (Session.NEW_YORK, "2026-01-15T18:00", "2026-01-15T22:00"),
+        (Session.NEW_YORK, "2026-07-15T18:00", "2026-07-15T21:00"),
+        (Session.TOKYO, "2026-01-15T05:00", "2026-01-15T09:00"),
+        (Session.LONDON, "2026-03-27T12:00", "2026-03-27T17:00"),
+        (Session.LONDON, "2026-03-30T12:00", "2026-03-30T16:00"),
+        (Session.TOKYO, "2026-01-15T23:30", "2026-01-15T09:00"),
+        (Session.LONDON, "2026-01-15T07:30", "2026-01-14T17:00"),
+        (Session.NEW_YORK, "2026-01-15T12:30", "2026-01-14T22:00"),
+    ],
+)
+def test_session_end_selects_the_same_nine_hour_window_as_start(session, timestamp, expected):
+    timestamp = datetime.fromisoformat(timestamp).replace(tzinfo=UTC)
+    end = session_end(session, timestamp)
+    assert end == datetime.fromisoformat(expected).replace(tzinfo=UTC)
+    assert end.utcoffset() == timedelta(0)
+    assert end - session_start(session, timestamp) == timedelta(hours=9)
+
+
+@pytest.mark.parametrize("session", list(Session))
+def test_session_end_at_window_boundaries(session):
+    timestamp = datetime(2026, 1, 15, 15, tzinfo=UTC)
+    start = session_start(session, timestamp)
+    end = session_end(session, timestamp)
+    assert session_end(session, start) == end
+    assert session_end(session, end) == end
+    assert session in sessions_at(start)
+    assert session not in sessions_at(end)

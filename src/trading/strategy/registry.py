@@ -11,6 +11,7 @@ from trading.strategy.base import Strategy
 from trading.strategy.intraday.post_event_failed_breakout import (
     PostEventFailedBreakoutStrategy,
 )
+from trading.strategy.intraday.range_edge_reversal import RangeEdgeReversalStrategy
 from trading.strategy.scalp.failed_spike_reversal import FailedSpikeReversalStrategy
 from trading.strategy.swing.monetary_policy_convergence import (
     MonetaryPolicyConvergenceStrategy,
@@ -22,5 +23,6 @@ STRATEGIES: dict[str, type[Strategy]] = {
         FailedSpikeReversalStrategy,
         PostEventFailedBreakoutStrategy,
         MonetaryPolicyConvergenceStrategy,
+        RangeEdgeReversalStrategy,
     )
 }

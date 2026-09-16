@@ -1,6 +1,7 @@
 """Invariant tests derived from SYSTEM_SPEC: strategies (and the LLM boundary)
 must be structurally unable to reach the broker, and position/order direction
 vocabularies stay separate."""
+import re
 from dataclasses import fields
 from pathlib import Path
 
@@ -39,6 +40,29 @@ def test_strategy_and_intelligence_never_touch_broker_or_clock():
     for directory in SCANNED_DIRS:
         violations.extend(scan(SRC / directory))
     assert violations == [], violations
+
+
+def test_market_tick_writes_only_use_the_participating_repository():
+    # The research stream waits for the symbol's advisory lock instead of for
+    # every writer of the table (ADR-041), so a second write site would be a
+    # writer the stream never waits for. Every statement that reaches the rows
+    # is listed, not INSERT alone: the pin argument covers the whole table.
+    write_pattern = re.compile(
+        r"""\b(?: INSERT \s+ INTO
+                | MERGE \s+ INTO
+                | UPDATE
+                | DELETE \s+ FROM
+                | TRUNCATE (?: \s+ TABLE )?
+                | COPY
+            ) \s+ (?: "?public"? \. )? "? market_ticks \b""",
+        re.IGNORECASE | re.VERBOSE,
+    )
+    sites = [
+        path.relative_to(SRC).as_posix()
+        for path in SRC.rglob("*.py")
+        for _ in write_pattern.finditer(path.read_text())
+    ]
+    assert sites == ["storage/postgres.py"], sites
 
 
 def test_strategy_context_exposes_no_execution_surface():

@@ -5,7 +5,6 @@ the queue-like execution_commands table without lock contention.
 """
 from __future__ import annotations
 
-import time
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -32,15 +31,17 @@ from trading.storage.repository import StaleCommandStateError
 # ~2000 round trips, small enough that a batch is a snap to fetch and free.
 _STREAM_BATCH_ROWS = 50_000
 
-# How long stream_between waits for transactions in flight at its ceiling
-# read to finish before giving up on pinning the dataset. Collector commits
-# are sub-second; only a stuck session should ever reach this.
+# How long stream_between waits to acquire its symbol's write lock before
+# giving up on pinning the dataset. This bounds the lock wait, not the full
+# stream; even writes outside the requested period hold the same key.
 _STREAM_SETTLE_TIMEOUT_SECONDS = 60.0
 
 # 2 引数 advisory lock の classid は 4 byte ASCII の subsystem tag。
 # 0x4F4D5300 は "OMS\0"、objid=1 はその中の dispatcher lock を表す。
 _OMS_ADVISORY_LOCK_CLASS_ID = 0x4F4D5300
 _OMS_DISPATCHER_LOCK_OBJECT_ID = 1
+# 0x5449434B は "TICK"、objid=hashtext(symbol) は銘柄ごとの書き込みロックを表す。
+_TICK_ADVISORY_LOCK_CLASS_ID = 0x5449434B
 
 # A write that gives the claim up (the sweep's CLAIMED -> READY, whose
 # transition nulls the claim columns) compares state alone; requiring the
@@ -439,6 +440,21 @@ class PostgresMarketTickRepository:
         if not ticks:
             return 0
         cursor = self._conn.cursor()
+        # Take every symbol's key before INSERT allocates any ids, and hold
+        # them until the commit below makes the entire batch visible. Sort
+        # the actual keys, not the names: hash collisions must not make two
+        # mixed-symbol batches acquire their shared keys in opposite orders.
+        # Fetch first, then lock explicitly; SELECT expression evaluation
+        # order is not a lock acquisition order.
+        lock_rows = self._conn.execute(
+            "SELECT DISTINCT hashtext(symbol) AS key FROM unnest(%s::text[]) AS symbol",
+            (list({tick.symbol for tick in ticks}),),
+        ).fetchall()
+        for key in sorted(row["key"] for row in lock_rows):
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(%s, %s)",
+                (_TICK_ADVISORY_LOCK_CLASS_ID, key),
+            )
         cursor.executemany(
             """
             INSERT INTO market_ticks (
@@ -533,29 +549,28 @@ class PostgresMarketTickRepository:
         # describe a dataset no later run can reproduce. The ceiling alone
         # does not close the pin: an insert may hold an id BELOW it while
         # still uncommitted (ids are allocated at insert, commits reorder),
-        # and would surface to a later batch nondeterministically. So the
-        # start also waits until every transaction in flight at the ceiling
-        # read has ended — from then on, id <= ceiling names one fixed set.
-        # A writer that inserted rows before the ceiling read may still be
-        # uncommitted while holding ids below the ceiling; streaming anyway
-        # would let those rows surface to a later batch nondeterministically.
-        # The wait is scoped to transactions actually WRITING this table
-        # (RowExclusiveLock) that began before the pin — a global snapshot
-        # bound would let any unrelated long transaction starve the start.
-        # A writer that begins earlier but only inserts after the pin cannot
-        # matter: its ids are allocated at insert time, above the ceiling.
-        # It is NOT scoped further: an uncommitted row's symbol and period
-        # are invisible, so a writer of another pair or range cannot be told
-        # apart and is deliberately waited on — refusing loudly after the
-        # timeout beats streaming a set that cannot be pinned, and a large
-        # backfill simply should not overlap a research start.
-        # clock_timestamp(), not now(): now() is frozen at transaction start,
-        # and a caller that read other tables on this connection first would
-        # pin at that earlier instant — writers starting in between would
-        # escape the wait below while their ids sit under the ceiling.
+        # and would surface to a later batch nondeterministically. After
+        # reading the ceiling, acquire and immediately release this symbol's
+        # write key. Earlier holders have then committed or rolled back;
+        # later holders allocate ids above the ceiling because insert_many
+        # locks BEFORE allocating ids (identity uses INCREMENT 1, CACHE 1,
+        # NO CYCLE). Thus symbol + id <= ceiling names one settled set.
+        # Other symbols' pending rows cannot match the stream's WHERE clause.
+        #
+        # The ceiling read must come first: if the key were released first,
+        # a writer could allocate X and stay uncommitted while another symbol
+        # commits Y > X before the ceiling read, leaving X inside the pin.
+        # The wait does not use transaction start times, so a reader's earlier
+        # SELECT cannot hide a writer that began afterwards. Any current key
+        # holder is waited on, even when writing outside the requested period.
+        #
+        # This guarantee requires ALL writers to use the protocol. A bypass
+        # writer committing after the final fingerprint check can be missed
+        # without an error; that check only detects changes visible by then
+        # and only runs when the stream is fully consumed.
         ceiling_row = self._conn.execute(
             """
-            SELECT max(id) AS ceiling, clock_timestamp() AS pinned_at
+            SELECT max(id) AS ceiling
             FROM market_ticks
             """
         ).fetchone()
@@ -563,39 +578,28 @@ class PostgresMarketTickRepository:
         ceiling = ceiling_row["ceiling"]
         if ceiling is None:
             return
-        deadline = time.monotonic() + _STREAM_SETTLE_TIMEOUT_SECONDS
-        while True:
-            writers_row = self._conn.execute(
-                """
-                SELECT count(*) AS writers
-                FROM pg_locks locks
-                JOIN pg_stat_activity activity ON activity.pid = locks.pid
-                WHERE locks.relation = 'market_ticks'::regclass
-                  AND locks.mode = 'RowExclusiveLock'
-                  AND activity.xact_start <= %s
-                """,
-                (ceiling_row["pinned_at"],),
-            ).fetchone()
-            self._conn.commit()
-            if writers_row["writers"] == 0:
-                break
-            if time.monotonic() > deadline:
-                # An idle-in-transaction writer would hold this forever;
-                # failing names the cause instead of streaming an unpinned
-                # set or hanging silently.
-                raise RuntimeError(
-                    "stream_between could not pin its dataset: a transaction "
-                    "writing market_ticks since before the ceiling read has "
-                    f"not finished within {_STREAM_SETTLE_TIMEOUT_SECONDS}s"
+        try:
+            with self._conn.transaction():
+                self._conn.execute(
+                    "SELECT set_config('lock_timeout', %s, true)",
+                    (f"{int(_STREAM_SETTLE_TIMEOUT_SECONDS * 1000)}ms",),
                 )
-            time.sleep(0.1)
+                self._conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s, hashtext(%s))",
+                    (_TICK_ADVISORY_LOCK_CLASS_ID, symbol),
+                )
+        except psycopg.errors.LockNotAvailable as exc:
+            raise RuntimeError(
+                f"stream_between could not pin its dataset for {symbol}: "
+                "a transaction writing market_ticks has not finished within "
+                f"{_STREAM_SETTLE_TIMEOUT_SECONDS}s"
+            ) from exc
         # Mutations cannot be prevented without holding one snapshot for the
         # whole replay — the vacuum-pinning trade this method rejects — but
-        # they must never pass silently: the settled set's size AND a
-        # whole-row content fingerprint are fixed here and re-taken at the
-        # end, so a delete or an update of any column, fetched or unfetched,
-        # turns the run into a loud failure instead of a replay whose
-        # manifest describes a dataset that no longer exists.
+        # changes visible at the closing check can be detected: the settled
+        # set's size AND a whole-row content fingerprint are fixed here and
+        # re-taken at the end. A changed count or fingerprint then turns the
+        # run into a loud failure instead of describing a vanished dataset.
         count_sql = """
             SELECT count(*) AS remaining,
                    coalesce(sum(hashtext(market_ticks::text)::bigint), 0)

@@ -165,6 +165,9 @@ class TickCollector:
         Returns rows actually added. The terminal only ever hands back the
         newest tick, so history supplies both updates between two broker times
         and other prices carrying the same millisecond stamp.
+        Since the terminal interprets [from, to) at second resolution, the end
+        is extended by one second and ticks newer than the polled quote are
+        left for the next poll.
         """
         raw = self._mt5.symbol_info_tick(symbol)
         if raw is None:
@@ -186,18 +189,23 @@ class TickCollector:
 
         ticks = [tick]
         if previous is not None and timedelta(0) <= tick.time - previous[0] <= POLL_GAP_MAX:
+            history_end = tick.time + timedelta(seconds=1)
             rows = self._mt5.copy_ticks_range(
-                symbol, previous[0], tick.time, COPY_TICKS_ALL
+                symbol, previous[0], history_end, COPY_TICKS_ALL
             )
             if rows is None:
                 raise MT5ConnectionError(
-                    f"copy_ticks_range({symbol}, {previous[0]}, {tick.time}) "
+                    f"copy_ticks_range({symbol}, {previous[0]}, {history_end}) "
                     f"failed: {self._mt5.last_error()}"
                 )
             history_received_at = self._clock.now()
             history_ticks = []
             for row in rows:
                 history_tick = tick_from_row(row, symbol, history_received_at)
+                # 秒単位の半開区間なので終端の秒まで読むが、polled より新しい行は
+                # 次のポーリングの範囲で拾い、polled の並び順を保つ。
+                if history_tick.time > tick.time:
+                    continue
                 history_quote = (
                     history_tick.time,
                     history_tick.bid,

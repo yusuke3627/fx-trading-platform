@@ -48,7 +48,10 @@ X を採番して未コミットのまま、別 symbol の writer が Y > X を 
 その状態で天井を読むと、未確定の X が天井内に入ってしまう。
 
 reader と writer は同じチェックアウトから動く運用のため、`git pull` 後は collector を再起動し、
-全 writer に新しい実装が反映されてから research を実行する。
+全 writer に新しい実装が反映されてから research を実行する。実行ホストの collector は起動時タスクと
+して常駐し数週間動き続けるため、`git pull` だけでは走っているプロセスが入れ替わらない。再起動を
+省くと旧プロセスがキーを取らない writer として残り、research は待つべき書き込みを見逃したまま成功
+しうる（下の非参加 writer と同じ帰結になる）。
 
 ## Consequences
 
@@ -66,6 +69,13 @@ reader と writer は同じチェックアウトから動く運用のため、`g
   **取りこぼしが必ず `RuntimeError` になる保証はなく、全 writer の参加が必要である。**
   これは research の集合の再現性に関する制約であり、PIT の
   `known_at <= replay_clock.now()` という時刻条件の変更ではない。
+- 書き込み側がキーを保持する時間はバッチの挿入時間そのもの。実測（PostgreSQL 14.18、ローカル）で
+  1 行 0.004 秒、100 行 0.004 秒、Dukascopy の 1 時間ぶんに相当する 5,000 行で 0.066 秒。
+  live collector の poll 間隔に対して無視できるので、同一 symbol への取り込みと live 収集を
+  併走させても実用上の待ちにはならない。
+- 読み手はキーを取得したトランザクションを即座に commit し、行を返す前に解放する。stream の
+  実行中は保持しない（実測: 1 件目の取得後に保持している TICK advisory lock は 0 件、同時の
+  同一 symbol 書き込みは 0.016 秒で完了）。
 - 書き込み側の回帰テストで、ロック待機中は identity sequence が進まないことと、
   混在バッチの全 symbol が対象になることを検証する。ソース走査テストで
   `INSERT INTO market_ticks` が `storage/postgres.py` の 1 か所にあることを維持する。

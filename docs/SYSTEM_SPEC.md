@@ -293,7 +293,7 @@ GBP と EUR の方向感に用いる公式統計は、次の canonical 系列と
 | `uk_unemployment_rate_sa` | ONS website timeseries JSON、`MGSX` / LMS、LFS ローリング3か月 |
 | `uk_real_gdp_growth_qoq_sa` | ONS website timeseries JSON、`IHYQ` / PN2、四半期 |
 | `ea_deposit_facility_rate` | ECB Data Portal SDMX-JSON、`FM/D.U2.EUR.4F.KR.DFR.LEV` |
-| `ea_hicp_headline_yoy_nsa` | Eurostat statistics API、`prc_hicp_minr` の TOTAL（`coicop18`） |
+| `ea_hicp_headline_yoy_nsa` | Eurostat statistics API、`prc_hicp_manr` の CP00 |
 | `ea_unemployment_rate_sa` | Eurostat statistics API、`une_rt_m` |
 | `ea_real_gdp_growth_qoq_sca` | Eurostat statistics API、`namq_10_gdp` の B1GQ |
 

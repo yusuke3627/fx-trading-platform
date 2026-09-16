@@ -62,11 +62,12 @@ GitHub issue: #173（`gh issue view 173` で全文を読める）
 
 コメントは 5〜6 行程度に収め、既存の日本語コメントの文体（`# 〜。` の説明文）に合わせる。
 
-### 3. `docs/SYSTEM_SPEC.md`
+### 3. `docs/SYSTEM_SPEC.md`（編集しない）
 
-系列表（§「GBP と EUR の方向感に用いる公式統計」）の `ea_hicp_headline_yoy_nsa` 行の取得経路を
-「Eurostat statistics API、`prc_hicp_minr` の TOTAL（`coicop18`）」に直す。ソース識別子の事実修正のみで、
-設計本文は変えない。`docs/adr/ADR-015-*.md` は決定時の記録なので変更しない。
+§5.1 の系列表にある `ea_hicp_headline_yoy_nsa` の行（「Eurostat statistics API、`prc_hicp_manr` の CP00」）は
+実態と食い違うが、v2.0 で凍結された文書（変更は本文改訂ではなく ADR 追加）なので本 PR では編集しない。
+食い違いは PR 本文の残課題に記し、扱いはユーザー判断に委ねる。`docs/adr/ADR-015-*.md` も決定時の記録なので
+変更しない。
 
 ### 4. `tests/unit/test_gbp_eur_collectors.py`（Eurostat 節）
 
@@ -94,6 +95,7 @@ GitHub issue: #173（`gh issue view 173` で全文を読める）
   新しい known_at の観測として追記する。同じ値の再取得は既存の重複排除で追加しない）
 - Mac の cron / `scripts/collect_daily.sh` の変更
 - ADR の追加（dataset の移行はソース側の事情で、規範的決定ではない）
+- `docs/SYSTEM_SPEC.md` の編集（v2.0 凍結。実態との食い違いは PR の残課題に記す）
 - 配信終了の早期検知（issue の対応 5 番目）。公表ラグの扱いを決める必要があるので別 issue にする
 - 周辺リファクタ・無関係な整形
 

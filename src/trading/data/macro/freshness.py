@@ -15,6 +15,15 @@ from pydantic import BaseModel, ConfigDict
 from trading.data.macro.registry import INDICATORS, IndicatorSpec
 from trading.domain.economic import EconomicObservation
 
+# frequency ごとの上限（日数）。正常な系列でも最新期間がここまでは古くなる、
+# という実測値（Mac 収集 DB、2026-09-17）から決めた:
+#   daily 12 日 = jp_jgb_2y_yield の連続空白 11 日（2019 年 GW の 10 連休）+ 公表ラグ 1 営業日
+#   monthly 62 日 = ea_unemployment_rate_sa（翌々月頭公表）が次の公表を待つ間
+#   quarterly 約 150 日 = ea_real_gdp_growth_qoq_sca に次の四半期の推計が載るまで
+# 余裕は daily 9 日 / monthly 13 日 / quarterly 30 日しかない。公表が 1 回飛べば
+# 必ず超えるが、元から遅い系列が数週間ずれただけでも発火する。発火している間は
+# その source の収集が毎日 non-zero で終わるので、正当な遅延が続く系列が出たら
+# 上限を上げるか max_staleness_days を足して黙らせる判断が要る。
 STALENESS_LIMIT_DAYS: dict[str, int] = {"daily": 21, "monthly": 75, "quarterly": 180}
 
 

@@ -37,7 +37,14 @@ RECORD_FORMAT = ">IIIff"
 RECORD_SIZE = 20
 
 # Dukascopy の point 単位は通貨ペア依存なので、対応ペアの追加時はここへ追記する。
-POINT_SCALES: dict[str, Decimal] = {"USDJPY": Decimal("0.001")}
+# 倍率は Dukascopy の小数桁に対応し、JPY クロスは 3 桁（0.001）、対ドルは 5 桁（0.00001）。
+# いずれも実際の bi5 を復号して確認済み。
+POINT_SCALES: dict[str, Decimal] = {
+    "USDJPY": Decimal("0.001"),
+    "EURUSD": Decimal("0.00001"),
+    "GBPUSD": Decimal("0.00001"),
+    "GBPJPY": Decimal("0.001"),
+}
 
 SOURCE_DUKASCOPY = "DUKASCOPY"
 USER_AGENT = "fx-trading-platform-collector/1.0"

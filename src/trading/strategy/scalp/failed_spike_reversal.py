@@ -38,15 +38,21 @@ class FailedSpikeReversalStrategy(Strategy):
 
     @classmethod
     def warmup(cls, config: StrategyConfig) -> timedelta:
-        # The slowest window is the entry-timeframe ATR; the tick window the
-        # spike detection reads (window_seconds x 3) is added on top.
+        # The declared lead-in must cover what IndicatorService actually
+        # reads on the entry timeframe, or the opening evaluations smooth
+        # the Wilder ATR over a shorter history than the steady state. The
+        # tick window the spike detection reads (window_seconds x 3) is
+        # added on top.
         entry_tf = config.timeframes.role("entry", "1m")
         params = [config.params_for(symbol) for symbol in config.instruments or [""]]
         atr_period = max(int(item.param("atr_period", 14)) for item in params)
         window_seconds = max(
             float(item.param("spike_window_seconds", 60)) for item in params
         )
-        span = (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf] + window_seconds * 3
+        span = (
+            max(atr_period + 1, DEFAULT_BAR_COUNT) * TIMEFRAME_SECONDS[entry_tf]
+            + window_seconds * 3
+        )
         return market_span_to_calendar(span)
 
     @classmethod

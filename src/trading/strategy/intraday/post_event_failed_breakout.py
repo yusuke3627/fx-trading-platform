@@ -52,9 +52,12 @@ class PostEventFailedBreakoutStrategy(Strategy):
 
     @classmethod
     def warmup(cls, config: StrategyConfig) -> timedelta:
-        # The slowest window is the setup-timeframe resistance lookback (the
-        # +5 mirrors what _evaluate reads); the entry-timeframe ATR rides
-        # inside it under any sane configuration but is kept in the max.
+        # The declared lead-in must cover what IndicatorService actually
+        # reads on the entry timeframe, or the opening evaluations smooth
+        # the Wilder ATR over a shorter history than the steady state. The
+        # setup-timeframe read is structural (rolling high/low over the
+        # bars _evaluate requests), so its value does not move with the
+        # history length and the lookback + 5 bars remain enough.
         setup_tf = config.timeframes.role("setup", "15m")
         entry_tf = config.timeframes.role("entry", "5m")
         params = [config.params_for(symbol) for symbol in config.instruments or [""]]
@@ -62,7 +65,7 @@ class PostEventFailedBreakoutStrategy(Strategy):
         atr_period = max(int(item.param("atr_period", 14)) for item in params)
         span = max(
             (lookback + 5) * TIMEFRAME_SECONDS[setup_tf],
-            (atr_period + 1) * TIMEFRAME_SECONDS[entry_tf],
+            max(atr_period + 1, DEFAULT_BAR_COUNT) * TIMEFRAME_SECONDS[entry_tf],
         )
         return market_span_to_calendar(span)
 

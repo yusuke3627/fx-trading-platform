@@ -510,6 +510,44 @@ def test_warmup_follows_the_evaluated_configuration():
     assert intraday.warmup(widened) > intraday.warmup(base_config)
 
 
+@pytest.mark.parametrize(
+    ("strategy_id", "overrides", "expected_seconds"),
+    [
+        pytest.param(
+            "failed_spike_reversal", {}, 200 * 60 + 60 * 3, id="scalp-default-floor"
+        ),
+        pytest.param(
+            "failed_spike_reversal", {"atr_period": 300}, 301 * 60 + 60 * 3,
+            id="scalp-atr-above-floor",
+        ),
+        pytest.param(
+            "post_event_failed_breakout", {}, 200 * 300, id="intraday-entry-floor"
+        ),
+        pytest.param(
+            "post_event_failed_breakout", {"atr_period": 300}, 301 * 300,
+            id="intraday-atr-above-floor",
+        ),
+        pytest.param(
+            "post_event_failed_breakout", {"resistance_lookback": 100}, 105 * 900,
+            id="intraday-setup-dominates-without-floor",
+        ),
+    ],
+)
+def test_warmup_covers_indicator_history_and_structural_lookback(
+    strategy_id: str, overrides: dict[str, int], expected_seconds: int,
+):
+    from trading.strategy.base import StrategyConfig, market_span_to_calendar
+    from trading.strategy.registry import STRATEGIES
+
+    config = StrategyConfig(
+        strategy_id=strategy_id,
+        instruments=["USDJPY"],
+        parameters=StrategyParameters.model_validate(overrides),
+    )
+
+    assert STRATEGIES[strategy_id].warmup(config) == market_span_to_calendar(expected_seconds)
+
+
 def test_progress_reports_one_line_per_replay_day_with_what_the_gates_saw():
     # A months-long run says nothing until the manifest; the operator needs
     # to tell a slow run from a stuck one, and a zero-fill run is usually a

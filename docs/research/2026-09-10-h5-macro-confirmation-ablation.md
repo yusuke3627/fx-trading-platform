@@ -183,3 +183,9 @@ python -m trading.backtest.ablation_compare --with reports/h5_with3/<run_id> --w
 同じ結果と言えるのは、両腕の `manifest.json` で `ablation_compare.COMPARABLE_FIELDS` の全項目が本ノートの run と一致するとき ―― `git_commit` / `git_dirty` / `git_diff_sha256` / `python_version` / `environment` / `symbol` / `strategy_id` / `strategy_version` / `engine_version` / `scenario` / `seed` / `tick_count` / `period_from` / `period_to` / `warmup_days` / `broker_server_ahead_of_ny_hours` / `dataset_hash` / `feature_dataset_hash` / `swap_dataset_hash`。比較 CLI の冒頭に出るのはこのうち一部だけで、残りは上記 run ディレクトリの `manifest.json` を正本とする。`config_sha256` も manifest に記録されるので、あわせて照合する。
 
 なお、上記の run は [ADR-037](../adr/ADR-037-backtest-account-level-loss-halts.md) より前のもので、`config/backtest.yaml` に口座水準の損失停止の無効化が入る前の設定で流している。以降の run と直接比較しない。
+
+### 測定条件の限界
+
+測定時の warmup 算出式には、`IndicatorService` が entry 5m 足で読む 200 本（`DEFAULT_BAR_COUNT`）の下限が入っていなかった（issue #181 で追加）。宣言値は setup 15m 足の構造読み 25 本と entry 5m 足の ATR 15 本だけから決まっており、200 本を保証する形ではなかった。
+
+ただしこの 2 本の run では実際には不足していない。既定設定の宣言値 2 日 8 時間 45 分を指定期間の開始から引くと読込開始は 2024-07-29 15:15（broker ラベル）で、そこから期間開始までは月曜から水曜の平日だけで埋まり、開場時間で 56.8 時間ある。研究リプレイは warmup 区間の tick でも足を組み立てる（`backtest/engine.py`: warm-up ticks build bars, indicators and features）ので、初回評価の時点で 5m 足の保持上限 200 本は埋まっており、冒頭の ATR は定常状態と同じ 200 本で計算されている。宣言値が不足するのは `--from` が週明けに近く、`market_span_to_calendar` が足す 2 日が丸ごと閉場に落ちる場合で（例: 月曜開始なら 5m 足 105 本しか残らない）、この run はその形ではない。期間途中の tick 欠損はハーネスが検出しないため、2024-07-29〜31 に穴が無かったことまでは確認していない。

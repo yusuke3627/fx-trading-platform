@@ -321,17 +321,22 @@ def parse_param_override(text: str) -> tuple[str, ParamValue]:
     if "=" not in text:
         raise argparse.ArgumentTypeError(f"{text!r} must be KEY=VALUE")
     key, value = text.split("=", 1)
-    lowered = value.lower()
+    return key, parse_param_value(value)
+
+
+def parse_param_value(text: str) -> ParamValue:
+    """CLI のパラメータ値をスカラー型を保って解釈する。"""
+    lowered = text.lower()
     if lowered == "true":
-        return key, True
+        return True
     if lowered == "false":
-        return key, False
-    if re.fullmatch(r"[+-]?\d+", value):
-        return key, int(value)
+        return False
+    if re.fullmatch(r"[+-]?\d+", text):
+        return int(text)
     try:
-        return key, float(value)
+        return float(text)
     except ValueError:
-        return key, value
+        return text
 
 
 def with_param_overrides(

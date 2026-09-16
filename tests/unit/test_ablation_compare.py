@@ -27,9 +27,11 @@ from trading.backtest.ablation_compare import (
 from trading.backtest.engine import BacktestResult, TradeRecord
 from trading.backtest.policy_event_study import bootstrap_interval
 from trading.backtest.report import write_report
+from trading.backtest.research import parse_param_value
 from trading.backtest.run_coverage import run_coverage
 from trading.data.market.clock import broker_label_to_known
 from trading.data.market.dukascopy import known_to_broker_label
+from trading.strategy.parameters import ParamValue
 
 PERIOD_FROM = datetime(2026, 1, 1, tzinfo=UTC)
 PERIOD_TO = datetime(2026, 2, 1, tzinfo=UTC)
@@ -276,7 +278,7 @@ def manifest(
     run_id: str,
     param_overrides: dict,
     *,
-    resolved_enabled: bool | None = None,
+    resolved_enabled: ParamValue | None = None,
     param: str = "macro_confirmation_enabled",
     strategy_id: str = "post_event_failed_breakout",
     period_from: datetime = PERIOD_FROM,
@@ -1028,3 +1030,229 @@ def test_missing_period_and_other_arms_trailing_gap_report_both_reasons():
         "without first_trade_at=2026-01-01T00:00:00+00:00 "
         "last_trade_at=2026-01-01T00:00:00+00:00 empty_months=0/1"
     ) in message
+
+
+@pytest.mark.parametrize("explicit_with_override", [False, True])
+@pytest.mark.parametrize(
+    ("with_value", "without_value"),
+    [(0.2, 1.0), (3, 4), ("abc", "xyz"), (True, 1), (1, 1.0), (1, "1")],
+)
+def test_verify_comparable_accepts_typed_parameter_values(
+    with_value, without_value, explicit_with_override,
+):
+    param = "entry_band_fraction"
+    with_manifest = manifest(
+        "with-run", {param: with_value} if explicit_with_override else {},
+        resolved_enabled=with_value, param=param,
+    )
+    without_manifest = manifest("without-run", {param: without_value}, param=param)
+
+    verify_comparable(
+        RunArtifacts(with_manifest, run_metrics(), [], entry_ats=[]),
+        RunArtifacts(without_manifest, run_metrics(), [], entry_ats=[]),
+        param, with_value=with_value, without_value=without_value,
+    )
+
+
+@pytest.mark.parametrize(("rejected_arm", "actual"), [("with", 1), ("without", 0)])
+def test_verify_comparable_rejects_integers_for_default_boolean_expectations(rejected_arm, actual):
+    param = "macro_confirmation_enabled"
+    runs = {}
+    for label, expected in (("with", True), ("without", False)):
+        runs[label] = RunArtifacts(
+            manifest(
+                label, {param: expected},
+                resolved_enabled=actual if label == rejected_arm else expected,
+            ),
+            run_metrics(), [], entry_ats=[],
+        )
+
+    with pytest.raises(SystemExit) as error:
+        verify_comparable(runs["with"], runs["without"], param)
+
+    expected = rejected_arm == "with"
+    assert (
+        f"{rejected_arm} resolved_parameters.{param} must be {expected!r}, got {actual!r}"
+    ) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("with_value", "without_value", "rejected_arm", "actual"),
+    [
+        (0.2, 1.0, "without", 1),
+        (0.2, 1.0, "without", 0.5),
+        (0.2, 1.0, "with", 0.5),
+        (3, 1, "without", True),
+        (3, 1, "without", 1.0),
+        ("abc", "1", "without", 1),
+    ],
+)
+def test_verify_comparable_rejects_resolved_value_mismatch(
+    with_value, without_value, rejected_arm, actual,
+):
+    param = "entry_band_fraction"
+    runs = {}
+    for label, expected in (("with", with_value), ("without", without_value)):
+        runs[label] = RunArtifacts(
+            manifest(
+                label, {param: expected}, param=param,
+                resolved_enabled=actual if label == rejected_arm else expected,
+            ),
+            run_metrics(), [], entry_ats=[],
+        )
+
+    with pytest.raises(SystemExit) as error:
+        verify_comparable(
+            runs["with"], runs["without"], param,
+            with_value=with_value, without_value=without_value,
+        )
+
+    expected = with_value if rejected_arm == "with" else without_value
+    assert (
+        f"{rejected_arm} resolved_parameters.{param} must be {expected!r}, got {actual!r}"
+    ) in str(error.value)
+
+
+@pytest.mark.parametrize("value", [0.2, True, False, 3, "abc"])
+def test_verify_comparable_rejects_identical_expected_values(value):
+    param = "entry_band_fraction"
+    with_run = RunArtifacts(
+        manifest("with-run", {}, resolved_enabled=value, param=param),
+        run_metrics(), [], entry_ats=[],
+    )
+    without_run = RunArtifacts(
+        manifest("without-run", {param: value}, param=param),
+        run_metrics(), [], entry_ats=[],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        verify_comparable(with_run, without_run, param, with_value=value, without_value=value)
+
+    message = str(error.value)
+    assert param in message
+    assert f"with={value!r}, without={value!r}" in message
+
+
+@pytest.mark.parametrize(
+    ("with_value", "without_value", "rejected_arm", "actual"),
+    [
+        (0.2, 1.0, "without", 0.5),
+        (0.2, 1.0, "without", 1),
+        (0.2, 1.0, "without", None),
+        (0.2, 1.0, "with", 0.5),
+        (1.0, 0.2, "with", 1),
+        (True, False, "with", 1),
+        (True, False, "without", 0),
+        (3, 1, "without", True),
+        ("abc", "1", "without", 1),
+    ],
+)
+def test_verify_comparable_rejects_override_value_mismatch(
+    with_value, without_value, rejected_arm, actual,
+):
+    param = "entry_band_fraction"
+    runs = {}
+    for label, expected in (("with", with_value), ("without", without_value)):
+        overrides = {param: expected}
+        if label == rejected_arm:
+            overrides = {} if actual is None else {param: actual}
+        runs[label] = RunArtifacts(
+            manifest(label, overrides, resolved_enabled=expected, param=param),
+            run_metrics(), [], entry_ats=[],
+        )
+
+    with pytest.raises(SystemExit) as error:
+        verify_comparable(
+            runs["with"], runs["without"], param,
+            with_value=with_value, without_value=without_value,
+        )
+
+    expected = with_value if rejected_arm == "with" else without_value
+    requirement = "omitted or " if rejected_arm == "with" else ""
+    assert (
+        f"{rejected_arm} param_overrides.{param} must be {requirement}{expected!r}"
+    ) in str(error.value)
+    assert "resolved_parameters" not in str(error.value)
+
+
+@pytest.mark.parametrize(("with_value", "without_value"), [(0.2, 1.0), (1, "1")])
+def test_report_prefixes_parameter_values_and_preserves_result_lines(
+    tmp_path, with_value, without_value,
+):
+    param = "entry_band_fraction"
+    runs = {}
+    for label, value in (("with", with_value), ("without", without_value)):
+        run_dir = write_report(
+            backtest_result([Decimal(1), Decimal(2)], [Decimal(0)] * 2, "0"),
+            manifest(
+                label, {} if label == "with" else {param: value},
+                resolved_enabled=value, param=param,
+            ),
+            tmp_path,
+        )
+        runs[label] = load_run(run_dir)
+
+    rendered = report(
+        runs["with"], runs["without"], param, seed=42,
+        with_value=with_value, without_value=without_value,
+    )
+
+    lines = rendered.splitlines()
+    assert lines[0] == f"比較: {param} with={with_value!r} → without={without_value!r}"
+    assert lines[1] == "with:"
+    assert "without:" in lines
+    assert f"{'metric':<28} {'with':>22} {'without':>22}" in lines
+    assert f"{'net_pnl_total':<28} {'3':>22} {'3':>22}" in lines
+    assert lines[-3] == "difference of means (with - without): 0.0 CI90 [-1, 1] seed=42"
+    assert lines[-2] == "difference of means (with - without) block CI90 [nan, nan] seed=42"
+    assert lines[-1] == f"verdict: {UNDECIDED_SAMPLE}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("0.2", 0.2),
+        ("1.0", 1.0),
+        ("true", True),
+        ("TRUE", True),
+        ("False", False),
+        ("3", 3),
+        ("+3", 3),
+        ("-3", -3),
+        ("1e2", 100.0),
+        ("abc", "abc"),
+    ],
+)
+def test_parse_param_value_preserves_scalar_types(text, expected):
+    parsed = parse_param_value(text)
+
+    assert parsed == expected
+    assert type(parsed) is type(expected)
+
+
+def test_main_passes_explicit_parameter_values_to_report(tmp_path, monkeypatch, capsys):
+    param = "entry_band_fraction"
+    with_dir = write_report(
+        backtest_result([Decimal(3), Decimal(4)], [Decimal(0)] * 2, "0"),
+        manifest("with-run", {}, resolved_enabled=0.2, param=param),
+        tmp_path,
+    )
+    without_dir = write_report(
+        backtest_result([Decimal(1), Decimal(2)], [Decimal(0)] * 2, "0"),
+        manifest("without-run", {param: 1.0}, param=param),
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "ablation_compare", "--with", str(with_dir), "--without", str(without_dir),
+            "--param", param, "--with-value", "0.2", "--without-value", "1.0", "--seed", "43",
+        ],
+    )
+
+    main()
+
+    rendered = capsys.readouterr().out
+    assert rendered.splitlines()[0] == f"比較: {param} with=0.2 → without=1.0"
+    assert "seed=43" in rendered
+    assert rendered.splitlines()[-1] == f"verdict: {KEEP}"

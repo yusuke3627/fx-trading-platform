@@ -6,6 +6,9 @@
         --param macro_confirmation_enabled \
         --seed 42
 
+真偽値以外のパラメータも比較でき、腕ごとの期待値は --with-value / --without-value で指定する。
+省略した場合の期待値はそれぞれ True / False。
+
 This CLI's --seed controls only bootstrap resampling. Research seeds drive
 execution shocks derived from stable per-order keys, so an extra ablation-leg
 fill does not shift later shared orders. Orders whose identity changes, such as
@@ -33,7 +36,9 @@ from trading.backtest.policy_event_study import (
     BOOTSTRAP_SAMPLES,
     bootstrap_interval,
 )
+from trading.backtest.research import parse_param_value
 from trading.backtest.run_coverage import run_coverage
+from trading.strategy.parameters import ParamValue
 
 KEEP = "有効のまま維持（寄与あり）"
 REMOVE = "無効にする（絞るだけで質が上がらない）"
@@ -156,7 +161,20 @@ def _period(manifest: dict) -> tuple[datetime, datetime] | None:
     )
 
 
-def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) -> None:
+def _matches_param_value(actual: object, expected: ParamValue) -> bool:
+    if isinstance(expected, bool):
+        return actual is expected
+    return type(actual) is type(expected) and actual == expected
+
+
+def verify_comparable(
+    with_: RunArtifacts,
+    without: RunArtifacts,
+    param: str,
+    *,
+    with_value: ParamValue = True,
+    without_value: ParamValue = False,
+) -> None:
     """Require identical reproduction inputs outside the ablated parameter.
 
     config_sha256 is excluded because the parameter override necessarily changes
@@ -166,13 +184,18 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
     A command still in flight at the end drops its candidate from the sample the
     same way.
     """
+    if _matches_param_value(with_value, without_value):
+        raise SystemExit(
+            f"runs are not comparable: {param} の期待値が両腕で同じです: "
+            f"with={with_value!r}, without={without_value!r}"
+        )
     reasons = []
     for field in COMPARABLE_FIELDS:
-        with_value = with_.manifest.get(field)
-        without_value = without.manifest.get(field)
-        if with_value != without_value:
+        with_field_value = with_.manifest.get(field)
+        without_field_value = without.manifest.get(field)
+        if with_field_value != without_field_value:
             reasons.append(
-                f"{field}: with={with_value!r}, without={without_value!r}"
+                f"{field}: with={with_field_value!r}, without={without_field_value!r}"
             )
 
     coverage_details = {
@@ -180,7 +203,7 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
         "without": "without coverage unavailable",
     }
     trailing_blackout_reasons = []
-    for arm, run in (("with", with_), ("without", without)):
+    for arm, run, expected in (("with", with_, with_value), ("without", without, without_value)):
         git_commit = run.manifest.get("git_commit")
         if not git_commit or git_commit == "unknown":
             reasons.append(
@@ -188,12 +211,11 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
                 "source state (git unavailable or run outside the repository)"
             )
         resolved = run.manifest.get("resolved_parameters", {})
-        expected_enabled = arm == "with"
-        resolved_enabled = resolved.get(param)
-        if resolved_enabled is not expected_enabled:
+        resolved_value = resolved.get(param)
+        if not _matches_param_value(resolved_value, expected):
             reasons.append(
                 f"{arm} resolved_parameters.{param} must be "
-                f"{expected_enabled}, got {resolved_enabled!r}; "
+                f"{expected!r}, got {resolved_value!r}; "
                 "instrument-specific parameters override defaults"
             )
         open_positions = run.metrics.get("open_positions_at_end")
@@ -251,13 +273,13 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
     without_overrides = dict(without.manifest.get("param_overrides", {}))
     if (
         param in with_overrides
-        and with_overrides[param] is not True
+        and not _matches_param_value(with_overrides[param], with_value)
     ):
         reasons.append(
-            f"with param_overrides.{param} must be omitted or True"
+            f"with param_overrides.{param} must be omitted or {with_value!r}"
         )
-    if without_overrides.get(param) is not False:
-        reasons.append(f"without param_overrides.{param} must be False")
+    if not _matches_param_value(without_overrides.get(param), without_value):
+        reasons.append(f"without param_overrides.{param} must be {without_value!r}")
 
     with_overrides.pop(param, None)
     without_overrides.pop(param, None)
@@ -399,8 +421,16 @@ def _manifest_value(manifest: dict, field: str) -> str:
     return str(manifest.get(field))
 
 
-def report(with_: RunArtifacts, without: RunArtifacts, param: str, seed: int) -> str:
-    verify_comparable(with_, without, param)
+def report(
+    with_: RunArtifacts,
+    without: RunArtifacts,
+    param: str,
+    seed: int,
+    *,
+    with_value: ParamValue = True,
+    without_value: ParamValue = False,
+) -> str:
+    verify_comparable(with_, without, param, with_value=with_value, without_value=without_value)
     with_blocks = [broker_day(at) for at in with_.entry_ats]
     without_blocks = [broker_day(at) for at in without.entry_ats]
     with_summary = arm_summary(
@@ -420,7 +450,7 @@ def report(with_: RunArtifacts, without: RunArtifacts, param: str, seed: int) ->
         seed,
     )
 
-    lines: list[str] = []
+    lines: list[str] = [f"比較: {param} with={with_value!r} → without={without_value!r}"]
     for label, run in (("with", with_), ("without", without)):
         lines.append(f"{label}:")
         lines.extend(
@@ -492,12 +522,23 @@ def main() -> None:
     parser.add_argument("--without", dest="without_run", type=Path, required=True)
     parser.add_argument(
         "--param", required=True,
-        help="boolean ablation parameter name (with=True, without=False)",
+        help="比較するパラメータ名（真偽値以外も指定可。既定: with=True, without=False）",
+    )
+    parser.add_argument(
+        "--with-value", type=parse_param_value, default=True,
+        help="with 側の期待値（既定: True）",
+    )
+    parser.add_argument(
+        "--without-value", type=parse_param_value, default=False,
+        help="without 側の期待値（既定: False）",
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    print(report(load_run(args.with_run), load_run(args.without_run), args.param, args.seed))
+    print(report(
+        load_run(args.with_run), load_run(args.without_run), args.param, args.seed,
+        with_value=args.with_value, without_value=args.without_value,
+    ))
 
 
 if __name__ == "__main__":

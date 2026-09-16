@@ -174,6 +174,37 @@ strategies:
       expected_horizon_seconds: 21600
       horizon_exit_enabled: false
 
+  range_edge_reversal:
+    enabled: false
+    status: RESEARCH_ONLY
+    instruments: [USDJPY]
+    timeframes:
+      regime: 1h
+      entry: 5m
+    parameters:
+      defaults:
+        range_lookback_bars: 24
+        range_stale_hours: 72
+        range_slope_lookback: 6
+        range_slope_max_atr: 0.5
+        range_width_min_atr: 1.5
+        ema_period: 20
+        atr_period: 14
+        reentry_max_bars: 6
+        entry_band_fraction: 0.2
+        stop_buffer_atr: 0.25
+        min_reward_to_risk: 1.5
+        take_profit_enabled: true
+        horizon_exit_enabled: true
+        expected_horizon_seconds: 3600
+        session_end_buffer_seconds: 3600
+        spread_gate:
+          max_spread_to_atr: "0.5"
+      instruments:
+        USDJPY:
+          absolute_max_spread_pips: "1.5"
+          session_profile: usdjpy_core
+
   monetary_policy_convergence:
     enabled: false
     status: RESEARCH_ONLY

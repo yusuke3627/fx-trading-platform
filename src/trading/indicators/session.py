@@ -52,3 +52,12 @@ def session_start(session: Session, ts: datetime) -> datetime:
             tzinfo=timezone,
         )
     return start.astimezone(UTC)
+
+
+def session_end(session: Session, ts: datetime) -> datetime:
+    """session_start が選ぶセッション窓の終了時刻を UTC で返す。"""
+    timezone = _SESSION_TIMEZONES[session]
+    _, _, end_hour = SESSION_WINDOWS_LOCAL[session]
+    start_local = session_start(session, ts).astimezone(timezone)
+    end = datetime.combine(start_local.date(), time(hour=end_hour), tzinfo=timezone)
+    return end.astimezone(UTC)

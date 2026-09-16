@@ -47,10 +47,6 @@ from trading.storage.repository import AccountSnapshotRepository
 
 DEFAULT_INTERVAL_SECONDS = 60.0
 
-# Published MT5 success code, duplicated like the constants in
-# execution/mt5/mapper.py so the module stays testable off Windows.
-RES_S_OK = 1
-
 
 def build_snapshot(
     info: Any,
@@ -134,18 +130,13 @@ class AccountSnapshotCollector:
         raw = self._mt5.history_deals_get(
             start - BROKER_TIME_MARGIN, end + BROKER_TIME_MARGIN
         )
-        # 執行系の adapter は MT5 の None を無条件で失敗として扱う。あちらは取得失敗を
-        # 「建玉が無い」と読むと exit が生きた建玉を飛ばすからで、ここは害の向きが逆になる
-        # ―― 監視用の系列なので、約定の無い日に落ちれば系列そのものが欠測する。空区間に
-        # None と空タプルのどちらが返るかは Windows 実機でしか確かめられず、issue #130 で
-        # 追跡している。
+        # MT5 は該当 deal が無いとき空タプルを返し、None は取得失敗だけを意味する
+        # （実機で確認済み）ため、adapter と同じく無条件に失敗として扱う。
         if raw is None:
             code, description = self._mt5.last_error()
-            if code != RES_S_OK:
-                raise MT5ConnectionError(
-                    f"history_deals_get failed: ({code}, {description})"
-                )
-            raw = ()
+            raise MT5ConnectionError(
+                f"history_deals_get failed: ({code}, {description})"
+            )
         return realized_pnl_between(raw, start=start, end=end)
 
     def run(self, interval_seconds: float) -> None:

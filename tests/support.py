@@ -444,12 +444,14 @@ def make_intent(
     protected: bool = True,
     target_quantity: str | None = "1000",
     delta_quantity: str | None = None,
+    stop_loss: str = "159.50",
+    take_profit: str | None = None,
 ) -> PositionIntent:
     protection = None
     if protected:
         protection = ProtectionSpec(
-            stop_loss_price=Decimal("159.50"),
-            take_profit_price=None,
+            stop_loss_price=Decimal(stop_loss),
+            take_profit_price=Decimal(take_profit) if take_profit else None,
             maximum_unprotected_seconds=30,
             source="STRATEGY",
         )

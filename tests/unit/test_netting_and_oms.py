@@ -242,6 +242,95 @@ def test_netting_command_side_matches_action_and_direction(
     assert execution_side(command.direction, command.action) is command.side
 
 
+def test_netting_reduce_does_not_carry_intent_protection():
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(-80000)),
+        clock=FixedClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(-60000),
+        intent=make_intent(
+            action=PositionAction.OPEN,
+            direction=PositionDirection.LONG,
+            stop_loss="158.00",
+            take_profit="159.50",
+        ),
+        volume_step=Decimal(1000),
+    )
+
+    assert command is not None
+    assert command.action is PositionAction.REDUCE
+    assert command.direction is PositionDirection.SHORT
+    assert command.side is ExecutionSide.BUY
+    assert command.quantity == Decimal(20000)
+    assert command.stop_loss_price is None
+    assert command.take_profit_price is None
+
+
+@pytest.mark.parametrize("desired_net", ["-1000", "0"])
+def test_netting_close_does_not_carry_intent_protection(desired_net: str):
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(1000)),
+        clock=FixedClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(desired_net),
+        intent=make_intent(
+            action=PositionAction.CLOSE,
+            direction=PositionDirection.SHORT,
+            take_profit="158.00",
+        ),
+        volume_step=Decimal(1000),
+    )
+
+    assert command is not None
+    assert command.action is PositionAction.CLOSE
+    assert command.direction is PositionDirection.LONG
+    assert command.side is ExecutionSide.SELL
+    assert command.quantity == Decimal(1000)
+    assert command.stop_loss_price is None
+    assert command.take_profit_price is None
+
+
+@pytest.mark.parametrize(
+    ("current_net", "desired_net", "action", "quantity"),
+    [
+        ("0", "-1000", PositionAction.OPEN, "1000"),
+        ("-80000", "-110000", PositionAction.INCREASE, "30000"),
+    ],
+)
+def test_netting_open_and_increase_keep_intent_protection(
+    current_net: str, desired_net: str, action: PositionAction, quantity: str
+):
+    oms = OMSService(
+        account_mode=AccountMode.NETTING,
+        broker=FakeBroker(net=Decimal(current_net)),
+        clock=FixedClock(),
+    )
+    command = oms.command_for_netting(
+        symbol="USDJPY",
+        desired_net=Decimal(desired_net),
+        intent=make_intent(
+            action=action,
+            direction=PositionDirection.SHORT,
+            take_profit="158.00",
+        ),
+        volume_step=Decimal(1000),
+    )
+
+    assert command is not None
+    assert command.action is action
+    assert command.direction is PositionDirection.SHORT
+    assert command.side is ExecutionSide.SELL
+    assert command.quantity == Decimal(quantity)
+    assert command.stop_loss_price == Decimal("159.50")
+    assert command.take_profit_price == Decimal("158.00")
+
+
 def test_netting_exit_after_protection_close_is_noop_not_reversal():
     # Plan captured current=-1000 -> desired 0. Broker-side SL then closed the
     # position (fresh net = 0). The command must be a NOOP, not a fresh order

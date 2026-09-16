@@ -62,11 +62,14 @@ GitHub issue: #173（`gh issue view 173` で全文を読める）
 
 コメントは 5〜6 行程度に収め、既存の日本語コメントの文体（`# 〜。` の説明文）に合わせる。
 
-### 3. `docs/SYSTEM_SPEC.md`
+### 3. `docs/SYSTEM_SPEC.md` は編集せず、移行は ADR に記録する
 
-系列表（§「GBP と EUR の方向感に用いる公式統計」）の `ea_hicp_headline_yoy_nsa` 行の取得経路を
-「Eurostat statistics API、`prc_hicp_minr` の TOTAL（`coicop18`）」に直す。ソース識別子の事実修正のみで、
-設計本文は変えない。`docs/adr/ADR-015-*.md` は決定時の記録なので変更しない。
+同文書は v2.0 で凍結されており、発行後の変更は本文改訂ではなく `docs/adr/` へ ADR を追加する運用
+（`AGENTS.md`）。§5.1 の系列表は v2.0 発行時点の `prc_hicp_manr` / CP00 を載せたままにする。
+
+代わりに `docs/adr/ADR-040-eurostat-hicp-successor-dataset.md` を新規作成し、後継 dataset への移行と
+§5.1 の当該行を置き換える旨を記録する。ソース選定を ADR で決めた前例は ADR-020（GBP/EUR の金利系列）。
+`docs/adr/ADR-015-*.md` は決定時の記録なので変更しない。
 
 ### 4. `tests/unit/test_gbp_eur_collectors.py`（Eurostat 節）
 

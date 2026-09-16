@@ -108,7 +108,7 @@ A を「有効側」、A−利確 / A−時間切れ / A−帯をそれぞれ「
 
 無効側が期末に建玉を残して `verify_comparable` が拒否した場合（H4 の時間切れなし腕と同じ形）は、その対を「評価不能」として記録する。
 
-利確と時間切れの対は比較 CLI で流す。帯の対は現在の CLI では流せない。`verify_comparable` が真偽値パラメータの腕（with 側 True / without 側 False）しか受け付けず、A−帯は `entry_band_fraction` が 1.0 だからである。run の前に、CLI が非真偽値の腕（比較対象パラメータの with / without の値を指定する形）を受け付けるようハーネスを広げる作業を別 PR で行い、帯の対も CLI で流すことを推奨する。それが間に合わない場合は、`ablation_compare.load_run` で両腕を読み、CLI の `verify_comparable` が行う検査をすべて手で当ててから `arm_summary` / `difference_interval` / `judge` を seed 42 で直接呼ぶ。検査は次のとおりで、1 つでも満たさなければその対は評価不能とする: `COMPARABLE_FIELDS` の全項目一致、`git_commit` が記録されていること、`resolved_parameters` と `param_overrides` が `entry_band_fraction` 以外で一致、`open_positions_at_end` と `pending_commands_at_end` が 0、`trades.csv` の `entry_at` がすべて期間内、末尾の空白（`period_to` − 最終 `entry_at`）が期間の 10%（`TRAILING_BLACKOUT_MAX_RATIO`）以下。規則は CLI と同一である。
+3 つの対はいずれも比較 CLI で流す。帯の対は比較対象パラメータが真偽値でないため、腕ごとの期待値を `--with-value` / `--without-value` で明示する（issue #178 で追加。省略すれば従来どおり with 側 True / without 側 False を要求する）。CLI が行う検査 ―― `COMPARABLE_FIELDS` の全項目一致、`git_commit` の記録、比較対象以外のパラメータの一致、`open_positions_at_end` と `pending_commands_at_end` が 0、末尾の空白が期間の 10%（`TRAILING_BLACKOUT_MAX_RATIO`）以下 ―― を 1 つでも満たさない対は評価不能とする。
 
 ### 保留条件
 
@@ -129,6 +129,7 @@ python -m trading.backtest.research --env backtest --symbol USDJPY --strategy ra
 python -m trading.backtest.research --env backtest --symbol USDJPY --strategy range_edge_reversal --from 2024-08-01T00:00:00+00:00 --to 2026-08-29T00:00:00+00:00 --seed 42 --param entry_band_fraction=1.0 --out reports/h6_no_band
 python -m trading.backtest.ablation_compare --with reports/h6_a/<run_id> --without reports/h6_no_tp/<run_id> --param take_profit_enabled --seed 42
 python -m trading.backtest.ablation_compare --with reports/h6_a/<run_id> --without reports/h6_no_horizon/<run_id> --param horizon_exit_enabled --seed 42
+python -m trading.backtest.ablation_compare --with reports/h6_a/<run_id> --without reports/h6_no_band/<run_id> --param entry_band_fraction --with-value 0.2 --without-value 1.0 --seed 42
 ```
 
 `research` は戦略の宣言 warmup ぶんの tick を `--from` の前から読む。頭出しが足りず `ensure_period_covered` が拒否したら、`--warmup-days` で縮めて通さず、保存 tick の範囲を確認する。本番の 2 年より先に 2 週間程度の smoke run で、signal が出ること・決済内訳に利確と時間切れが現れることを確かめてから流す。
@@ -139,7 +140,7 @@ python -m trading.backtest.ablation_compare --with reports/h6_a/<run_id> --witho
 - 同じ tick 集合には 74 日の欠損（2026-01-23〜04-08）があり、研究ハーネスは期間途中の欠損を検出しない。H4 と同じく、この 2 か月は評価が走らない。
 - CI90 は i.i.d. bootstrap で、同じセッションに固まる約定の自己相関を考慮しない（H4 と同じ限界）。block 区間（issue #164）は参考値にとどめる。
 - research seed は 1 組（42）で、執行の感応度は測らない。
-- 帯の対（A と A−帯）は現在の比較 CLI では流せない（真偽値パラメータの腕のみ対応）。run 前にハーネスを広げるか、上記の検査を手で当てる。
+- 帯の対（A と A−帯）を CLI で流すには、非真偽値の腕に対応した比較 CLI（issue #178）が要る。run より前に main へ入っていることを確かめてから流す。
 - run の成果物には signal の reason code が残らないので、システム決済 `CLOSE` のうち時間切れと反転 setup の内訳は保有時間による近似になる。
 - 4 腕は約定集合そのものが違い得る。件数差をそのまま「フィルターで落とした取引」の成績として読まない（issue #157 の検証方針）。
 - レンジ確定を「開始後に最初に評価した市場イベント」とする解釈、EMA の初期値の定義、「6 本」を観測本数とする解釈、利確を距離で載せる経路の丸め・遅延は、いずれも結果を見る前にここで固定したもので、run 後に変えない。

@@ -38,8 +38,8 @@ def test_trading_without_platform_is_a_config_error():
         InstrumentPolicy(platform_enabled=False, trading_enabled=True)
 
 
-@pytest.mark.parametrize("weekday", [-1, 7])
-def test_swap_triple_weekday_must_be_in_enum_range(weekday: int) -> None:
+@pytest.mark.parametrize("weekday", [-1, 0, 6, 7])
+def test_swap_triple_weekday_must_be_a_weekday(weekday: int) -> None:
     with pytest.raises(ValidationError, match="swap_triple_weekday"):
         InstrumentPolicy(swap_triple_weekday=weekday)
 

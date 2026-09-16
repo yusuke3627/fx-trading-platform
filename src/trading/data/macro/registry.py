@@ -32,9 +32,12 @@ US_TREASURY_2Y_YIELD = "us_treasury_2y_yield"
 JP_JGB_2Y_YIELD = "jp_jgb_2y_yield"
 
 UK_BANK_RATE = "uk_bank_rate"
-# CPI/HICP は指数でなく前年比を正本にする: 指数は基準改定で系列が切れる
-# （HICP は 2026-01 の 2025=100 移行で全 geo の指数系列が 2025-12 終端 —
-# 実測 2026-08-26）が、前年比は基準に依存しない（ADR-015）。
+# CPI/HICP は基準に依存しない前年比を正本にする（ADR-015）。
+# ただし dataset の差し替えは前年比でも系列を切るため、移行先を追う必要がある。
+# HICP は 2026-01 の ECOICOP ver.2 移行で prc_hicp_manr が 2025-12 終端
+# （実測 2026-09-17）。分類は ECOICOP v1 の CP00 から v2 の TOTAL に変わるため、
+# 重なる期間に段差があり得るが、HICP の新旧の前年比は 2025-01〜2025-12 の
+# 12 か月すべて一致した（実測 2026-09-17）。
 UK_CPI_HEADLINE_YOY_NSA = "uk_cpi_headline_yoy_nsa"
 UK_UNEMPLOYMENT_RATE_SA = "uk_unemployment_rate_sa"
 UK_REAL_GDP_GROWTH_QOQ_SA = "uk_real_gdp_growth_qoq_sa"

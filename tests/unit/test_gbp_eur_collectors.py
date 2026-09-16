@@ -303,6 +303,36 @@ def _jsonstat(
     }
 
 
+def test_eurostat_hicp_uses_minr_dataset_and_decodes_coicop18():
+    # flat index = geo * len(time) + time。EA21/06=4, EA21/07=5。
+    payload = {
+        "id": ["freq", "unit", "coicop18", "geo", "time"],
+        "size": [1, 1, 1, 3, 2],
+        "dimension": {
+            "freq": {"category": {"index": {"M": 0}}},
+            "unit": {"category": {"index": {"RCH_A": 0}}},
+            "coicop18": {"category": {"index": {"TOTAL": 0}}},
+            "geo": {"category": {"index": {"EA": 0, "EA20": 1, "EA21": 2}}},
+            "time": {"category": {"index": {"2026-06": 0, "2026-07": 1}}},
+        },
+        "value": {"0": 2.5, "1": 2.6, "2": 2.1, "3": 2.2, "4": 1.8, "5": 1.9},
+    }
+    transport = FakeTransport([payload])
+    batch = EurostatCollector(transport, clock=FixedClock(RETRIEVED)).collect(
+        EA_HICP_HEADLINE_YOY_NSA, YEARS
+    )
+
+    url, params = transport.get_calls[0]
+    assert url == (
+        "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/prc_hicp_minr"
+    )
+    assert params["coicop18"] == "TOTAL"
+    assert params["unit"] == "RCH_A"
+    assert "coicop" not in params
+    by_period = {o.observation_period: o.value for o in batch.observations}
+    assert by_period == {"2026-06": Decimal("1.8"), "2026-07": Decimal("1.9")}
+
+
 def test_eurostat_prefers_newest_composition_per_period():
     # flat index = geo * len(time) + time。EA21/Q1=0, EA21/Q2=1, EA20/Q1=2。
     payload = _jsonstat(
@@ -324,7 +354,7 @@ def test_eurostat_prefers_newest_composition_per_period():
 
 
 def test_eurostat_takes_older_composition_when_newest_is_absent():
-    # EA21 が dataset 未移行の期間は EA20 の値で埋まる（HICP の実測形）。
+    # EA21 が dataset 未移行の期間は EA20 の値で埋まる（旧 prc_hicp_manr の実測形）。
     payload = _jsonstat(
         geo_index={"EA20": 0},
         time_index={"2025-12": 0},

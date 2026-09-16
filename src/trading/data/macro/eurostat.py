@@ -2,7 +2,8 @@
 
 euro area の固定構成 geo コードは拡大のたびに切り替わり（2026-01 に
 EA20 -> EA21）、dataset ごとに移行のタイミングも違う — GDP は両方で応答、
-失業率は EA21 のみ、HICP は EA20 のみ（実測 2026-08-26）。そのため毎回
+失業率は EA21 のみ（実測 2026-08-26）。HICP（prc_hicp_minr）は
+EA / EA20 / EA21 の 3 つとも応答する（実測 2026-09-17）。そのため毎回
 全候補 geo を並べて要求し、期間ごとに「値が実在する最新構成」を採用する。
 
 dissemination API は最新値しか返さない: vintage 軸が存在しないため
@@ -34,7 +35,7 @@ GEO_CANDIDATES = ("EA21", "EA20", "EA")
 # ここで一意に絞り切る（絞れていない場合はデコーダが落とす）。
 SERIES: dict[str, tuple[str, dict[str, str]]] = {
     EA_HICP_HEADLINE_YOY_NSA: (
-        "prc_hicp_manr", {"coicop": "CP00", "unit": "RCH_A"},
+        "prc_hicp_minr", {"coicop18": "TOTAL", "unit": "RCH_A"},
     ),
     EA_UNEMPLOYMENT_RATE_SA: (
         "une_rt_m", {"s_adj": "SA", "age": "TOTAL", "sex": "T", "unit": "PC_ACT"},

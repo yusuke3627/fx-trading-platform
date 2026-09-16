@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -12,6 +13,7 @@ from tests.support import FakeEventRepository, FakeObservationRepository
 from trading.backtest.research import (
     broker_label_to_known,
     capture_bars,
+    open_market_seconds,
     parse_param_override,
     reconstructed,
     with_param_overrides,
@@ -216,6 +218,37 @@ def test_reconstruction_follows_the_servers_dst_calendar():
     assert broker_label_to_known(sunday_open, anchor) == sunday_open - timedelta(
         hours=2
     )
+
+
+def test_open_market_seconds_uses_utc_labels_for_jst_inputs():
+    jst = ZoneInfo("Asia/Tokyo")
+    jst_seconds = open_market_seconds(
+        datetime(2026, 8, 22, 8, 59, 58, tzinfo=jst),
+        datetime(2026, 8, 24, 9, 0, tzinfo=jst),
+    )
+
+    assert jst_seconds == 2.0
+
+    utc_seconds = open_market_seconds(
+        datetime(2026, 8, 21, 23, 59, 58, tzinfo=UTC),
+        datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
+    )
+
+    assert utc_seconds == 2.0
+    assert utc_seconds == jst_seconds
+
+
+def test_period_coverage_accepts_jst_tail_with_utc_monday_end():
+    from trading.backtest.research import ensure_period_covered
+
+    read_from = START - timedelta(days=10)
+    first = tick(read_from + timedelta(minutes=30), START)
+    last = tick(
+        datetime(2026, 8, 22, 8, 59, 58, tzinfo=ZoneInfo("Asia/Tokyo")), START
+    )
+    monday_end = END + timedelta(days=2)
+
+    ensure_period_covered((first, last), read_from, START, monday_end)
 
 
 def test_period_coverage_rejects_the_shapes_that_would_report_plausibly():

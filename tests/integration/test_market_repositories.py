@@ -47,27 +47,48 @@ def store(ticks_repo, ticks) -> int:
     return ticks_repo.insert_many(ticks, source="TEST", ingestion_run=uuid4())
 
 
-def wait_for_tick_lock(observer, pid: int, finished: threading.Event) -> None:
+def waits_for_tick_lock(observer, pid: int) -> bool:
     from trading.storage.postgres import _TICK_ADVISORY_LOCK_CLASS_ID
 
+    row = observer.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE pid = %s AND locktype = 'advisory'
+              AND classid = %s::oid AND objsubid = 2 AND NOT granted
+        ) AS waiting
+        """,
+        (pid, _TICK_ADVISORY_LOCK_CLASS_ID),
+    ).fetchone()
+    observer.commit()
+    return row["waiting"]
+
+
+def waits_for_the_tick_table(observer, pid: int) -> bool:
+    row = observer.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE pid = %s AND locktype = 'relation'
+              AND relation = 'market_ticks'::regclass AND NOT granted
+        ) AS waiting
+        """,
+        (pid,),
+    ).fetchone()
+    observer.commit()
+    return row["waiting"]
+
+
+def wait_until(check, finished: threading.Event, what: str) -> None:
     deadline = time.monotonic() + 5
-    while True:
-        row = observer.execute(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM pg_locks
-                WHERE pid = %s AND locktype = 'advisory'
-                  AND classid = %s::oid AND objsubid = 2 AND NOT granted
-            ) AS waiting
-            """,
-            (pid, _TICK_ADVISORY_LOCK_CLASS_ID),
-        ).fetchone()
-        observer.commit()
-        if row["waiting"]:
-            return
-        assert not finished.is_set(), "operation finished without waiting for the tick lock"
-        assert time.monotonic() < deadline, "tick lock wait was not observed"
+    while not check():
+        assert not finished.is_set(), f"operation finished without waiting for {what}"
+        assert time.monotonic() < deadline, f"the wait for {what} was not observed"
         finished.wait(0.01)
+
+
+def wait_for_tick_lock(observer, pid: int, finished: threading.Event) -> None:
+    wait_until(lambda: waits_for_tick_lock(observer, pid), finished, "the tick lock")
 
 
 def insert_in_thread(quotes, started, finished, pids, counts, errors) -> None:
@@ -454,6 +475,70 @@ def test_stream_refuses_to_start_over_an_unsettled_write(repos, monkeypatch):
     assert [t.time for t in ticks.stream_between(symbol, at(minutes=0), at(minutes=60))] == [
         at(minutes=0)
     ]
+
+
+def test_stream_reads_the_ceiling_before_taking_the_write_lock(repos, monkeypatch):
+    # The order is the whole safeguard. Taking the key first and releasing it
+    # before reading the ceiling would let a writer that starts in between
+    # allocate an id below the ceiling and stay uncommitted inside the pin.
+    # With the ceiling read blocked by an exclusive table lock, a reader that
+    # still follows the order is waiting on the table and has not asked for
+    # the key yet — a reader that asked first would be queued behind the
+    # holder below instead.
+    from trading.storage import postgres
+
+    monkeypatch.setattr(postgres, "_STREAM_SETTLE_TIMEOUT_SECONDS", 0.5)
+    ticks, _, symbol = repos
+    store(ticks, [make_tick("158.840", "158.844", time=at(minutes=0), symbol=symbol)])
+    started, finished = threading.Event(), threading.Event()
+    pids, errors = [], []
+
+    def read():
+        try:
+            with postgres.connect(DSN) as reader:
+                pids.append(reader.info.backend_pid)
+                started.set()
+                list(postgres.PostgresMarketTickRepository(reader).stream_between(
+                    symbol, at(minutes=0), at(minutes=60)
+                ))
+        except (postgres.psycopg.Error, RuntimeError) as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=read)
+    with (
+        postgres.connect(DSN) as holder,
+        postgres.connect(DSN) as blocker,
+        postgres.connect(DSN) as observer,
+    ):
+        holder.execute(
+            "SELECT pg_advisory_lock(%s, hashtext(%s))",
+            (postgres._TICK_ADVISORY_LOCK_CLASS_ID, symbol),
+        )
+        holder.commit()
+        try:
+            blocker.execute("LOCK TABLE market_ticks IN ACCESS EXCLUSIVE MODE")
+            worker.start()
+            assert started.wait(5)
+            wait_until(
+                lambda: waits_for_the_tick_table(observer, pids[0]),
+                finished,
+                "the ceiling read",
+            )
+            assert not waits_for_tick_lock(observer, pids[0])
+        finally:
+            blocker.rollback()
+            # Once the ceiling read goes through, the key is asked for and the
+            # held key turns into the usual timeout.
+            assert finished.wait(5)
+            worker.join(timeout=5)
+            holder.execute(
+                "SELECT pg_advisory_unlock(%s, hashtext(%s))",
+                (postgres._TICK_ADVISORY_LOCK_CLASS_ID, symbol),
+            )
+            holder.commit()
+    assert [type(error) for error in errors] == [RuntimeError]
 
 
 def test_stream_does_not_wait_for_another_symbols_writer(repos, monkeypatch):

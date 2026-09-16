@@ -45,7 +45,13 @@ commit または rollback を終えている。それ以後にキーを取得す
 
 順序は「天井読み、ロック取得・解放」とする。先にロックを解放すると、その後に対象 writer が
 X を採番して未コミットのまま、別 symbol の writer が Y > X を commit できる。
-その状態で天井を読むと、未確定の X が天井内に入ってしまう。
+その状態で天井を読むと、未確定の X が天井内に入ってしまう。**この順序が逆になると、
+ピンは例外を出さずに壊れる**（末尾の件数照合で最終的には失敗するが、それは replay を
+流し切った後になる）。旧実装ではピン時刻の取り方がこの性質を守っていたが、時刻比較を
+やめた本実装では順序そのものが唯一の安全弁になるため、回帰テストを置く。
+`test_stream_reads_the_ceiling_before_taking_the_write_lock` は、天井読みをテーブルロックで
+止めた状態の読み手が `market_ticks` の relation lock を待っており、キーをまだ要求していない
+ことを確認する。順序を入れ替えるとこのテストだけが落ちる。
 
 reader と writer は同じチェックアウトから動く運用のため、`git pull` 後は collector を再起動し、
 全 writer に新しい実装が反映されてから research を実行する。実行ホストの collector は起動時タスクと
@@ -69,14 +75,18 @@ reader と writer は同じチェックアウトから動く運用のため、`g
   **取りこぼしが必ず `RuntimeError` になる保証はなく、全 writer の参加が必要である。**
   これは research の集合の再現性に関する制約であり、PIT の
   `known_at <= replay_clock.now()` という時刻条件の変更ではない。
-- 書き込み側がキーを保持する時間はバッチの挿入時間そのもの。実測（PostgreSQL 14.18、ローカル）で
-  1 行 0.004 秒、100 行 0.004 秒、Dukascopy の 1 時間ぶんに相当する 5,000 行で 0.066 秒。
-  live collector の poll 間隔に対して無視できるので、同一 symbol への取り込みと live 収集を
-  併走させても実用上の待ちにはならない。
+- 同一 symbol の書き込み同士は INSERT トランザクション単位で直列化する。キーを保持する時間は
+  バッチの挿入時間そのもので、実測（PostgreSQL 14.18、ローカル）は 1 行 0.004 秒、100 行 0.004 秒、
+  Dukascopy の 1 時間ぶんに相当する 5,000 行で中央値 0.060 秒・最大 0.075 秒。live collector の
+  poll 間隔 0.2 秒（`market.tick_poll_interval_seconds`）より短く、待たされても poll が
+  後ろへずれるだけで、ずれた分の quote は次の poll が tick history から埋める
+  （`POLL_GAP_MAX` は 60 秒）。実行ホストで同一 symbol が競合するのは live collector と
+  Dukascopy 取り込みの組み合わせで、別 symbol の collector 同士は競合しない。
 - 読み手はキーを取得したトランザクションを即座に commit し、行を返す前に解放する。stream の
   実行中は保持しない（実測: 1 件目の取得後に保持している TICK advisory lock は 0 件、同時の
   同一 symbol 書き込みは 0.016 秒で完了）。
 - 書き込み側の回帰テストで、ロック待機中は identity sequence が進まないことと、
-  混在バッチの全 symbol が対象になることを検証する。ソース走査テストで
-  `INSERT INTO market_ticks` が `storage/postgres.py` の 1 か所にあることを維持する。
+  混在バッチの全 symbol が対象になることを検証する。ソース走査テストで、`market_ticks` への
+  書き込み文（INSERT / UPDATE / DELETE / MERGE / TRUNCATE / COPY）が
+  `storage/postgres.py` の 1 か所だけであることを維持する。
   スキーマ、ページング、指紋照合、他テーブルのロック方式は変更しない。

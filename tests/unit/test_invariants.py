@@ -42,15 +42,25 @@ def test_strategy_and_intelligence_never_touch_broker_or_clock():
     assert violations == [], violations
 
 
-def test_market_tick_inserts_only_use_the_participating_repository():
+def test_market_tick_writes_only_use_the_participating_repository():
     # The research stream waits for the symbol's advisory lock instead of for
-    # every writer of the table (ADR-041), so a second INSERT site would be a
-    # writer the stream never waits for.
-    insert_pattern = re.compile(r'\bINSERT\s+INTO\s+"?market_ticks\b', re.IGNORECASE)
+    # every writer of the table (ADR-041), so a second write site would be a
+    # writer the stream never waits for. Every statement that reaches the rows
+    # is listed, not INSERT alone: the pin argument covers the whole table.
+    write_pattern = re.compile(
+        r"""\b(?: INSERT \s+ INTO
+                | MERGE \s+ INTO
+                | UPDATE
+                | DELETE \s+ FROM
+                | TRUNCATE (?: \s+ TABLE )?
+                | COPY
+            ) \s+ (?: "?public"? \. )? "? market_ticks \b""",
+        re.IGNORECASE | re.VERBOSE,
+    )
     sites = [
         path.relative_to(SRC).as_posix()
         for path in SRC.rglob("*.py")
-        for _ in insert_pattern.finditer(path.read_text())
+        for _ in write_pattern.finditer(path.read_text())
     ]
     assert sites == ["storage/postgres.py"], sites
 

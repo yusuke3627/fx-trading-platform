@@ -60,7 +60,9 @@ setup 側は現状のまま（構造読みの実本数 `lookback + 5` で足り�
 
 `failed_spike_reversal` は `0.2.0`、`post_event_failed_breakout` は `0.2.0` のまま。理由は PR 本文に書く
 （判断の要点は「決定関数は変わらない」「比較不能性は `git_commit` / `git_diff_sha256` / `warmup_days` が
-既に担保している」）。**コードに「版を上げなかった理由」のコメントを足さない。**
+既に担保している」）。副作用として「同じ `strategy_version` のまま warmup が変わるので、今後この 2 戦略を
+再測定した結果は本 PR より前の run と厳密には同条件ではない」ことも PR 本文に書く。
+**コードに「版を上げなかった理由」のコメントを足さない。**
 
 ### 4. テスト（`tests/unit/test_research_runner.py`）
 

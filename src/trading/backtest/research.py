@@ -126,12 +126,18 @@ EDGE_GAP_TOLERANCE_SECONDS = 3600.0
 def open_market_seconds(start: datetime, end: datetime) -> float:
     """Label-axis open-market time inside [start, end).
 
+    Broker labels are stamped as UTC (ADR-005), while psycopg renders
+    Tick.time in the session TimeZone. Normalize back to UTC before taking
+    label weekdays and date boundaries.
+
     Under the New York-close anchor the label weekend — Saturday and Sunday
     dates on the broker's wall clock — is exactly the FX closure, so weekday
     label time is the time the market was quoting. Holidays are not
     modelled: a gap over a closed weekday counts as missing data and is
     refused, which errs on the honest side.
     """
+    start = start.astimezone(UTC)
+    end = end.astimezone(UTC)
     total = 0.0
     cursor = start
     while cursor < end:

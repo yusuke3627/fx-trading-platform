@@ -10,6 +10,10 @@ This CLI's --seed controls only bootstrap resampling. Research seeds drive
 execution shocks derived from stable per-order keys, so an extra ablation-leg
 fill does not shift later shared orders. Orders whose identity changes, such as
 their timestamp or side, receive different shocks.
+
+Intervals resampling whole broker business days are shown for reference.
+Judgments use the pre-registered i.i.d. intervals; adopting block intervals for
+decisions requires an updated pre-registration.
 """
 from __future__ import annotations
 
@@ -20,7 +24,7 @@ import random
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -92,6 +96,9 @@ class ArmSummary:
     max_drawdown: Decimal
     low: float
     high: float
+    block_low: float
+    block_high: float
+    blocks: int
 
 
 def load_run(run_dir: Path) -> RunArtifacts:
@@ -110,7 +117,7 @@ def load_run(run_dir: Path) -> RunArtifacts:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     pnls_by_entry: dict[str, Decimal] = {}
-    entry_ats: list[datetime] = []
+    entry_ats_by_entry: dict[str, datetime] = {}
     row_count = 0
     with trades_path.open(newline="", encoding="utf-8") as source:
         reader = csv.DictReader(source)
@@ -123,7 +130,7 @@ def load_run(run_dir: Path) -> RunArtifacts:
             if not entry_id:
                 raise SystemExit("trades.csv contains an empty entry_id")
             row_count += 1
-            entry_ats.append(datetime.fromisoformat(row["entry_at"]))
+            entry_ats_by_entry.setdefault(entry_id, datetime.fromisoformat(row["entry_at"]))
             pnls_by_entry[entry_id] = (
                 pnls_by_entry.get(entry_id, Decimal(0))
                 + Decimal(row["net_pnl"]) + Decimal(row["carry"])
@@ -136,7 +143,7 @@ def load_run(run_dir: Path) -> RunArtifacts:
         )
     return RunArtifacts(
         manifest=manifest, metrics=summary["metrics"], pnls=list(pnls_by_entry.values()),
-        entry_ats=entry_ats,
+        entry_ats=list(entry_ats_by_entry.values()),
     )
 
 
@@ -269,13 +276,14 @@ def verify_comparable(with_: RunArtifacts, without: RunArtifacts, param: str) ->
 
 
 def arm_summary(
-    pnls: Sequence[Decimal], max_drawdown: Decimal, seed: int
+    pnls: Sequence[Decimal], blocks: Sequence[date], max_drawdown: Decimal, seed: int
 ) -> ArmSummary:
     count = len(pnls)
     total = sum(pnls, Decimal(0))
     mean = total / count if count else Decimal("NaN")
     hit_rate = sum(pnl > 0 for pnl in pnls) / count if count else float("nan")
     low, high = bootstrap_interval([float(pnl) for pnl in pnls], seed)
+    block_low, block_high = block_bootstrap_interval([float(pnl) for pnl in pnls], blocks, seed)
     return ArmSummary(
         count=count,
         total=total,
@@ -284,7 +292,66 @@ def arm_summary(
         max_drawdown=max_drawdown,
         low=low,
         high=high,
+        block_low=block_low,
+        block_high=block_high,
+        blocks=len(set(blocks)),
     )
+
+
+def broker_day(label: datetime) -> date:
+    """entry_at は broker ラベル軸なので、その暦日が営業日（NY 17:00 = 深夜）になる。"""
+    return label.astimezone(UTC).date()
+
+
+def _daily_pnls(pnls: Sequence[float], blocks: Sequence[date]) -> list[list[float]]:
+    by_day: dict[date, list[float]] = {}
+    for pnl, day in zip(pnls, blocks, strict=True):
+        by_day.setdefault(day, []).append(pnl)
+    return [by_day[day] for day in sorted(by_day)]
+
+
+def block_bootstrap_interval(
+    pnls: Sequence[float], blocks: Sequence[date], seed: int
+) -> tuple[float, float]:
+    daily_pnls = _daily_pnls(pnls, blocks)
+    if len(daily_pnls) < 2:
+        return (float("nan"), float("nan"))
+    rng = random.Random(seed)
+    means = sorted(
+        statistics.fmean(
+            pnl for day in rng.choices(daily_pnls, k=len(daily_pnls)) for pnl in day
+        )
+        for _ in range(BOOTSTRAP_SAMPLES)
+    )
+    tail = (1.0 - BOOTSTRAP_LEVEL) / 2.0
+    low = means[int(tail * (len(means) - 1))]
+    high = means[int((1.0 - tail) * (len(means) - 1))]
+    return (low, high)
+
+
+def block_difference_interval(
+    with_pnls: Sequence[float],
+    with_blocks: Sequence[date],
+    without_pnls: Sequence[float],
+    without_blocks: Sequence[date],
+    seed: int,
+) -> tuple[float, float]:
+    with_days = _daily_pnls(with_pnls, with_blocks)
+    without_days = _daily_pnls(without_pnls, without_blocks)
+    if len(with_days) < 2 or len(without_days) < 2:
+        return (float("nan"), float("nan"))
+    rng = random.Random(seed)
+    differences = sorted(
+        statistics.fmean(pnl for day in rng.choices(with_days, k=len(with_days)) for pnl in day)
+        - statistics.fmean(
+            pnl for day in rng.choices(without_days, k=len(without_days)) for pnl in day
+        )
+        for _ in range(BOOTSTRAP_SAMPLES)
+    )
+    tail = (1.0 - BOOTSTRAP_LEVEL) / 2.0
+    low = differences[int(tail * (len(differences) - 1))]
+    high = differences[int((1.0 - tail) * (len(differences) - 1))]
+    return (low, high)
 
 
 def difference_interval(
@@ -334,15 +401,22 @@ def _manifest_value(manifest: dict, field: str) -> str:
 
 def report(with_: RunArtifacts, without: RunArtifacts, param: str, seed: int) -> str:
     verify_comparable(with_, without, param)
+    with_blocks = [broker_day(at) for at in with_.entry_ats]
+    without_blocks = [broker_day(at) for at in without.entry_ats]
     with_summary = arm_summary(
-        with_.pnls, Decimal(with_.metrics["max_drawdown"]), seed
+        with_.pnls, with_blocks, Decimal(with_.metrics["max_drawdown"]), seed
     )
     without_summary = arm_summary(
-        without.pnls, Decimal(without.metrics["max_drawdown"]), seed
+        without.pnls, without_blocks, Decimal(without.metrics["max_drawdown"]), seed
     )
     difference = difference_interval(
         [float(pnl) for pnl in with_.pnls],
         [float(pnl) for pnl in without.pnls],
+        seed,
+    )
+    block_difference = block_difference_interval(
+        [float(pnl) for pnl in with_.pnls], with_blocks,
+        [float(pnl) for pnl in without.pnls], without_blocks,
         seed,
     )
 
@@ -388,11 +462,22 @@ def report(with_: RunArtifacts, without: RunArtifacts, param: str, seed: int) ->
                 f"{f'[{_format_float(with_summary.low)}, {_format_float(with_summary.high)}]':>22} "
                 f"{f'[{_format_float(without_summary.low)}, {_format_float(without_summary.high)}]':>22}"
             ),
+            f"{'blocks':<28} {with_summary.blocks:>22} {without_summary.blocks:>22}",
+            (
+                f"{'expectancy_ci90_block':<28} "
+                f"{f'[{_format_float(with_summary.block_low)}, {_format_float(with_summary.block_high)}]':>22} "
+                f"{f'[{_format_float(without_summary.block_low)}, {_format_float(without_summary.block_high)}]':>22}"
+            ),
             "",
             (
                 "difference of means (with - without): "
                 f"{with_summary.mean - without_summary.mean} "
                 f"CI90 [{_format_float(difference[0])}, {_format_float(difference[1])}] "
+                f"seed={seed}"
+            ),
+            (
+                "difference of means (with - without) block "
+                f"CI90 [{_format_float(block_difference[0])}, {_format_float(block_difference[1])}] "
                 f"seed={seed}"
             ),
             f"verdict: {judge(with_summary, without_summary, difference)}",

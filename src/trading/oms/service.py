@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from trading.backtest.clock import Clock
 from trading.domain.account import AccountMode
-from trading.domain.intent import PositionIntent
+from trading.domain.intent import PositionIntent, ProtectionSpec
 from trading.domain.order import (
     CommandState,
     ExecutionCommand,
@@ -130,6 +130,7 @@ class OMSService:
         # current net — never the intent's direction.
         resulting_net = Decimal(0) if crosses_zero else desired_net
         action, direction = intent.action, intent.direction
+        protection = intent.protection
         if abs(resulting_net) < abs(current_net):
             action = (
                 PositionAction.CLOSE if resulting_net == 0 else PositionAction.REDUCE
@@ -137,6 +138,9 @@ class OMSService:
             direction = (
                 PositionDirection.LONG if current_net > 0 else PositionDirection.SHORT
             )
+            # Netting reductions do not carry protection for the remaining position;
+            # the intent's prices may belong to the opposite opening direction.
+            protection = None
         return self._command(
             intent,
             symbol=symbol,
@@ -144,6 +148,7 @@ class OMSService:
             action=action,
             direction=direction,
             quantity=quantity,
+            protection=protection,
             sequence=sequence,
             expires_at=expires_at,
         )
@@ -167,6 +172,7 @@ class OMSService:
             action=intent.action,
             direction=intent.direction,
             quantity=quantity,
+            protection=intent.protection,
             sequence=sequence,
             expires_at=expires_at,
         )
@@ -226,6 +232,7 @@ class OMSService:
             action=intent.action,
             direction=intent.direction,
             quantity=exit_quantity,
+            protection=intent.protection,
             ticket=ticket,
             sequence=sequence,
             expires_at=expires_at,
@@ -253,6 +260,7 @@ class OMSService:
         action: PositionAction,
         direction: PositionDirection,
         quantity: Decimal,
+        protection: ProtectionSpec | None,
         ticket: str | None = None,
         sequence: int = 0,
         expires_at: datetime | None = None,
@@ -274,12 +282,8 @@ class OMSService:
             action=action,
             direction=direction,
             quantity=quantity,
-            stop_loss_price=(
-                intent.protection.stop_loss_price if intent.protection else None
-            ),
-            take_profit_price=(
-                intent.protection.take_profit_price if intent.protection else None
-            ),
+            stop_loss_price=protection.stop_loss_price if protection else None,
+            take_profit_price=protection.take_profit_price if protection else None,
             broker_position_ticket=ticket,
             expires_at=expires_at,
             state=CommandState.CREATED,

@@ -26,6 +26,7 @@ from trading.data.macro.registry import (
     US_CPI_HEADLINE_SA,
     US_REAL_GDP_GROWTH_SAAR,
     US_TREASURY_2Y_YIELD,
+    US_UNEMPLOYMENT_RATE_SA,
 )
 from trading.domain.economic import EconomicObservation
 
@@ -159,13 +160,14 @@ def test_merge_latest_periods_across_unordered_batches_preserves_inputs() -> Non
     assert [observation.model_dump() for observation in first_batch + second_batch] == snapshots
 
 
-def _patch_ons_run(
+def _patch_collector_run(
     monkeypatch: pytest.MonkeyPatch,
+    source: str,
     payloads: list[dict],
     series: list[str],
     observation_repo: Mock,
 ) -> tuple[FakeTransport, Mock]:
-    """collector.main() を ONS ソースで回すための差し替え一式。"""
+    """collector.main() を DB・ネットワーク無しで回すための差し替え一式。"""
     transport = FakeTransport(list(payloads))
     event_repo = Mock()
     postgres = SimpleNamespace(
@@ -177,9 +179,9 @@ def _patch_ons_run(
     monkeypatch.setenv("TEST_FRESHNESS_DSN", "test-dsn")
     monkeypatch.setattr("trading.config.load_config", lambda _: SimpleNamespace(
         storage=SimpleNamespace(dsn_env="TEST_FRESHNESS_DSN"),
-        macro_data=SimpleNamespace(),
+        macro_data=SimpleNamespace(bls_api_key_env="TEST_BLS_API_KEY"),
     ))
-    argv = ["collector", "--source", "ons"]
+    argv = ["collector", "--source", source]
     for name in series:
         argv += ["--series", name]
     monkeypatch.setattr(sys, "argv", argv)
@@ -202,8 +204,9 @@ def test_collector_checks_freshness_after_storing_all_batches(
 ) -> None:
     observation_repo = Mock()
     observation_repo.insert_many.return_value = new_per_batch
-    transport, event_repo = _patch_ons_run(
+    transport, event_repo = _patch_collector_run(
         monkeypatch,
+        "ons",
         [
             {"months": [{"date": f"2026 {month}", "value": "1.25", "year": "2026"}]}
             for month in months
@@ -250,8 +253,9 @@ def test_collector_reports_series_outside_collection_window_after_all_batches(
 ) -> None:
     observation_repo = Mock()
     observation_repo.insert_many.side_effect = len
-    transport, event_repo = _patch_ons_run(
+    transport, event_repo = _patch_collector_run(
         monkeypatch,
+        "ons",
         [
             {"months": [{"date": "2024 DEC", "value": "1.25", "year": "2024"}]},
             {"months": [{"date": f"2026 {cpi_month}", "value": "1.25", "year": "2026"}]},
@@ -267,7 +271,7 @@ def test_collector_reports_series_outside_collection_window_after_all_batches(
     assert len(transport.get_calls) == 3
     assert str(error.value) == (
         "ons: collection freshness check failed\n"
-        f"no observations: {transport.get_calls[0][0]}{stale_detail}"
+        f"no observations from {transport.get_calls[0][0]}{stale_detail}"
     )
     assert capsys.readouterr().out == "ons: parsed 2 observations, stored 2 new\n"
     assert observation_repo.insert_many.call_count == 3
@@ -282,3 +286,37 @@ def test_collector_reports_series_outside_collection_window_after_all_batches(
         call.args[0].source_uri for call in event_repo.insert_raw_archive.call_args_list
     ]
     assert archived_uris == [url for url, _ in transport.get_calls]
+
+
+def test_collector_stores_the_partial_response_before_reporting_missing_series(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observation_repo = Mock()
+    observation_repo.insert_many.side_effect = len
+    transport, event_repo = _patch_collector_run(
+        monkeypatch,
+        "bls",
+        [{
+            "status": "REQUEST_SUCCEEDED",
+            "Results": {"series": [{
+                "seriesID": "CUSR0000SA0",
+                "data": [{"year": "2026", "period": "M08", "value": "321.500"}],
+            }]},
+        }],
+        [US_CPI_HEADLINE_SA, US_UNEMPLOYMENT_RATE_SA],
+        observation_repo,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        collector.main()
+
+    assert str(error.value) == (
+        "bls: collection freshness check failed\n"
+        f"no observations for {US_UNEMPLOYMENT_RATE_SA}"
+    )
+    # 欠落を報告する前に、応答に含まれていた系列と raw response は保存済み。
+    assert capsys.readouterr().out == "bls: parsed 1 observations, stored 1 new\n"
+    assert len(transport.post_calls) == 1
+    assert observation_repo.insert_many.call_count == 1
+    assert event_repo.insert_raw_archive.call_count == 1

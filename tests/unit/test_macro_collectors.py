@@ -281,17 +281,21 @@ def test_bls_key_is_optional():
     assert "registrationkey" not in transport.post_calls[0][1]
 
 
-def test_bls_missing_requested_series_raises():
+def test_bls_reports_missing_requested_series_without_dropping_the_rest():
     # 系列 ID が廃止されると、status は REQUEST_SUCCEEDED のままその系列
-    # だけが Results.series から落ちる。
+    # だけが Results.series から落ちる。取得できた系列は保存できるよう、
+    # 例外ではなくバッチに載せて運ぶ。
     payload = _bls_payload()
     payload["Results"]["series"] = payload["Results"]["series"][:1]
     transport = FakeTransport([payload])
 
-    with pytest.raises(ValueError, match=US_UNEMPLOYMENT_RATE_SA):
-        BLSCollector(transport, None, clock=FixedClock(RETRIEVED)).collect(
-            [US_CPI_HEADLINE_SA, US_UNEMPLOYMENT_RATE_SA], years=[2025, 2026]
-        )
+    batch = BLSCollector(transport, None, clock=FixedClock(RETRIEVED)).collect(
+        [US_CPI_HEADLINE_SA, US_UNEMPLOYMENT_RATE_SA], years=[2025, 2026]
+    )
+
+    assert batch.missing_series == (US_UNEMPLOYMENT_RATE_SA,)
+    assert {o.series for o in batch.observations} == {US_CPI_HEADLINE_SA}
+    assert len(batch.raw_events) == 1
 
 
 def test_bls_failure_status_raises():

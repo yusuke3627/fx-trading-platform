@@ -156,19 +156,22 @@ def main() -> None:
     stored = 0
     latest: dict[str, str] = {}
     empty_batches: list[str] = []
+    missing_series: list[str] = []
     for batch in batches():
         parsed += len(batch.observations)
         stored += _store(batch, observation_repo, event_repo)
         latest = merge_latest_periods(latest, batch.observations)
+        missing_series.extend(batch.missing_series)
         if not batch.observations:
             empty_batches.append(
                 ", ".join(str(event.source_uri) for event in batch.raw_events)
             )
     print(f"{args.source}: parsed {parsed} observations, stored {stored} new")
     stale = stale_series(latest, clock.now())
-    if empty_batches or stale:
+    if empty_batches or missing_series or stale:
         details = "\n".join(
-            [f"no observations: {source_uris}" for source_uris in empty_batches]
+            [f"no observations from {source_uris}" for source_uris in empty_batches]
+            + [f"no observations for {series}" for series in missing_series]
             + [
                 f"{item.series}: latest period {item.latest_period}, "
                 f"age {item.age_days} days, limit {item.limit_days} days"

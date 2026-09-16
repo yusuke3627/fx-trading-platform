@@ -84,16 +84,15 @@ class BLSCollector:
                         known_at=retrieved_at,
                     )
                 )
+        # 1 リクエストで全系列を返す API なので、系列 ID の廃止は
+        # REQUEST_SUCCEEDED のまま「その系列だけ欠落」として現れる。残りの
+        # 系列で応答が非空になるぶん、黙って通すと更新停止に気づけない。
         collected = {observation.series for observation in observations}
-        missing = [name for name in series_names if name not in collected]
-        if missing:
-            # 1 リクエストで全系列を返す API なので、系列 ID の廃止は
-            # REQUEST_SUCCEEDED のまま「その系列だけ欠落」として現れる。
-            # 残りの系列で応答が非空になるぶん、黙って通すと更新停止に
-            # 気づけない。
-            raise ValueError(f"BLS returned no observations for {', '.join(missing)}")
         return CollectionBatch(
             observations=tuple(observations),
+            missing_series=tuple(
+                name for name in series_names if name not in collected
+            ),
             raw_events=(
                 raw_event(
                     source=SOURCE_BLS,

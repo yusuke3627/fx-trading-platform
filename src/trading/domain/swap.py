@@ -1,8 +1,9 @@
 """Swap/rollover の PIT broker cost data（ADR-016）。
 
 overnight carry は broker が symbol property として返す値（long/short の
-swap、曜日別 rollover 倍率）だけを truth source にする。「水曜が必ず
-triple」のような市場慣行をコードにハードコードしない。
+swap、曜日別 rollover 倍率）を truth source にする。「水曜が必ず
+triple」のような市場慣行をコードにハードコードせず、broker の
+swap_rollover3days が ENUM_DAY_OF_WEEK の範囲外の場合だけ設定の曜日で補う。
 """
 from __future__ import annotations
 
@@ -28,13 +29,17 @@ class UnsupportedSwapModeError(ValueError):
     """carry 計算が実装されていない swap_mode。黙って 0 にせず落とす。"""
 
 
+class UnknownTripleSwapWeekdayError(ValueError):
+    """3 日分の rollover 曜日が不明な場合、黙って 1 倍にせず落とす。"""
+
+
 class SwapSnapshot(BaseModel):
     """MT5 symbol properties の swap 部分の 1 観測。
 
     known_at = 取得時刻の forward snapshot（観測であり backfill 不可）。
     per-day 倍率（swap_sunday..swap_saturday）は terminal のビルドによって
     公開されないことがあるため None を許し、その場合は swap_rollover3days
-    から倍率を導く。
+    から倍率を導き、範囲外の値には設定の曜日を使う。
     """
 
     model_config = ConfigDict(frozen=True)
@@ -60,12 +65,17 @@ class SwapSnapshot(BaseModel):
     retrieved_at: datetime
     known_at: datetime
 
-    def rollover_multiplier(self, day: date) -> Decimal:
+    def rollover_multiplier(
+        self, day: date, *, triple_weekday: int | None = None
+    ) -> Decimal:
         """`day`（broker server 日付）の rollover で課される日数倍率。
 
         broker が per-day 倍率を返していればそれが truth source。返して
         いない日は swap_rollover3days の曜日を 3 倍、週末（市場クローズで
         rollover が発生しない）を 0、他を 1 とする。
+        broker が ENUM_DAY_OF_WEEK の範囲外の値を返すことが実測されており、
+        その場合は設定から渡された triple_weekday を使う。3 日分の曜日を
+        決められなければ UnknownTripleSwapWeekdayError で落とす。
         """
         mql_dow = (day.weekday() + 1) % 7
         per_day = (
@@ -81,7 +91,14 @@ class SwapSnapshot(BaseModel):
             return per_day
         if mql_dow in (_MQL_SUNDAY, _MQL_SATURDAY):
             return Decimal(0)
-        return Decimal(3) if mql_dow == self.swap_rollover3days else Decimal(1)
+        if _MQL_SUNDAY <= self.swap_rollover3days <= _MQL_SATURDAY:
+            triple_weekday = self.swap_rollover3days
+        if triple_weekday is None:
+            raise UnknownTripleSwapWeekdayError(
+                f"swap_rollover3days={self.swap_rollover3days} for {self.symbol} "
+                "is outside ENUM_DAY_OF_WEEK (0..6); configure swap_triple_weekday"
+            )
+        return Decimal(3) if mql_dow == triple_weekday else Decimal(1)
 
 
 def carry_amount(
@@ -91,6 +108,7 @@ def carry_amount(
     direction: PositionDirection,
     quantity: Decimal,
     day: date,
+    triple_weekday: int | None = None,
 ) -> Decimal:
     """1 回の rollover で発生する carry（quote 通貨建て、符号は broker 値のまま）。
 
@@ -100,8 +118,10 @@ def carry_amount(
     carry = points × point_size × quantity。他モードの broker に当たった
     場合は黙って誤額を計上せず UnsupportedSwapModeError で落とす。
     """
-    multiplier = snapshot.rollover_multiplier(day)
-    if multiplier == 0 or snapshot.swap_mode == SWAP_MODE_DISABLED:
+    if snapshot.swap_mode == SWAP_MODE_DISABLED:
+        return Decimal(0)
+    multiplier = snapshot.rollover_multiplier(day, triple_weekday=triple_weekday)
+    if multiplier == 0:
         return Decimal(0)
     if snapshot.swap_mode != SWAP_MODE_POINTS:
         raise UnsupportedSwapModeError(

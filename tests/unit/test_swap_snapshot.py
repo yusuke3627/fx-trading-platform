@@ -24,6 +24,7 @@ from trading.domain.swap import (
     SWAP_MODE_DISABLED,
     SWAP_MODE_POINTS,
     SwapSnapshot,
+    UnknownTripleSwapWeekdayError,
     UnsupportedSwapModeError,
     carry_amount,
 )
@@ -84,6 +85,61 @@ def test_fallback_uses_returned_rollover_day_not_hardcoded_wednesday():
     assert s.rollover_multiplier(WEDNESDAY) == 1
     assert s.rollover_multiplier(SATURDAY) == 0
     assert s.rollover_multiplier(SUNDAY) == 0
+
+
+@pytest.mark.parametrize("broker_weekday", [-1, 7])
+def test_out_of_range_rollover_day_uses_configured_weekday(broker_weekday: int) -> None:
+    s = snapshot(swap_rollover3days=broker_weekday)
+
+    assert s.rollover_multiplier(WEDNESDAY, triple_weekday=3) == 3
+    assert s.rollover_multiplier(THURSDAY, triple_weekday=3) == 1
+    assert s.rollover_multiplier(SATURDAY, triple_weekday=3) == 0
+    assert s.rollover_multiplier(SUNDAY, triple_weekday=3) == 0
+
+
+@pytest.mark.parametrize("broker_weekday", [-1, 7])
+def test_unknown_rollover_day_without_configuration_fails_loud(broker_weekday: int) -> None:
+    s = snapshot(swap_rollover3days=broker_weekday)
+
+    with pytest.raises(
+        UnknownTripleSwapWeekdayError,
+        match=rf"swap_rollover3days={broker_weekday}.*USDJPY",
+    ):
+        s.rollover_multiplier(WEDNESDAY)
+
+
+def test_weekends_do_not_require_a_known_triple_weekday() -> None:
+    s = snapshot(swap_rollover3days=7)
+
+    assert s.rollover_multiplier(SATURDAY) == 0
+    assert s.rollover_multiplier(SUNDAY) == 0
+
+
+@pytest.mark.parametrize("broker_weekday", range(7))
+def test_valid_broker_weekday_takes_precedence_over_configuration(broker_weekday: int) -> None:
+    s = snapshot(swap_rollover3days=broker_weekday)
+    configured_weekday = 4 if broker_weekday == 3 else 3
+
+    assert s.rollover_multiplier(WEDNESDAY, triple_weekday=configured_weekday) == (
+        3 if broker_weekday == 3 else 1
+    )
+    assert s.rollover_multiplier(THURSDAY, triple_weekday=configured_weekday) == (
+        3 if broker_weekday == 4 else 1
+    )
+
+
+@pytest.mark.parametrize("triple_weekday", [None, 3])
+def test_per_day_multiplier_precedes_unknown_weekday(triple_weekday: int | None) -> None:
+    s = snapshot(
+        swap_rollover3days=7,
+        swap_wednesday=Decimal("1.5"),
+        swap_thursday=Decimal(0),
+        swap_saturday=Decimal(2),
+    )
+
+    assert s.rollover_multiplier(WEDNESDAY, triple_weekday=triple_weekday) == Decimal("1.5")
+    assert s.rollover_multiplier(THURSDAY, triple_weekday=triple_weekday) == 0
+    assert s.rollover_multiplier(SATURDAY, triple_weekday=triple_weekday) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +219,18 @@ def test_disabled_swap_mode_is_zero():
         )
         == 0
     )
+
+
+def test_disabled_swap_with_unknown_weekday_is_zero() -> None:
+    s = snapshot(swap_mode=SWAP_MODE_DISABLED, swap_rollover3days=7)
+
+    assert carry_amount(
+        s,
+        spec=usdjpy_spec(),
+        direction=PositionDirection.LONG,
+        quantity=Decimal(1000),
+        day=WEDNESDAY,
+    ) == 0
 
 
 # ---------------------------------------------------------------------------

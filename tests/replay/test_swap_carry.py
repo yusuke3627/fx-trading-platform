@@ -41,22 +41,24 @@ def _risk_config() -> RiskConfig:
     )
 
 
-def _snapshot(known_at: datetime, swap_long: str) -> SwapSnapshot:
+def _snapshot(
+    known_at: datetime, swap_long: str, *, swap_rollover3days: int = 3
+) -> SwapSnapshot:
     return SwapSnapshot(
         snapshot_id=uuid4(),
         symbol="USDJPY",
         swap_mode=SWAP_MODE_POINTS,
         swap_long=Decimal(swap_long),
         swap_short=Decimal("0.4"),
-        # MQL5: 3 = Wednesday。テストが跨ぐのは月・火の boundary なので
-        # 倍率は常に 1。
-        swap_rollover3days=3,
+        swap_rollover3days=swap_rollover3days,
         retrieved_at=known_at,
         known_at=known_at,
     )
 
 
-def _run(swap_snapshots: list[SwapSnapshot], ticks: list):
+def _run(
+    swap_snapshots: list[SwapSnapshot], ticks: list, *, swap_triple_weekday: int | None = None
+):
     engine = BacktestEngine(
         risk_config=_risk_config(),
         spec=usdjpy_spec(),
@@ -71,6 +73,7 @@ def _run(swap_snapshots: list[SwapSnapshot], ticks: list):
         ),
         swap_snapshots=swap_snapshots,
         broker_server_ahead_of_ny_hours=7.0,
+        swap_triple_weekday=swap_triple_weekday,
     )
     return engine.run(ticks)
 
@@ -109,6 +112,20 @@ def test_carry_accrues_at_boundary_from_pit_snapshot():
     net = Decimal(result.metrics["net_pnl"])
     gross = Decimal(result.metrics["gross_mid_pnl"])
     assert Decimal(result.metrics["execution_cost"]) == gross - net + expected
+
+
+def test_configured_triple_weekday_charges_three_days_at_wednesday_boundary() -> None:
+    boundary = datetime(2026, 8, 12, 21, 0, tzinfo=UTC)
+    result = _run(
+        [_snapshot(boundary - timedelta(hours=4), "-2.2", swap_rollover3days=7)],
+        _plain_ticks(_times_across(boundary)),
+        swap_triple_weekday=3,
+    )
+
+    (fill,) = result.fills
+    expected = Decimal("-2.2") * Decimal("0.001") * fill.quantity * 3
+    assert Decimal(result.metrics["carry_total"]) == expected
+    assert result.metrics["unpriced_rollovers"] == "0"
 
 
 def test_snapshot_known_after_boundary_is_not_used():

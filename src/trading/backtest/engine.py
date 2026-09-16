@@ -349,6 +349,7 @@ class BacktestEngine:
         evaluate_from: datetime | None = None,
         swap_snapshots: Sequence[SwapSnapshot] = (),
         broker_server_ahead_of_ny_hours: float = 7.0,
+        swap_triple_weekday: int | None = None,
     ) -> None:
         if account_mode is not AccountMode.HEDGING:
             raise ValueError("the vertical slice runs on HEDGING only")
@@ -378,6 +379,7 @@ class BacktestEngine:
         # shares ADR-014's server-clock convention (server = NY + ahead).
         self._swap_timeline = SwapTimeline(swap_snapshots, spec.symbol)
         self._server_ahead_hours = broker_server_ahead_of_ny_hours
+        self._swap_triple_weekday = swap_triple_weekday
 
     def run(self, ticks: list[Tick]) -> BacktestResult:
         ordered = sorted(ticks, key=lambda t: t.known_time)
@@ -576,6 +578,7 @@ class BacktestEngine:
             direction=position.direction,
             quantity=Decimal(1),
             day=day,
+            triple_weekday=self._swap_triple_weekday,
         )
         carry = per_unit * position.quantity
         self._record_realized(state, carry, midnight_label)

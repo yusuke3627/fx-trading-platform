@@ -38,6 +38,19 @@ def test_trading_without_platform_is_a_config_error():
         InstrumentPolicy(platform_enabled=False, trading_enabled=True)
 
 
+@pytest.mark.parametrize("weekday", [-1, 0, 6, 7])
+def test_swap_triple_weekday_must_be_a_weekday(weekday: int) -> None:
+    with pytest.raises(ValidationError, match="swap_triple_weekday"):
+        InstrumentPolicy(swap_triple_weekday=weekday)
+
+
+def test_base_instruments_configure_wednesday_triple_swap() -> None:
+    config = load_config("backtest", CONFIG_DIR)
+
+    for symbol in ("USDJPY", "EURUSD", "GBPUSD", "GBPJPY"):
+        assert config.instruments[symbol].swap_triple_weekday == 3
+
+
 def test_position_caps_stay_single_in_live_overlays():
     # 多ペア live を明示的に判断するまで、live 系 overlay は portfolio 全体
     # でも従来どおり 1 本に固定する。

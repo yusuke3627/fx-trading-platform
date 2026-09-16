@@ -489,6 +489,7 @@ def main() -> None:
     swap_snapshots = PostgresSwapSnapshotRepository(conn).known_before(
         symbol, known_end
     )
+    instrument_policy = config.instruments.get(symbol)
 
     engine = BacktestEngine(
         risk_config=config.risk,
@@ -506,6 +507,9 @@ def main() -> None:
         evaluate_from=broker_label_to_known(args.start, anchor),
         swap_snapshots=swap_snapshots,
         broker_server_ahead_of_ny_hours=config.market.broker_server_ahead_of_ny_hours,
+        swap_triple_weekday=(
+            instrument_policy.swap_triple_weekday if instrument_policy is not None else None
+        ),
     )
     # Reproduction inputs are captured before the replay: a long run must
     # record the code state it started under, not whatever the worktree

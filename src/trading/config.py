@@ -63,12 +63,15 @@ class InstrumentPolicy(BaseModel):
     platform_enabled: 収集・feature・shadow 評価の対象にするか。
     trading_enabled: 実際の発注を許すか（risk config の global switch と AND）。
     どちらも既定 False — instruments に載っていない symbol は fail-close。
+    swap_triple_weekday: broker の範囲外の曜日を補う 3 日分 rollover の曜日（1=月曜〜5=金曜）。
+    週末（0=日曜 / 6=土曜）は rollover が発生せず常に 0 倍なので、3 倍の曜日には指定できない。
     """
 
     model_config = ConfigDict(frozen=True)
 
     platform_enabled: bool = False
     trading_enabled: bool = False
+    swap_triple_weekday: int | None = Field(default=None, ge=1, le=5)
 
     @model_validator(mode="after")
     def _trading_requires_platform(self) -> InstrumentPolicy:

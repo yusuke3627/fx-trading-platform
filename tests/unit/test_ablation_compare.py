@@ -1,7 +1,7 @@
 import json
 import math
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -14,6 +14,9 @@ from trading.backtest.ablation_compare import (
     ArmSummary,
     RunArtifacts,
     arm_summary,
+    block_bootstrap_interval,
+    block_difference_interval,
+    broker_day,
     difference_interval,
     judge,
     load_run,
@@ -22,8 +25,11 @@ from trading.backtest.ablation_compare import (
     verify_comparable,
 )
 from trading.backtest.engine import BacktestResult, TradeRecord
+from trading.backtest.policy_event_study import bootstrap_interval
 from trading.backtest.report import write_report
 from trading.backtest.run_coverage import run_coverage
+from trading.data.market.clock import broker_label_to_known
+from trading.data.market.dukascopy import known_to_broker_label
 
 PERIOD_FROM = datetime(2026, 1, 1, tzinfo=UTC)
 PERIOD_TO = datetime(2026, 2, 1, tzinfo=UTC)
@@ -39,6 +45,9 @@ def arm(count: int, mean: str) -> ArmSummary:
         max_drawdown=Decimal(10),
         low=float("nan"),
         high=float("nan"),
+        block_low=float("nan"),
+        block_high=float("nan"),
+        blocks=1,
     )
 
 
@@ -87,6 +96,126 @@ def test_difference_interval_needs_two_trades_in_each_arm():
 
     assert math.isnan(low)
     assert math.isnan(high)
+
+
+def test_broker_day_normalizes_offsets_and_splits_at_broker_midnight():
+    assert broker_day(datetime.fromisoformat("2026-01-16T00:30:00+09:00")) == broker_day(
+        datetime.fromisoformat("2026-01-15T15:30:00+00:00")
+    ) == date(2026, 1, 15)
+    midnight = datetime(2026, 1, 16, tzinfo=UTC)
+    assert broker_day(midnight - timedelta(microseconds=1)) == date(2026, 1, 15)
+    assert broker_day(midnight) == date(2026, 1, 16)
+
+
+@pytest.mark.parametrize(
+    ("known", "expected_day"),
+    [
+        (datetime(2026, 1, 15, 21, 30, tzinfo=UTC), date(2026, 1, 15)),
+        (datetime(2026, 1, 15, 22, 30, tzinfo=UTC), date(2026, 1, 16)),
+        (datetime(2026, 7, 15, 20, 30, tzinfo=UTC), date(2026, 7, 15)),
+        (datetime(2026, 7, 15, 21, 30, tzinfo=UTC), date(2026, 7, 16)),
+    ],
+)
+def test_broker_day_uses_the_engine_label_without_a_second_conversion(known, expected_day):
+    anchor = timedelta(hours=7)
+    label = known_to_broker_label(known, anchor)
+
+    assert broker_day(label) == label.date() == expected_day
+    if expected_day.day == 16:
+        assert broker_day(label) != known.astimezone(UTC).date()
+    assert broker_label_to_known(label, anchor) == known
+
+
+def test_block_bootstrap_preserves_daily_clustering_and_is_seeded():
+    pnls = [
+        value for value in (-50.0, -31.0, -19.0, -2.0, 13.0, 23.0, 37.0, 80.0)
+        for _ in range(10)
+    ]
+    blocks = [date(2026, 1, day) for day in range(1, 9) for _ in range(10)]
+
+    interval = block_bootstrap_interval(pnls, blocks, seed=42)
+    iid_low, iid_high = bootstrap_interval(pnls, seed=42)
+
+    assert interval[0] < iid_low
+    assert interval[1] > iid_high
+    assert block_bootstrap_interval(pnls, blocks, seed=42) == interval
+    assert block_bootstrap_interval(pnls, blocks, seed=43) != interval
+    assert block_bootstrap_interval(pnls[::-1], blocks[::-1], seed=42) == interval
+
+
+def test_block_difference_resamples_the_arms_independently():
+    pnls = [-50.0, -31.0, -19.0, -2.0, 13.0, 23.0, 37.0, 80.0]
+    blocks = [date(2026, 1, day) for day in range(1, 9)]
+
+    interval = block_difference_interval(pnls, blocks, pnls, blocks, seed=42)
+
+    assert interval[0] < 0 < interval[1]
+    assert interval == difference_interval(pnls, pnls, seed=42)
+    assert block_difference_interval(pnls, blocks, pnls, blocks, seed=42) == interval
+    assert block_difference_interval(pnls, blocks, pnls, blocks, seed=43) != interval
+    assert block_difference_interval(
+        pnls[::-1], blocks[::-1], pnls[::-1], blocks[::-1], seed=42
+    ) == interval
+
+
+def test_block_intervals_weight_all_trades_in_selected_days():
+    pnls = [-10.0] + [1.0] * 3 + [10.0] * 9
+    blocks = [date(2026, 1, 1)] + [date(2026, 1, 2)] * 3 + [date(2026, 1, 3)] * 9
+    # 両端は日1を2回・日2を1回、および日1を1回・日3を2回抽出した平均。
+    expected = ((-10 * 2 + 1 * 3) / (2 + 3), (-10 + 10 * 18) / (1 + 18))
+
+    assert block_bootstrap_interval(pnls, blocks, seed=42) == pytest.approx(expected)
+    assert block_difference_interval(
+        pnls, blocks, [0.0, 0.0], [date(2026, 1, 1), date(2026, 1, 2)], seed=42
+    ) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("count", [0, 1, 20])
+def test_block_bootstrap_needs_two_days_even_with_many_trades(count):
+    low, high = block_bootstrap_interval([1.0] * count, [date(2026, 1, 1)] * count, seed=42)
+
+    assert math.isnan(low)
+    assert math.isnan(high)
+
+
+@pytest.mark.parametrize("count", [0, 1, 20])
+@pytest.mark.parametrize("short_arm", ["with", "without"])
+def test_block_difference_needs_two_days_in_each_arm(count, short_arm):
+    short = ([1.0] * count, [date(2026, 1, 1)] * count)
+    full = ([1.0, 2.0], [date(2026, 1, 1), date(2026, 1, 2)])
+    with_, without = (short, full) if short_arm == "with" else (full, short)
+
+    low, high = block_difference_interval(*with_, *without, seed=42)
+
+    assert math.isnan(low)
+    assert math.isnan(high)
+
+
+def test_block_intervals_require_one_block_key_per_pnl():
+    pnls = [1.0, 2.0]
+    blocks = [date(2026, 1, 1), date(2026, 1, 2)]
+
+    with pytest.raises(ValueError):
+        block_bootstrap_interval(pnls, blocks[:1], seed=42)
+    with pytest.raises(ValueError):
+        block_difference_interval(pnls[:1], blocks, pnls, blocks, seed=42)
+    with pytest.raises(ValueError):
+        block_difference_interval(pnls, blocks, pnls, blocks[:1], seed=42)
+
+
+def test_arm_summary_keeps_iid_interval_alongside_block_interval():
+    pnls = [Decimal("1.1"), Decimal("2.2"), Decimal("3.3")]
+    blocks = [date(2026, 1, 1), date(2026, 1, 1), date(2026, 1, 2)]
+
+    summary = arm_summary(pnls, blocks, Decimal("4.5"), seed=43)
+
+    assert (summary.low, summary.high) == bootstrap_interval([float(p) for p in pnls], seed=43)
+    assert (summary.block_low, summary.block_high) == block_bootstrap_interval(
+        [float(p) for p in pnls], blocks, seed=43
+    )
+    assert summary.count == 3
+    assert summary.blocks == 2
+    assert summary.max_drawdown == Decimal("4.5")
 
 
 def run_metrics(**overrides: str) -> dict[str, str]:
@@ -219,6 +348,16 @@ def test_load_run_and_report_round_trip_trade_pnls_and_provenance(tmp_path):
     assert f"{'carry_total':<28} {'-1.5':>22} {'0':>22}" in rendered
     assert f"{'unpriced_rollovers':<28} {'0':>22} {'0':>22}" in rendered
     assert "verdict:" in rendered
+    assert f"{'blocks':<28} {2:>22} {3:>22}" in rendered
+    assert f"{'expectancy_ci90_block':<28} {'[-2.5, 11]':>22} {'[1.33333, 2.66667]':>22}" in rendered
+    assert "difference of means (with - without) block CI90 [-4.83333, 9.33333] seed=42" in rendered
+    lines = rendered.splitlines()
+    mean_index = next(index for index, line in enumerate(lines) if line.startswith("mean CI90"))
+    assert lines[mean_index + 1].startswith("blocks ")
+    assert lines[mean_index + 2].startswith("expectancy_ci90_block ")
+    assert lines[-3].startswith("difference of means (with - without): ")
+    assert lines[-2].startswith("difference of means (with - without) block CI90 ")
+    assert lines[-1].startswith("verdict: ")
     assert b"\r\n" not in (with_dir / "trades.csv").read_bytes()
     for label, run, run_dir, entries, empty_months in (
         ("with", with_run, with_dir, with_entries, ["2026-02", "2026-03", "2026-04", "2026-05"]),
@@ -469,8 +608,11 @@ def test_partial_closes_are_one_bootstrap_sample(tmp_path):
     run_dir = write_report(result, manifest("partial", {}), tmp_path)
     run = load_run(run_dir)
     assert run.pnls == [Decimal(2), Decimal(17)]
-    assert arm_summary(run.pnls, Decimal(0), seed=42).count == 2
-    assert run.entry_ats == [trade.entry_at for trade in result.trades]
+    blocks = [broker_day(at) for at in run.entry_ats]
+    summary = arm_summary(run.pnls, blocks, Decimal(0), seed=42)
+    assert summary.count == 2
+    assert summary.blocks == 1
+    assert run.entry_ats == [result.trades[0].entry_at, result.trades[2].entry_at]
     coverage = run_coverage(run.entry_ats, PERIOD_FROM, PERIOD_TO)
     assert coverage == run_coverage(
         (result.trades[index].entry_at for index in (0, 2)), PERIOD_FROM, PERIOD_TO

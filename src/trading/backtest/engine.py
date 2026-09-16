@@ -83,7 +83,7 @@ from trading.strategy.base import (
     StrategyHorizon,
 )
 
-ENGINE_VERSION = "0.7.0"
+ENGINE_VERSION = "0.8.0"
 
 
 class ScriptedStrategy(Strategy):

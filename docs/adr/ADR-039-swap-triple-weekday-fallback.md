@@ -36,6 +36,8 @@ SYSTEM_SPEC は v2.0 で凍結されているため、本 ADR で範囲外の br
 
 - broker の曜日が 7 でも、設定に従って水曜に 3 日分の carry を計上できる。
   有効な broker の曜日や曜日別倍率が得られる場合は、それらが設定に優先する。
+- carry の計算結果が変わるため、エンジン版を更新する（ENGINE_VERSION 0.8.0）。
+  既存 research レポートとは manifest の `engine_version` が異なるため、`ablation_compare` で相互に比較できない。
 - 未設定の銘柄で不明な曜日に遭遇すると backtest が例外で停止するため、carry の過少計上を見逃さず設定を確認できる。
 - `known_at <= boundary` の snapshot 選択、rollover 境界、POINTS の金額計算は変更しない。
   DB スキーマ、既存 ADR、SYSTEM_SPEC の本文も変更しない。

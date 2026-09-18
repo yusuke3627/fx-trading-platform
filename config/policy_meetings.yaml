@@ -467,6 +467,28 @@ meetings:
     verified: true
     source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260731a.pdf
 
+  - bank: FED
+    decision_date: 2026-09-16
+    statement_published_at: 2026-09-16T18:00:00+00:00  # 公式公表 14:00 EDT
+    rate_change_bp: 25  # 3.50-3.75% → 3.75-4.00%（0.25%の利上げ）
+    hawkish_dissents: 0  # 12対0の全会一致
+    dovish_dissents: 0
+    inflation_forecast_change: 1  # SEP中央値 PCE 2026年 3.6→3.7、コア 3.3→3.4（6月比で上方修正）
+    explicit_future_hike_language: false  # 先行きの追加引き締めに言及する文がない
+    verified: true
+    source_uri: https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm
+
+  - bank: BOJ
+    decision_date: 2026-09-18
+    statement_published_at: 2026-09-18T06:00:00+00:00  # 公表分未確認のため日程の後ろ寄り境界（15:00 JST）
+    rate_change_bp: 25  # 無担保コールレート 1.0%程度 → 1.25%程度
+    hawkish_dissents: 0
+    dovish_dissents: 2  # 賛成7反対2。反対2名はいずれも利上げ見送りを主張
+    inflation_forecast_change: 0  # 展望レポート回ではなく「中心的な見通しに概ね沿って推移」
+    explicit_future_hike_language: true  # 「引き続き政策金利を引き上げ」と明記
+    verified: false  # 公表時刻の分が未確認のため
+    source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260918a.pdf
+
 
 # 公式カレンダーどおりの会合予定（恒久記録）。リスク窓はこのセクションだけ
 # から構築され、採点には乗らない（結果未公表の会合を meetings: に置くと、

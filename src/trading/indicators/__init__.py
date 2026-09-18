@@ -6,6 +6,7 @@ forbidden because Backtest/Live and cross-strategy results would diverge.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timedelta
 
 from trading.data.market import MarketDataService
@@ -30,39 +31,43 @@ class IndicatorService:
         self._market = market
         self._bar_count = bar_count
         self._server_ahead_of_ny = timedelta(hours=broker_server_ahead_of_ny_hours)
-        self._atr_cache: dict[
-            tuple[str, str, int], tuple[tuple[Bar, ...], float | None]
+        self._cache: dict[
+            tuple[str, str, str, int], tuple[tuple[Bar, ...], float | None]
         ] = {}
-        self._ema_cache: dict[
-            tuple[str, str, int], tuple[tuple[Bar, ...], float | None]
-        ] = {}
+
+    def _memoized(
+        self,
+        name: str,
+        symbol: str,
+        timeframe: str,
+        param: int,
+        count: int,
+        compute: Callable[[tuple[Bar, ...]], float | None],
+    ) -> float | None:
+        bars = tuple(self._market.bars(symbol, timeframe, count))
+        key = (name, symbol, timeframe, param)
+        cached = self._cache.get(key)
+        # 末尾の時刻だけでは過去足の訂正を見逃すため、入力窓全体を比較する。
+        if cached is None or cached[0] != bars:
+            cached = (bars, compute(bars))
+            self._cache[key] = cached
+        return cached[1]
 
     def atr(self, symbol: str, timeframe: str, period: int = 14) -> float | None:
         # The read follows the requested period: a configured period beyond
         # the default window must widen the read, not silently starve the
         # indicator into a permanent None.
         count = max(self._bar_count, period + 1)
-        bars = tuple(self._market.bars(symbol, timeframe, count))
-        key = (symbol, timeframe, period)
-        cached = self._atr_cache.get(key)
-        # 末尾の時刻だけでは過去足の訂正を見逃すため、入力窓全体を比較する。
-        if cached is None or cached[0] != bars:
-            cached = (bars, _atr(bars, period))
-            self._atr_cache[key] = cached
-        return cached[1]
+        return self._memoized(
+            "atr", symbol, timeframe, period, count, lambda bars: _atr(bars, period),
+        )
 
     def ema(self, symbol: str, timeframe: str, period: int) -> float | None:
         count = max(self._bar_count, period + 1)
-        bars = tuple(self._market.bars(symbol, timeframe, count))
-        key = (symbol, timeframe, period)
-        cached = self._ema_cache.get(key)
-        # atr と同じ理由で入力窓全体を比較する。末尾の時刻だけでは過去足の
-        # 訂正を見逃す。一致する限り終値への変換も EMA 計算も省ける。
-        if cached is None or cached[0] != bars:
-            closes = [float(b.close) for b in bars]
-            cached = (bars, _ema(closes, period))
-            self._ema_cache[key] = cached
-        return cached[1]
+        return self._memoized(
+            "ema", symbol, timeframe, period, count,
+            lambda bars: _ema([float(b.close) for b in bars], period),
+        )
 
     def vwap(
         self,
@@ -80,18 +85,28 @@ class IndicatorService:
         return _vwap(bars)
 
     def momentum(self, symbol: str, timeframe: str, lookback: int) -> float | None:
-        closes = [float(b.close) for b in self._market.bars(symbol, timeframe, self._bar_count)]
-        return rate_of_change(closes, lookback)
+        return self._memoized(
+            "momentum", symbol, timeframe, lookback, self._bar_count,
+            lambda bars: rate_of_change([float(b.close) for b in bars], lookback),
+        )
 
     def tick_momentum(self, symbol: str, window_seconds: float) -> float | None:
         return tick_momentum(self._market.ticks(symbol, window_seconds), window_seconds)
 
     def realized_volatility(self, symbol: str, timeframe: str, window: int) -> float | None:
-        closes = [float(b.close) for b in self._market.bars(symbol, timeframe, self._bar_count)]
-        return _rvol(closes, window)
+        return self._memoized(
+            "realized_volatility", symbol, timeframe, window, self._bar_count,
+            lambda bars: _rvol([float(b.close) for b in bars], window),
+        )
 
     def recent_high(self, symbol: str, timeframe: str, lookback: int) -> float | None:
-        return ms.rolling_high(self._market.bars(symbol, timeframe, self._bar_count), lookback)
+        return self._memoized(
+            "recent_high", symbol, timeframe, lookback, self._bar_count,
+            lambda bars: ms.rolling_high(bars, lookback),
+        )
 
     def recent_low(self, symbol: str, timeframe: str, lookback: int) -> float | None:
-        return ms.rolling_low(self._market.bars(symbol, timeframe, self._bar_count), lookback)
+        return self._memoized(
+            "recent_low", symbol, timeframe, lookback, self._bar_count,
+            lambda bars: ms.rolling_low(bars, lookback),
+        )

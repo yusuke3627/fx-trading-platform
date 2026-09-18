@@ -1,6 +1,9 @@
+from contextlib import ExitStack
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
+
+import pytest
 
 from tests.support import T0, FixedClock, make_bar, make_tick
 from trading.data.market import InMemoryMarketData, MarketDataService
@@ -269,3 +272,73 @@ def test_atr_and_ema_caches_do_not_share_entries():
     assert service.atr("USDJPY", "1m", 3) == atr(bars, 3)
     assert service.ema("USDJPY", "1m", 3) == ema([float(b.close) for b in bars], 3)
     assert service.atr("USDJPY", "1m", 3) != service.ema("USDJPY", "1m", 3)
+
+
+@pytest.mark.parametrize(
+    "method,target,compute,field,index,value",
+    [
+        ("momentum", "rate_of_change", rate_of_change, "close", 1, 90),
+        ("realized_volatility", "_rvol", realized_volatility, "close", 1, 90),
+        ("recent_high", "ms.rolling_high", rolling_high, "high", 2, 110),
+        ("recent_low", "ms.rolling_low", rolling_low, "low", 2, 90),
+    ],
+)
+def test_window_cache_reuses_bars_and_recomputes_after_a_correction(
+    method, target, compute, field, index, value,
+):
+    bars = bars_from_closes([100.0, 101.0, 103.0, 102.0, 104.0])
+    market = Mock(spec=MarketDataService)
+    market.bars.side_effect = lambda symbol, timeframe, count: bars[-count:]
+    service = IndicatorService(market, bar_count=5)
+    indicator = getattr(service, method)
+
+    def expected_value():
+        inputs = [float(b.close) for b in bars] if field == "close" else bars
+        return compute(inputs, 3)
+
+    with patch(f"trading.indicators.{target}", wraps=compute) as calculate:
+        expected = expected_value()
+        assert expected is not None
+        assert indicator("USDJPY", "1m", 3) == expected
+        assert indicator("USDJPY", "1m", 3) == expected
+        assert calculate.call_count == 1
+
+        # 最新足を変えずに過去足を訂正しても、再計算する。
+        bars[index] = bars[index].model_copy(update={field: Decimal(value)})
+        corrected = expected_value()
+        assert corrected != expected
+        assert indicator("USDJPY", "1m", 3) == corrected
+        assert indicator("USDJPY", "1m", 3) == corrected
+        assert calculate.call_count == 2
+        assert market.bars.call_count == 4
+        market.bars.assert_called_with("USDJPY", "1m", 5)
+
+
+def test_all_six_indicator_caches_do_not_share_entries():
+    bars = bars_from_closes([100.0, 101.0, 103.0, 102.0, 104.0])
+    closes = [float(b.close) for b in bars]
+    market = Mock(spec=MarketDataService)
+    market.bars.side_effect = lambda symbol, timeframe, count: bars[-count:]
+    service = IndicatorService(market)
+    cases = [
+        ("atr", "_atr", atr, bars),
+        ("ema", "_ema", ema, closes),
+        ("momentum", "rate_of_change", rate_of_change, closes),
+        ("realized_volatility", "_rvol", realized_volatility, closes),
+        ("recent_high", "ms.rolling_high", rolling_high, bars),
+        ("recent_low", "ms.rolling_low", rolling_low, bars),
+    ]
+    expected = {method: compute(inputs, 3) for method, _, compute, inputs in cases}
+    assert None not in expected.values()
+    assert expected["momentum"] != expected["realized_volatility"]
+    assert expected["recent_high"] != expected["recent_low"]
+
+    with ExitStack() as stack:
+        calculations = [
+            stack.enter_context(patch(f"trading.indicators.{target}", wraps=compute))
+            for _, target, compute, _ in cases
+        ]
+        for _ in range(2):
+            for method, _, _, _ in cases:
+                assert getattr(service, method)("USDJPY", "1m", 3) == expected[method]
+        assert [calculate.call_count for calculate in calculations] == [1] * 6

@@ -10,6 +10,7 @@ from datetime import timedelta
 
 from trading.data.market import MarketDataService
 from trading.data.market.clock import broker_label_to_known
+from trading.domain.market import Bar
 from trading.indicators import market_structure as ms
 from trading.indicators.atr import atr as _atr
 from trading.indicators.ema import ema as _ema
@@ -29,13 +30,23 @@ class IndicatorService:
         self._market = market
         self._bar_count = bar_count
         self._server_ahead_of_ny = timedelta(hours=broker_server_ahead_of_ny_hours)
+        self._atr_cache: dict[
+            tuple[str, str, int], tuple[tuple[Bar, ...], float | None]
+        ] = {}
 
     def atr(self, symbol: str, timeframe: str, period: int = 14) -> float | None:
         # The read follows the requested period: a configured period beyond
         # the default window must widen the read, not silently starve the
         # indicator into a permanent None.
         count = max(self._bar_count, period + 1)
-        return _atr(self._market.bars(symbol, timeframe, count), period)
+        bars = tuple(self._market.bars(symbol, timeframe, count))
+        key = (symbol, timeframe, period)
+        cached = self._atr_cache.get(key)
+        # 末尾の時刻だけでは過去足の訂正を見逃すため、入力窓全体を比較する。
+        if cached is None or cached[0] != bars:
+            cached = (bars, _atr(bars, period))
+            self._atr_cache[key] = cached
+        return cached[1]
 
     def ema(self, symbol: str, timeframe: str, period: int) -> float | None:
         count = max(self._bar_count, period + 1)

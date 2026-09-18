@@ -7,6 +7,7 @@ The first acceptance criterion of the backtest system is NOT profitability:
 3. The full order lifecycle (OPEN -> ticket-referenced CLOSE -> reversal
    OPEN, protection fills) flows through Risk -> OMS -> Simulator -> Ledger.
 """
+import asyncio
 import csv
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -180,6 +181,69 @@ def test_rerunning_the_same_engine_instance_is_deterministic():
     second = engine.run(ticks)
     assert second.fills == first.fills
     assert second.metrics == first.metrics
+
+
+def test_awaiting_strategy_keeps_tick_order_and_full_replay_results():
+    observed = []
+
+    class YieldingStrategy(ScriptedStrategy):
+        async def on_event(self, event, context):
+            before = context.clock.now()
+            await asyncio.sleep(0)
+            assert context.clock.now() == before == event.known_at
+            observed.append(before)
+            return await super().on_event(event, context)
+
+    ticks = synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=2000, seed=7)
+    engine = BacktestEngine(
+        risk_config=slice_risk_config(),
+        spec=usdjpy_spec(),
+        costs=STRESS_SCENARIOS["normal"],
+        seed=7,
+        strategy_factory=lambda: YieldingStrategy(
+            {300: PositionDirection.LONG, 1200: PositionDirection.SHORT},
+            stop_distance_pips=Decimal(200),
+        ),
+        strategy_config=StrategyConfig(
+            strategy_id=ScriptedStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+        ),
+    )
+    result = engine.run(ticks)
+
+    assert observed == [tick.known_time for tick in ticks]
+    assert len(result.fills) >= 3
+    assert result == run_slice(STRESS_SCENARIOS["normal"])
+
+
+def test_replay_accepts_cancellation_even_when_strategy_never_suspends():
+    evaluated = []
+
+    class CancelStrategy(ScriptedStrategy):
+        async def on_event(self, event, context):
+            if not evaluated:
+                asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+            evaluated.append(context.clock.now())
+            return []
+
+    engine = BacktestEngine(
+        risk_config=slice_risk_config(),
+        spec=usdjpy_spec(),
+        costs=STRESS_SCENARIOS["normal"],
+        seed=7,
+        strategy_factory=lambda: CancelStrategy({}),
+        strategy_config=StrategyConfig(
+            strategy_id=ScriptedStrategy.strategy_id,
+            enabled=True,
+            instruments=["USDJPY"],
+        ),
+    )
+    ticks = synthetic_ticks(spec=usdjpy_spec(), start=DATASET_START, count=5000, seed=7)
+    with pytest.raises(asyncio.CancelledError):
+        engine.run(ticks)
+    assert 0 < len(evaluated) < len(ticks)
+    assert len(run_slice(STRESS_SCENARIOS["normal"]).fills) >= 3
 
 
 def test_fills_never_apply_ahead_of_the_replay_clock():

@@ -415,7 +415,7 @@ class BacktestEngine:
         )
         state.snapshots.append(self._snapshot(state, w.simulator, baseline_at))
 
-        def handle(item: Tick) -> None:
+        async def handle(item: Tick) -> None:
             fills_before = len(state.fills)
             # Features first: everything after this point may read the store,
             # and what it reads has to be the snapshot at this clock instant.
@@ -468,7 +468,7 @@ class BacktestEngine:
                     retrieved_at=item.known_time,
                     known_at=item.known_time,
                 )
-                signals = runner_loop.run(w.strategy.on_event(envelope, w.context))
+                signals = await w.strategy.on_event(envelope, w.context)
                 for signal in signals:
                     self._process_signal(state, w, signal, tick=item)
             # Zero-latency commands created this tick fill on this tick;
@@ -496,10 +496,16 @@ class BacktestEngine:
                     state.last_curve_minute = minute
                     state.equity_curve.append((w.clock.now(), equity))
 
-        with asyncio.Runner() as runner_loop:
-            for item in chain([first], ticks):
+        async def replay() -> None:
+            for count, item in enumerate(chain([first], ticks), start=1):
                 w.clock.advance_to(item.known_time)
-                handle(item)
+                await handle(item)
+                # on_event が中断しない戦略でも長時間実行のキャンセルを受け付ける。
+                if count % 1024 == 0:
+                    await asyncio.sleep(0)
+
+        with asyncio.Runner() as runner_loop:
+            runner_loop.run(replay())
 
         # The decimated curve still ends on the replay's closing equity: a
         # reader of the series must see where the run actually finished. When

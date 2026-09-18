@@ -171,6 +171,16 @@ def validate_statement_uri(meeting: PolicyMeeting) -> None:
         raise ValueError(f"文書種別の事前確認が必要です: {meeting.source_uri}")
 
 
+def is_adjacent_meeting(
+    meeting: PolicyMeeting, previous_meeting: PolicyMeeting | None,
+) -> bool:
+    """定例の周期から見て直前会合と言えるか。間が抜けている疑いならFalse。"""
+    if previous_meeting is None:
+        return False
+    gap = (meeting.decision_date - previous_meeting.decision_date).days
+    return gap <= MAX_ADJACENT_MEETING_DAYS
+
+
 def statement_gaps(
     meeting: PolicyMeeting, previous_meeting: PolicyMeeting | None,
 ) -> dict[str, str]:
@@ -185,9 +195,7 @@ def statement_gaps(
     gaps = {"inflation_forecast_change": FORECAST_GAP}
     if previous_meeting is None:
         gaps["rate_change_bp"] = RATE_GAP
-    elif (
-        meeting.decision_date - previous_meeting.decision_date
-    ).days > MAX_ADJACENT_MEETING_DAYS:
+    elif not is_adjacent_meeting(meeting, previous_meeting):
         gaps["rate_change_bp"] = RATE_GAP_DISCONTINUOUS
     return gaps
 
@@ -272,10 +280,13 @@ def prepare_cases(
     pairs: list[tuple[PolicyMeeting, PolicyMeeting | None, dict[str, str]]] = []
     # 未確認の文書種別を、一部だけ送信したあとで発見しない。
     for meeting in sorted(meetings, key=lambda item: (item.decision_date, item.bank)):
-        previous = previous_by_bank.get(meeting.bank)
-        if previous and previous.statement_published_at >= meeting.statement_published_at:
+        candidate = previous_by_bank.get(meeting.bank)
+        if candidate and candidate.statement_published_at >= meeting.statement_published_at:
             raise ValueError("前回声明の公表時刻は対象声明より過去である必要があります")
-        pairs.append((meeting, previous, statement_gaps(meeting, previous)))
+        # 直前と確かめられない会合は入力にも依存にも使わない。送れば「前回会合」と
+        # 偽ることになり、その取得失敗が対象声明だけで測れる項目まで巻き込む。
+        previous = candidate if is_adjacent_meeting(meeting, candidate) else None
+        pairs.append((meeting, previous, statement_gaps(meeting, candidate)))
         previous_by_bank[meeting.bank] = meeting
     # 同じ原文を対象用・前回用で取り直さず、同じバイト列を双方に使う。
     for meeting, _, gaps in pairs:

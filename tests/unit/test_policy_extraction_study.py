@@ -319,6 +319,40 @@ def test_pairing_uses_nearest_earlier_meeting_of_same_bank_not_yaml_order(
     assert restored.previous_statement.source_uri == by_id["BOJ-2024-02-02"].meeting.source_uri
 
 
+def test_a_non_adjacent_meeting_is_not_sent_and_cannot_fail_the_target(
+    fictional_sources, tmp_path,
+):
+    """間が抜けている会合は前回声明にしない。
+
+    送れば「前回会合」と偽ることになる。依存に残すと、その取得失敗が対象声明
+    だけで測れる反対票数や利上げ文言まで巻き込んで落とす。
+    """
+    def at(day: date) -> PolicyMeeting:
+        return meeting(bank="BOJ").model_copy(update={
+            "decision_date": day,
+            "statement_published_at": datetime(day.year, day.month, day.day, tzinfo=UTC),
+            "source_uri": f"https://sources.example/BOJ/statement-{day}.html",
+        })
+
+    distant = at(date(2024, 3, 1))
+    current = at(date(2024, 6, 1))
+    assert (current.decision_date - distant.decision_date).days > study.MAX_ADJACENT_MEETING_DAYS
+
+    def fetch(url, _cache):
+        if url == distant.source_uri:
+            raise OSError("架空の取得失敗")
+        return study.Document("html", b"fiction", "架空の声明")
+
+    cases, _ = study.prepare_cases([distant, current], tmp_path, fetch)
+    by_id = {case.custom_id: case for case in cases}
+
+    target = by_id["BOJ-2024-06-01"]
+    assert target.previous_statement is None
+    assert target.fetch_error is None
+    assert target.missing_inputs["rate_change_bp"] == study.RATE_GAP_DISCONTINUOUS
+    assert by_id["BOJ-2024-03-01"].fetch_error is not None
+
+
 def test_rate_coverage_is_40_of_42_and_forecast_remains_unavailable(fictional_sources, tmp_path):
     meetings = [meeting(bank, day) for bank in ("BOJ", "FED") for day in range(1, 22)]
     cases, _ = study.prepare_cases(meetings[::-1], tmp_path, Mock(

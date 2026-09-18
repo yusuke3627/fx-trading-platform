@@ -46,6 +46,12 @@ MAX_SOURCE_BYTES = 50_000_000
 MAX_BATCH_BYTES = 200_000_000
 FORECAST_GAP = "声明のみ。今回・前回の見通し資料を入力していない"
 RATE_GAP = "corpus内に同じ銀行の直前会合がなく、比較する前回声明を入力していない"
+RATE_GAP_DISCONTINUOUS = "corpus内の前会合との間隔が離れすぎており、直前会合か確かめられない"
+# BOJ・FED とも定例は年8回なので、隣接する会合の間隔は長くても8週ほどになる。
+# 間に1回抜けると最短でも10週まで開く。9週はその空白帯に入る。部分コーパスを
+# 渡されて古い会合を直前と誤認すると、複数会合分の差を単会合の正解と比べて
+# しまうため、疑わしい側は入力不足へ倒す。
+MAX_ADJACENT_MEETING_DAYS = 63
 PROMPT = """対象会合と前回会合の政策声明を読み、指定された5フィールドを返してください。
 5フィールドはすべて「対象会合」についての値です。
 「前回会合」は同じ銀行の直前会合です。その声明は金利水準の比較にのみ使ってください。
@@ -172,12 +178,17 @@ def statement_gaps(
 
     見通しのリンクや公表予定は見通し原文ではない。非公表回の0も、声明に改定の
     記載がないだけでは確定させない。金利変更幅は銀行を問わず対象・直前会合の
-    声明から求める。corpus内に前回会合がない先頭の会合だけ入力不足とする。
+    声明から求める。corpus内に前回会合がない先頭の会合と、前会合との間隔が
+    定例の周期から外れていて直前会合と確かめられない会合を入力不足とする。
     """
     validate_statement_uri(meeting)
     gaps = {"inflation_forecast_change": FORECAST_GAP}
     if previous_meeting is None:
         gaps["rate_change_bp"] = RATE_GAP
+    elif (
+        meeting.decision_date - previous_meeting.decision_date
+    ).days > MAX_ADJACENT_MEETING_DAYS:
+        gaps["rate_change_bp"] = RATE_GAP_DISCONTINUOUS
     return gaps
 
 

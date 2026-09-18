@@ -3,7 +3,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from http.client import IncompleteRead
 from pathlib import Path
@@ -232,6 +232,30 @@ def test_source_coverage_comes_from_document_kind_not_answer(monkeypatch):
         )
     with pytest.raises(ValueError, match="事前確認"):
         study.statement_gaps(meeting(), None)
+
+
+def test_rate_change_is_dropped_when_the_previous_meeting_is_too_far_back(fictional_sources):
+    """部分コーパスで中間の会合が抜けていると、古い会合を直前と誤認する。
+
+    そのまま送ると複数会合分の差を単会合の正解と比べることになるので、間隔が
+    定例の周期から外れている側は入力不足へ倒す。
+    """
+    decided = date(2024, 6, 1)
+    current = meeting().model_copy(update={"decision_date": decided})
+
+    def earlier(days: int) -> PolicyMeeting:
+        return meeting().model_copy(update={"decision_date": decided - timedelta(days=days)})
+
+    assert "rate_change_bp" not in study.statement_gaps(current, earlier(55))
+    assert "rate_change_bp" not in study.statement_gaps(
+        current, earlier(study.MAX_ADJACENT_MEETING_DAYS)
+    )
+    assert (
+        study.statement_gaps(current, earlier(study.MAX_ADJACENT_MEETING_DAYS + 1))[
+            "rate_change_bp"
+        ]
+        == study.RATE_GAP_DISCONTINUOUS
+    )
 
 
 @pytest.fixture

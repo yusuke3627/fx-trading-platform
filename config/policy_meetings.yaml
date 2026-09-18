@@ -486,7 +486,7 @@ meetings:
     dovish_dissents: 2  # 賛成7反対2。反対2名はいずれも利上げ見送りを主張
     inflation_forecast_change: 0  # 展望レポート回ではなく「中心的な見通しに概ね沿って推移」
     explicit_future_hike_language: true  # 「引き続き政策金利を引き上げ」と明記
-    verified: false  # 公表時刻の分が未確認のため
+    verified: true
     source_uri: https://www.boj.or.jp/mopo/mpmdeci/mpr_2026/k260918a.pdf
 
 

@@ -42,9 +42,12 @@ class PolicyMeeting(BaseModel):
     inflation_forecast_change: Literal[-1, 0, 1] = 0
     explicit_future_hike_language: bool = False
 
-    # False until every field has been checked against the official
-    # statement; unverified entries still score, but research runs can
-    # exclude them.
+    # False until the scoring facts (rate action, vote split, forecast
+    # direction, guidance language) have been checked against the official
+    # statement. The BOJ later-bound above is the documented convention for
+    # statement_published_at, not a gap, so it does not by itself make an
+    # entry unverified. Unverified entries still score, but research runs
+    # can exclude them.
     verified: bool
     source_uri: str
 

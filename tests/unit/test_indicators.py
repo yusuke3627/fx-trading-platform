@@ -186,3 +186,86 @@ def test_atr_cache_separates_symbols_timeframes_and_periods():
         for (symbol, timeframe), bars in windows.items():
             for period in (2, 3):
                 assert service.atr(symbol, timeframe, period) == atr(bars, period)
+
+
+def test_ema_reuses_unchanged_bars_and_recomputes_after_a_correction():
+    bars = bars_from_closes([100.0, 101.0, 103.0, 102.0, 104.0])
+    market = Mock(spec=MarketDataService)
+    market.bars.side_effect = lambda symbol, timeframe, count: bars[-count:]
+    service = IndicatorService(market)
+
+    def closes_of(window):
+        return [float(b.close) for b in window]
+
+    with patch("trading.indicators._ema", wraps=ema) as calculate:
+        expected = ema(closes_of(bars), 3)
+        assert service.ema("USDJPY", "1m", 3) == expected
+        assert service.ema("USDJPY", "1m", 3) == expected
+        assert calculate.call_count == 1
+
+        # 終値が変わらない訂正でも入力窓は変わるので、そのまま返さず計算し直す。
+        bars[1] = bars[1].model_copy(update={"high": Decimal(110)})
+        assert service.ema("USDJPY", "1m", 3) == expected
+        assert calculate.call_count == 2
+
+        # 終値の訂正は結果に反映する。
+        bars[1] = bars[1].model_copy(update={"close": Decimal(90)})
+        corrected = ema(closes_of(bars), 3)
+        assert corrected != expected
+        assert service.ema("USDJPY", "1m", 3) == corrected
+        assert calculate.call_count == 3
+
+
+def test_ema_cache_follows_visible_history_and_can_return_to_insufficient_data():
+    clock = FixedClock()
+    market = InMemoryMarketData(clock)
+    bars = bars_from_closes([100.0, 101.0, 103.0, 102.0, 104.0])
+    for bar in bars:
+        market.add_bar(bar)
+    service = IndicatorService(market)
+
+    def closes_of(window):
+        return [float(b.close) for b in window]
+
+    assert service.ema("USDJPY", "1m", 4) is None
+    clock.advance(minutes=4)
+    assert service.ema("USDJPY", "1m", 4) == ema(closes_of(bars[:4]), 4)
+    clock.advance(minutes=1)
+    assert service.ema("USDJPY", "1m", 4) == ema(closes_of(bars), 4)
+    clock.advance(minutes=-5)
+    assert service.ema("USDJPY", "1m", 4) is None
+
+
+def test_ema_cache_separates_symbols_timeframes_and_periods():
+    market = InMemoryMarketData()
+    inputs = [
+        ("USDJPY", "1m", [100.0, 101.0, 103.0, 102.0, 104.0]),
+        ("USDJPY", "5m", [100.0, 103.0, 101.0, 110.0, 105.0]),
+        ("EURUSD", "1m", [1.0, 1.01, 1.03, 1.02, 1.04]),
+    ]
+    windows = {}
+    for symbol, timeframe, closes in inputs:
+        bars = [
+            bar.model_copy(update={"symbol": symbol, "timeframe": timeframe})
+            for bar in bars_from_closes(closes)
+        ]
+        windows[symbol, timeframe] = bars
+        for bar in bars:
+            market.add_bar(bar)
+    service = IndicatorService(market)
+    for _ in range(2):
+        for (symbol, timeframe), bars in windows.items():
+            for period in (2, 3):
+                closes = [float(b.close) for b in bars]
+                assert service.ema(symbol, timeframe, period) == ema(closes, period)
+
+
+def test_atr_and_ema_caches_do_not_share_entries():
+    bars = bars_from_closes([100.0, 101.0, 103.0, 102.0, 104.0])
+    market = Mock(spec=MarketDataService)
+    market.bars.side_effect = lambda symbol, timeframe, count: bars[-count:]
+    service = IndicatorService(market)
+
+    assert service.atr("USDJPY", "1m", 3) == atr(bars, 3)
+    assert service.ema("USDJPY", "1m", 3) == ema([float(b.close) for b in bars], 3)
+    assert service.atr("USDJPY", "1m", 3) != service.ema("USDJPY", "1m", 3)

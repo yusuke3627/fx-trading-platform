@@ -33,6 +33,9 @@ class IndicatorService:
         self._atr_cache: dict[
             tuple[str, str, int], tuple[tuple[Bar, ...], float | None]
         ] = {}
+        self._ema_cache: dict[
+            tuple[str, str, int], tuple[tuple[Bar, ...], float | None]
+        ] = {}
 
     def atr(self, symbol: str, timeframe: str, period: int = 14) -> float | None:
         # The read follows the requested period: a configured period beyond
@@ -50,8 +53,16 @@ class IndicatorService:
 
     def ema(self, symbol: str, timeframe: str, period: int) -> float | None:
         count = max(self._bar_count, period + 1)
-        closes = [float(b.close) for b in self._market.bars(symbol, timeframe, count)]
-        return _ema(closes, period)
+        bars = tuple(self._market.bars(symbol, timeframe, count))
+        key = (symbol, timeframe, period)
+        cached = self._ema_cache.get(key)
+        # atr と同じ理由で入力窓全体を比較する。末尾の時刻だけでは過去足の
+        # 訂正を見逃す。一致する限り終値への変換も EMA 計算も省ける。
+        if cached is None or cached[0] != bars:
+            closes = [float(b.close) for b in bars]
+            cached = (bars, _ema(closes, period))
+            self._ema_cache[key] = cached
+        return cached[1]
 
     def vwap(
         self,

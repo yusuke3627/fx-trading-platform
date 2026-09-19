@@ -142,6 +142,73 @@ def test_raw_archive_scopes_comparison_by_uri_and_type(repo):
         ).fetchone()["n"] == 3
 
 
+def test_latest_raw_hash_returns_only_the_newest_matching_hash(repo):
+    from trading.storage.postgres import connect
+
+    r, event_type = repo
+    uri = "https://example.invalid/latest-raw"
+    assert r.latest_raw_hash(event_type, uri) is None
+    latest = event(event_type, 1).model_copy(update={
+        "source_uri": uri, "payload_hash": "newest-known-at",
+    })
+    r.insert(latest)
+    # 保存順ではなく known_at が優先される。
+    r.insert(event(event_type).model_copy(update={
+        "source_uri": uri, "payload_hash": "older-known-at",
+    }))
+    assert r.latest_raw_hash(event_type, uri) == "newest-known-at"
+
+    same_time = latest.model_copy(update={"event_id": uuid4(), "payload_hash": "newest-created"})
+    r.insert(same_time)
+    # created_at を明示し、時刻の分解能や DB の処理時間に依存させない。
+    with connect(DSN) as conn:
+        conn.execute("UPDATE events SET created_at = %s WHERE id = %s", (T0, latest.event_id))
+        conn.execute(
+            "UPDATE events SET created_at = %s WHERE id = %s",
+            (T0 + timedelta(seconds=1), same_time.event_id),
+        )
+    assert r.latest_raw_hash(event_type, uri) == "newest-created"
+
+    # known_at・created_at が同じ場合は id の降順で1件に決まる。
+    tied = latest.model_copy(update={"event_id": uuid4(), "payload_hash": "id-tie"})
+    r.insert(tied)
+    with connect(DSN) as conn:
+        conn.execute(
+            "UPDATE events SET created_at = %s WHERE id = %s",
+            (T0 + timedelta(seconds=1), tied.event_id),
+        )
+    expected = max((same_time, tied), key=lambda row: row.event_id).payload_hash
+    assert r.latest_raw_hash(event_type, uri) == expected
+
+    for overrides in [
+        {"source_uri": "https://example.invalid/other-raw"},
+        {"event_type": f"{event_type}_OTHER"},
+        {"payload_hash": None},
+    ]:
+        r.insert(latest.model_copy(update={
+            "event_id": uuid4(), "known_at": T0 + timedelta(days=1), **overrides,
+        }))
+    assert r.latest_raw_hash(event_type, uri) == expected
+
+
+def test_initial_raw_archive_rejects_a_competing_different_version(repo):
+    r, event_type = repo
+    uri = "https://example.invalid/concurrent-initial"
+    assert r.latest_raw_hash(event_type, uri) is None
+    competing = event(event_type).model_copy(update={
+        "source_uri": uri, "payload_hash": "competing-version",
+    })
+    assert r.insert_raw_archive(competing)
+    candidate = competing.model_copy(update={"event_id": uuid4(), "payload_hash": "candidate"})
+    with pytest.raises(ValueError, match="初回判定後"):
+        r.insert_raw_archive(candidate, require_initial=True)
+    assert r.latest_raw_hash(event_type, uri) == "competing-version"
+    assert r.known_before(T0, event_type) == [competing]
+    assert not r.insert_raw_archive(
+        competing.model_copy(update={"event_id": uuid4()}), require_initial=True
+    )
+
+
 def test_concurrent_raw_archives_store_only_one_snapshot(repo):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier

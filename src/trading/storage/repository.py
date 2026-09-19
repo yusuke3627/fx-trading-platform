@@ -85,9 +85,16 @@ class EventRepository(Protocol):
     # (policy meeting scores), re-running is a no-op instead of an error.
     def insert_new(self, event: EventEnvelope) -> bool: ...
 
+    # payload 本体を読まず、known_at・created_at・id の降順で最新のハッシュを返す。
+    def latest_raw_hash(self, event_type: str, source_uri: str) -> str | None: ...
+
     # 同じ source_uri・event_type の最新 raw と同値なら省略する。
     # source_uri と payload_hash は必須。変更後に元へ戻った内容も保存する。
-    def insert_raw_archive(self, event: EventEnvelope) -> bool: ...
+    # require_initial=True で異なる raw が既にあれば ValueError。初回と判断した
+    # backfill を競合で訂正版になった後も過去の known_at で保存することを防ぐ。
+    def insert_raw_archive(
+        self, event: EventEnvelope, *, require_initial: bool = False
+    ) -> bool: ...
 
     # Insert, or bring an existing row's fact columns in line with the
     # envelope; returns "inserted" / "updated" / "unchanged". For ingests

@@ -1032,7 +1032,18 @@ class PostgresEventRepository:
         self._conn.commit()
         return cursor.rowcount == 1
 
-    def insert_raw_archive(self, e: EventEnvelope) -> bool:
+    def latest_raw_hash(self, event_type: str, source_uri: str) -> str | None:
+        row = self._conn.execute(
+            """
+            SELECT payload_hash FROM events
+            WHERE source_uri = %s AND event_type = %s AND payload_hash IS NOT NULL
+            ORDER BY known_at DESC, created_at DESC, id DESC LIMIT 1
+            """,
+            (source_uri, event_type),
+        ).fetchone()
+        return row["payload_hash"] if row is not None else None
+
+    def insert_raw_archive(self, e: EventEnvelope, *, require_initial: bool = False) -> bool:
         ensure_json_native(e.payload)
         if not e.source_uri or not e.payload_hash:
             raise ValueError("raw archive requires source_uri and payload_hash")
@@ -1042,6 +1053,10 @@ class PostgresEventRepository:
                 "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
                 (e.event_type, e.source_uri),
             )
+            if require_initial:
+                latest_hash = self.latest_raw_hash(e.event_type, e.source_uri)
+                if latest_hash is not None and latest_hash != e.payload_hash:
+                    raise ValueError("初回判定後に raw archive が更新されました。再取得が必要です")
             cursor = self._conn.execute(
                 """
                 INSERT INTO events (

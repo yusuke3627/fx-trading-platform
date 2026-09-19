@@ -237,6 +237,25 @@ class FakeEventRepository:
     def __init__(self, events: Sequence[EventEnvelope] = ()) -> None:
         self.events = list(events)
 
+    def latest_raw_hash(self, event_type: str, source_uri: str) -> str | None:
+        matching = [
+            existing for existing in self.events
+            if (existing.event_type, existing.source_uri) == (event_type, source_uri)
+            and existing.payload_hash is not None
+        ]
+        # 同じ known_at なら後から保存した行が最新（DB の created_at に相当）。
+        matching.sort(key=lambda existing: existing.known_at)
+        return matching[-1].payload_hash if matching else None
+
+    def insert_raw_archive(self, event: EventEnvelope, *, require_initial: bool = False) -> bool:
+        latest_hash = self.latest_raw_hash(event.event_type, event.source_uri)
+        if latest_hash == event.payload_hash:
+            return False
+        if require_initial and latest_hash is not None:
+            raise ValueError("初回判定後に raw archive が更新されました。再取得が必要です")
+        self.events.append(event)
+        return True
+
     def known_before(
         self,
         t: datetime,

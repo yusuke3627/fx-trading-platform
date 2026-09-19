@@ -23,7 +23,11 @@ dependencies = [
 db = ["psycopg[binary]>=3.1"]
 mt5 = ["MetaTrader5>=5.0.45; sys_platform == 'win32'"]
 llm = ["openai>=2.0"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "lefthook>=1.7"]
+pdf = ["pypdf>=6.9.1"]
+# pypdf は実行ホストの依存としては pdf extra 側が正本。dev にも入れるのは、
+# 入っていないと PDF 抽出のテストが importorskip で丸ごと飛び、pypdf の API 変更や
+# 壊れた PDF の扱いの退行が CI を素通りするため。
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "lefthook>=1.7", "pypdf>=6.9.1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trading"]

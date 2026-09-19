@@ -32,6 +32,13 @@ if ! "$PY" -m trading.data.policy.collector --env "$ENV_NAME"; then
   failed=1
 fi
 
+# 主な意見は会合の約 8 営業日後に出る。日次で回して初めて、新しい公表と
+# 訂正版が PIT アーカイブへ入る（pypdf が要る。dev / pdf extra のどちらか）。
+if ! "$PY" -m trading.data.policy.opinions_collector --env "$ENV_NAME"; then
+  echo "FAILED: policy_opinions"
+  failed=1
+fi
+
 if ! "$PY" -m trading.data.intervention.collector --env "$ENV_NAME"; then
   echo "FAILED: intervention"
   failed=1

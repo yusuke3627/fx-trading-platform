@@ -396,6 +396,15 @@ def summarize(
         "model": DEFAULT_MODEL, "batch_status": batch_status, "threshold": float(THRESHOLD),
         "total_meetings": len(cases), "completed_meetings": len(cases) - len(failures),
         "rows": rows, "failures": failures, "tied_groups": groups, "verdict": verdict,
+        # キーワード版は LLM を使わないので欠測が無く、判定を確定できる側である。
+        # 既存スコアとの相関も LLM 版とは別系列・別 n なので混ぜずに併記する。
+        "keyword_spearman": {
+            "n": sum(k is not None for k in keywords),
+            "rho": spearman(
+                [s for s, k in zip(scores, keywords, strict=True) if k is not None],
+                [k for k in keywords if k is not None],
+            ),
+        },
         "spearman": {"n": len(paired), "rho": spearman(
             [s for s, _, _ in paired], [b for _, b, _ in paired],
         )},
@@ -414,9 +423,10 @@ def summarize(
             # 欠測した会合で 0.25 以上になる可能性を排除できず、事前登録した
             # 「全20件で最大差が0.25未満」を満たさない。llm_differs は 1 件でも
             # 閾値に達すれば成立するので、欠測があっても確定してよい。
+            # llm_differs は 1 件でも閾値に達すれば成立するので欠測より先に見る。
+            # 全件欠測なら differences は空だが、判定は null ではなく incomplete。
             "verdict": (
-                None if not differences
-                else "llm_differs" if max(differences) >= THRESHOLD
+                "llm_differs" if differences and max(differences) >= THRESHOLD
                 else "incomplete" if len(paired) != len(cases)
                 else "keyword_sufficient"
             ),
@@ -487,11 +497,16 @@ def render_report(report: Mapping[str, Any]) -> str:
     lines.extend([
         "", f"Spearman（既存スコアとLLM版）: n={rho['n']}, rho={cell(rho['rho'])}",
         "", f"キーワード版の主判定: {report['keyword_verdict']}",
-        "", (f"LLM版とキーワード版: n={comparison['n']}, "
+        "", (f"Spearman（既存スコアとキーワード版）: n={report['keyword_spearman']['n']}, "
+        f"rho={cell(report['keyword_spearman']['rho'])}"),
+        # 判定を落とすと、最大差が閾値未満という数値だけが見えて
+        # keyword_sufficient と誤読される。数値より先に判定を出す。
+        "", (f"LLM版とキーワード版の判定: **{comparison['verdict']}** "
+        f"（n={comparison['n']}, "
         f"完全一致={comparison['exact_matches']}, "
         f"平均絶対差={cell(comparison['mean_absolute_difference'])}, "
         f"最大絶対差={cell(comparison['max_absolute_difference'])}, "
-        f"Spearman={cell(comparison['spearman_rho'])}"),
+        f"Spearman={cell(comparison['spearman_rho'])}）"),
         "", f"使用tokens: {report['usage']}",
         "", (f"推定費用: USD {report['estimated_cost_usd']} / "
         f"usage未取得={report['usage_unavailable_requests']}件 / "

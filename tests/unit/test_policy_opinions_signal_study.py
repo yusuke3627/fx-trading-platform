@@ -474,6 +474,41 @@ def test_llm_differs_is_decided_even_with_a_missing_meeting():
     assert report["keyword_comparison"]["verdict"] == "llm_differs"
 
 
+def test_all_meetings_missing_is_incomplete_not_null():
+    """全件欠測でも判定は null ではなく incomplete。
+
+    差が空になる分岐を先に置くと、下流が判定値を列挙型として扱えなくなる。
+    """
+    report = summarize([case(), case(day=2)], [])
+
+    assert report["keyword_comparison"]["n"] == 0
+    assert report["keyword_comparison"]["max_absolute_difference"] is None
+    assert report["keyword_comparison"]["verdict"] == "incomplete"
+
+
+def test_the_keyword_arm_reports_its_own_correlation_series():
+    """キーワード版と既存スコアの相関は LLM 版とは別系列・別 n。
+
+    混ぜると、判定を確定できたキーワード版の主張に LLM 版（欠測あり）の
+    統計量を貼り付けることになる。
+    """
+    ok, missing = case(), case(day=2)
+    report = summarize([ok, missing], [response(ok)])
+
+    assert report["spearman"]["n"] == 1          # LLM 版は欠測で 1 件
+    assert report["keyword_spearman"]["n"] == 2  # キーワード版は欠測なし
+
+
+def test_the_markdown_report_shows_the_comparison_verdict():
+    """判定を落とすと最大差の数値だけが見えて keyword_sufficient と誤読される。"""
+    ok, missing = case(), case(day=2)
+    report = summarize([ok, missing], [response(ok)])
+    table = study.render_report(report)
+
+    assert "incomplete" in table
+    assert "Spearman（既存スコアとキーワード版）" in table
+
+
 def test_note_lists_all_preregistered_keywords():
     note = Path("docs/research/2026-09-20-opinions-signal-redundancy-screen.md").read_text()
     for word in (*study.HIKE_KEYWORDS, *study.CUT_KEYWORDS):

@@ -409,9 +409,15 @@ def summarize(
             # 副次判定。主判定と同じ 0.25 を単位に使い、二つ目の恣意的な数値を
             # 持ち込まない。keyword_sufficient なら、この feature に LLM は要らず
             # Gate のコスト側が変わる。どちらが正しいかはこの測定では決まらない。
+            #
+            # 欠測があるときは確定させない。差は成功したペアだけで作られるので、
+            # 欠測した会合で 0.25 以上になる可能性を排除できず、事前登録した
+            # 「全20件で最大差が0.25未満」を満たさない。llm_differs は 1 件でも
+            # 閾値に達すれば成立するので、欠測があっても確定してよい。
             "verdict": (
                 None if not differences
                 else "llm_differs" if max(differences) >= THRESHOLD
+                else "incomplete" if len(paired) != len(cases)
                 else "keyword_sufficient"
             ),
         },

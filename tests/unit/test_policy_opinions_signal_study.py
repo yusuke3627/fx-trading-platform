@@ -450,6 +450,30 @@ def test_the_keyword_verdict_uses_the_same_threshold_as_the_main_decision():
     assert study.THRESHOLD == Fraction(1, 4)
 
 
+def test_the_keyword_verdict_is_incomplete_when_a_meeting_is_missing():
+    """欠測があるときに keyword_sufficient を確定させない。
+
+    差は成功したペアだけで作られるので、欠測した会合で 0.25 以上になる可能性を
+    排除できない。事前登録した「全20件で最大差が0.25未満」を満たさないまま
+    「この feature に LLM は要らない」と読まれるのを防ぐ。
+    """
+    ok, missing = case(), case(day=2)
+    report = summarize([ok, missing], [response(ok)])
+
+    assert report["keyword_comparison"]["n"] == 1
+    assert report["keyword_comparison"]["max_absolute_difference"] == 0.0
+    assert report["keyword_comparison"]["verdict"] == "incomplete"
+
+
+def test_llm_differs_is_decided_even_with_a_missing_meeting():
+    """llm_differs は 1 件でも閾値に達すれば成立するので欠測があっても確定する。"""
+    big, missing = case(), case(day=2)
+    report = summarize([big, missing], [response(big, ("CUT", "CUT"))])
+
+    assert report["keyword_comparison"]["max_absolute_difference"] >= float(study.THRESHOLD)
+    assert report["keyword_comparison"]["verdict"] == "llm_differs"
+
+
 def test_note_lists_all_preregistered_keywords():
     note = Path("docs/research/2026-09-20-opinions-signal-redundancy-screen.md").read_text()
     for word in (*study.HIKE_KEYWORDS, *study.CUT_KEYWORDS):

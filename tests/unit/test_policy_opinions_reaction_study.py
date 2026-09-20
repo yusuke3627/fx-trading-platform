@@ -566,3 +566,39 @@ def test_descriptive_series_use_independent_samples_and_expected_count_uses_obse
     assert "| 事象 | 全体 | 2 | 6.0000 | 7.6000 | 7.8000 | 2 | 5.0000 | 2 | 0.2000 |" in markdown
     assert "abs(pre10) n" in markdown
     assert "| pre10 bp |" not in markdown
+
+
+def test_secondary_post60_ranks_against_the_same_weekday_and_never_judges():
+    cases = corpus()
+    events = {}
+    for case in cases:
+        base = observation(1.0, t0=case.t0)
+        loud = study.Window(
+            return_bp=50.0, tick_count=30, median_spread_bp=Decimal("0.2"),
+            start=case.t0, end=case.t0 + study.POST_SECONDARY,
+            start_tick_at=case.t0, end_tick_at=case.t0 + study.POST_SECONDARY,
+            start_price=Decimal(100), end_price=Decimal(101),
+        )
+        events[case.decision_date] = base.model_copy(update={"post60": loud})
+    report = study.summarize(cases, events, control_observations(1.0), {})
+    secondary = report["secondary_post60"]
+    assert secondary["verdict"] is None
+    assert secondary["no_threshold_was_preregistered"] is True
+    assert secondary["n"] == 20
+    assert secondary["median_percentile"] == 1.0
+    assert secondary["above_control_p90"] == 20
+    # post60 が閾値を超えても主判定は post10 のままで動かない。
+    assert report["primary"]["verdict"] == "not_established"
+    assert [row["percentile_abs_post60"] for row in report["events"]] == [1.0] * 20
+
+
+def test_secondary_post60_skips_events_without_the_window():
+    cases = corpus()
+    events = {c.decision_date: observation(1.0, t0=c.t0) for c in cases}
+    first = cases[0].decision_date
+    events[first] = events[first].model_copy(update={"post60": None})
+    report = study.summarize(cases, events, control_observations(1.0), {})
+    assert report["secondary_post60"]["n"] == 19
+    assert report["events"][0]["percentile_abs_post60"] is None
+    # 副次窓が欠けても主判定の観測は残る。
+    assert report["primary"]["missing"] == 0

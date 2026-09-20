@@ -395,8 +395,16 @@ def summarize(
         for day, observations in controls_by_weekday.items()
     }
     control_distributions = {day: distribution(sample) for day, sample in samples.items()}
+    # post60 は副次窓なので判定に使わない。閾値も登録していない。事前登録が
+    # 「主判定が not_established でも post60 に反応があれば、反応が無いのではなく
+    # 時刻の取り方が悪い証拠になる」と定めた分を、主判定と同じ手続きで並べる。
+    samples60 = {
+        day: [abs(o.post60.return_bp) for o in observations if o.post60 is not None]
+        for day, observations in controls_by_weekday.items()
+    }
     returns_by_weekday: dict[int, list[float]] = {day: [] for day in weekdays}
     above_by_weekday: Counter[int] = Counter()
+    ranks60: list[float] = []
     rows, ranks = [], []
     delta_x, delta_y, level_x, level_y = [], [], [], []
     for index, case in enumerate(cases):
@@ -417,6 +425,13 @@ def summarize(
                 if index > 0 and cases[index - 1].balance is not None:
                     delta_x.append(case.balance - cases[index - 1].balance)
                     delta_y.append(value)
+        rank60 = (
+            percentile(abs(observation.post60.return_bp), samples60[day])
+            if day is not None and observation is not None and observation.post60 is not None
+            and samples60[day] else None
+        )
+        if rank60 is not None:
+            ranks60.append(rank60)
         rows.append({
             "decision_date": case.decision_date.isoformat(),
             "t0": case.t0.isoformat() if case.t0 else None,
@@ -424,6 +439,7 @@ def summarize(
             "keyword_balance": str(case.balance) if case.balance is not None else None,
             "keyword_error": case.keyword_error, "missing_reason": reason,
             "percentile_abs_post10": rank,
+            "percentile_abs_post60": rank60,
             "observation": observation.model_dump(mode="json") if observation else None,
         })
     control_dist = distribution([value for sample in samples.values() for value in sample])
@@ -431,6 +447,13 @@ def summarize(
     event_observations = [events[c.decision_date] for c in cases if c.decision_date in events]
     return {
         "study_version": STUDY_VERSION, "primary": judge(ranks), "events": rows,
+        "secondary_post60": {
+            "verdict": None,
+            "no_threshold_was_preregistered": True,
+            "n": len(ranks60),
+            "median_percentile": statistics.median(ranks60) if ranks60 else None,
+            "above_control_p90": sum(rank > 0.90 for rank in ranks60),
+        },
         "controls": {
             "abs_post10": control_dist,
             "by_jst_weekday": {
@@ -486,8 +509,9 @@ def render_report(report: Mapping[str, Any]) -> str:
          f"{primary['missing']}/{primary['n']}, 対照 = {control['abs_post10']['n']}日）"), "",
         "## 事象ごと", "",
         ("| 会合日 | 公表(UTC) | JST曜日 | post10 bp | abs(post10) の同曜日対照パーセンタイル "
-         "| post60 bp | abs(pre10) bp | tick数 | スプレッド中央値 bp | 備考 |"),
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---|",
+         "| post60 bp | abs(post60) の同曜日対照パーセンタイル | abs(pre10) bp | tick数 "
+         "| スプレッド中央値 bp | 備考 |"),
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in report["events"]:
         observation = row["observation"] or {}
@@ -503,7 +527,8 @@ def render_report(report: Mapping[str, Any]) -> str:
         lines.append(
             f"| {row['decision_date']} | {row['t0'] or '—'} | {weekday_label(row['jst_weekday'])} "
             f"| {fmt(post10.get('return_bp'))} | {fmt(row['percentile_abs_post10'])} "
-            f"| {fmt(post60.get('return_bp'))} | {fmt(abs(pre_value) if pre_value is not None else None)} "
+            f"| {fmt(post60.get('return_bp'))} | {fmt(row['percentile_abs_post60'])} "
+            f"| {fmt(abs(pre_value) if pre_value is not None else None)} "
             f"| {post10.get('tick_count', '—')} | {fmt(post10.get('median_spread_bp'))} | {note} |"
         )
     lines += [
@@ -564,7 +589,19 @@ def render_report(report: Mapping[str, Any]) -> str:
                 f"| {fmt(pre['p90_bp'])} | {fmt(pre['p95_bp'])} | {post['n']} "
                 f"| {fmt(post['median_bp'])} | {spread['n']} | {fmt(spread['median_bp'])} |"
             )
-    lines += ["", "## 向き（副次）", "", "解釈するのは主判定が reacts の場合のみ。", ""]
+    secondary = report["secondary_post60"]
+    lines += [
+        "", "## 副次窓 post60（判定なし）", "",
+        (f"同曜日対照に対する abs(post60) のパーセンタイル中央値 = "
+         f"{fmt(secondary['median_percentile'])}（n={secondary['n']}, "
+         f"対照90パーセンタイル超過 = {secondary['above_control_p90']}件）。"),
+        "",
+        ("**post60 に閾値は事前登録していない。ここから判定を出さない。**"
+         "主判定が not_established のとき、反応が無いのか窓の取り方が短すぎるのかを"
+         "見分けるための材料として置いてある。"),
+        "",
+        "## 向き（副次）", "", "解釈するのは主判定が reacts の場合のみ。", "",
+    ]
     for key, label in (("keyword_change", "前会合差"), ("keyword_level", "水準")):
         direction = report["direction"][key]
         lines += [(f"Spearman（キーワード指標の{label} と post10 bp）: "

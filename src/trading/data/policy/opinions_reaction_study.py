@@ -402,9 +402,11 @@ def summarize(
         day: [abs(o.post60.return_bp) for o in observations if o.post60 is not None]
         for day, observations in controls_by_weekday.items()
     }
+    control_distributions60 = {day: distribution(sample) for day, sample in samples60.items()}
     returns_by_weekday: dict[int, list[float]] = {day: [] for day in weekdays}
     above_by_weekday: Counter[int] = Counter()
     ranks60: list[float] = []
+    above_p90_60 = 0
     rows, ranks = [], []
     delta_x, delta_y, level_x, level_y = [], [], [], []
     for index, case in enumerate(cases):
@@ -432,6 +434,9 @@ def summarize(
         )
         if rank60 is not None:
             ranks60.append(rank60)
+            above_p90_60 += (
+                abs(observation.post60.return_bp) > control_distributions60[day]["p90_bp"]
+            )
         rows.append({
             "decision_date": case.decision_date.isoformat(),
             "t0": case.t0.isoformat() if case.t0 else None,
@@ -452,7 +457,7 @@ def summarize(
             "no_threshold_was_preregistered": True,
             "n": len(ranks60),
             "median_percentile": statistics.median(ranks60) if ranks60 else None,
-            "above_control_p90": sum(rank > 0.90 for rank in ranks60),
+            "above_control_p90": above_p90_60,
         },
         "controls": {
             "abs_post10": control_dist,

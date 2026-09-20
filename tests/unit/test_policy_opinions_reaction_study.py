@@ -592,6 +592,17 @@ def test_secondary_post60_ranks_against_the_same_weekday_and_never_judges():
     assert [row["percentile_abs_post60"] for row in report["events"]] == [1.0] * 20
 
 
+def test_secondary_post60_strict_p90_comparison_at_midrank_boundary():
+    case = corpus()[0]
+    events = {case.decision_date: observation(40, t0=case.t0)}
+    controls = [observation(value, t0=case.t0 + timedelta(weeks=value + 1))
+                for value in range(45)]
+    report = study.summarize([case], events, controls, {})
+    assert report["events"][0]["percentile_abs_post60"] == .90
+    assert report["secondary_post60"]["median_percentile"] == .90
+    assert report["secondary_post60"]["above_control_p90"] == 1
+
+
 def test_secondary_post60_skips_events_without_the_window():
     cases = corpus()
     events = {c.decision_date: observation(1.0, t0=c.t0) for c in cases}

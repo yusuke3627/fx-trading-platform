@@ -205,9 +205,12 @@ def order_errors(order: OrderObservation, data: StudyInput) -> list[str]:
     if any(s.at.basis == order.created_at.basis and s.at.at < order.created_at.at
            for s in order.states):
         errors.append("state_before_creation")
-    if any(a.at.basis == b.at.basis and a.at.at > b.at.at
-           for a, b in zip(order.states, order.states[1:])):
-        errors.append("state_history_not_ordered")
+    previous_by_basis: dict[Basis, datetime] = {}
+    for state in order.states:
+        previous = previous_by_basis.get(state.at.basis)
+        if previous is not None and state.at.at < previous:
+            errors.append("state_history_not_ordered")
+        previous_by_basis[state.at.basis] = state.at.at
     if any(s.terminal for s in order.states[:-1]):
         errors.append("state_after_terminal")
     if order.history_complete and order.states and order.states[-1].state != order.final_state:
@@ -279,6 +282,8 @@ def fill_metrics(
     fill_stamp = fill.executed_at or fill.received_at
     if quote and (fill_stamp is None or fill_stamp.basis != order.decision_at.basis):
         quote, status = None, "missing_or_mixed_fill_basis"
+    if quote and fill_stamp.at < order.decision_at.at:
+        quote, status = None, "invalid_chronology"
     if quote:
         reference = quote.ask if order.side is ExecutionSide.BUY else quote.bid
         slippage = sign * (fill.price - reference) / spec.pip_size

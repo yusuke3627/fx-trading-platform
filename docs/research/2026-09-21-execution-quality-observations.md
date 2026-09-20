@@ -35,7 +35,7 @@ Issue [#203](https://github.com/yusuke3627/fx-trading-platform/issues/203) の�
 
 観測窓の `at` は、由来を問わず正規化済み UTC 値を含める共通の抽出範囲である。範囲外の値は対象外の入力として不整合にする。窓の `basis` は打切り時計の由来を示し、その時計と由来の異なる未完了区間の滞留秒数は `mixed_basis` とする。抽出範囲の判定と、状態間の時計順序・時間差の検証を分けている。
 
-異なる由来の時刻を引き算せず、状態時刻の順序も同じ由来の間でだけ検証し、集計分布を分ける。raw `broker_time` は比較に使わない。独立に保存した約定時刻、または時計の対応を検証した変換結果だけを `executed_at` に入れる。後者は `reconstructed` とし、同じ基準の quote がなければ markout も欠測にする。
+異なる由来の時刻を引き算せず、状態時刻の順序も同じ由来の間でだけ検証し、集計分布を分ける。間に別由来の状態があっても、同じ由来の前回状態より時刻が逆転すれば不整合とする。raw `broker_time` は比較に使わない。独立に保存した約定時刻、または時計の対応を検証した変換結果だけを `executed_at` に入れる。後者は `reconstructed` とし、同じ基準の quote がなければ markout も欠測にする。
 
 ## 計測規約
 
@@ -50,7 +50,7 @@ Issue [#203](https://github.com/yusuke3627/fx-trading-platform/issues/203) の�
 評価時点は `executed_at + horizon`。symbol・由来ごとの時刻順索引を1回作り、その時点以前に届いた最新 quote を二分探索で選ぶ。最大経過秒を超えたら欠測とする。未来に届く quote を評価期限へ遡って採用しない。評価時点が観測窓の終了を超えた場合は `right_censored`。
 
 - BUY は `(評価時 bid − fill 価格) / pip_size`、SELL は `(fill 価格 − 評価時 ask) / pip_size`。有利な変化が正。mid 基準も個々の fill に併記する。
-- 判断時からの滑りは BUY が `(fill 価格 − 判断時 ask) / pip_size`、SELL が `(判断時 bid − fill 価格) / pip_size`。こちらは不利な滑りが正。
+- 判断時からの滑りは BUY が `(fill 価格 − 判断時 ask) / pip_size`、SELL が `(判断時 bid − fill 価格) / pip_size`。こちらは不利な滑りが正。fill の時刻（約定時刻がなければ受信時刻）が判断時刻と同じ由来で、判断時刻以後の場合だけ計測する。逆転時は滑りだけを `invalid_chronology` の欠測にする。
 - 複数 fill は実際の fill 数量で加重する。quote 通貨の価格差×数量も個別に残すが、手数料・carry を含む実現損益ではない。
 
 symbol・horizon・由来別に、全注文に対する計測注文数と、既知 fill に対する計測 fill 数を出す。計測注文は、その条件で1件以上の fill を評価できた注文。全 fill が評価できたことを意味しない。fill 履歴の不完全な注文数も併記する。別由来の標本は `other_basis` とし、同じ分布へ混ぜない。

@@ -217,6 +217,40 @@ def test_mixed_state_clocks_only_exclude_pending_intervals(payload, partial_time
     assert "state_history_not_ordered" in row(report(payload))["errors"]
 
 
+@pytest.mark.parametrize("unknown_time", [4, 7])
+def test_state_order_is_checked_across_intervening_other_basis(payload, unknown_time):
+    partial = payload["orders"][-1]
+    partial["final_state"] = "UNKNOWN"
+    partial["states"] = partial["states"][:-1] + [
+        {"state": "ACKNOWLEDGED", "at": stamp(5)},
+        {"state": "PARTIAL_FILL", "at": stamp(6, "reconstructed")},
+        {"state": "UNKNOWN", "at": stamp(unknown_time)},
+    ]
+    measured = row(report(payload), "partial-open")
+    if unknown_time == 4:
+        assert "state_history_not_ordered" in measured["errors"]
+        assert measured["pending"] == {"status": "invalid_order", "intervals": []}
+    else:
+        assert measured["status"] == "ok"
+        assert measured["pending"]["intervals"][-1]["remaining_quantity_seconds"] == Decimal(1800)
+
+
+@pytest.mark.parametrize("execution_missing", [False, True])
+def test_fill_before_decision_cannot_be_used_for_slippage(payload, execution_missing):
+    buy = payload["orders"][0]
+    buy["decision_at"] = stamp(4)
+    buy["sent_at"]["basis"] = "reconstructed"
+    if execution_missing:
+        buy["fills"][0]["executed_at"] = None
+    measured = row(report(payload))
+    assert measured["status"] == "ok"
+    assert measured["fills"][0]["decision_slippage"]["status"] == "invalid_chronology"
+    assert measured["fills"][0]["decision_slippage"]["adverse_pips"] is None
+    assert measured["fills"][1]["decision_slippage"]["status"] == "ok"
+    if not execution_missing:
+        assert measured["fills"][0]["markouts"][0]["executable_pips"] == Decimal(1)
+
+
 def test_unsorted_quotes_are_indexed_without_mixing_symbol_or_basis(payload):
     expected = report(payload)
     payload["quotes"].reverse()

@@ -10,10 +10,12 @@ import hashlib
 import lzma
 import math
 import sys
+from bisect import bisect_left
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from fractions import Fraction
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +37,6 @@ from trading.data.policy.opinions_reaction_study import (
     control_days,
     fetch_hours,
     hours_for,
-    mid_at,
     prepare_cases,
     select_meetings,
     window_stats,
@@ -78,16 +79,15 @@ def onset_bins(t0: datetime) -> list[tuple[int, datetime, datetime]]:
 def measure(ticks: Sequence[Tick], t0: datetime) -> Observation:
     post10 = window_stats(ticks, t0, t0 + POST_PRIMARY)
     tick_count = post10.tick_count if post10 is not None else None
-    # 09:00のtickはオンセットに入れない。対照の流動性の床だけは段階3bの閉区間を保つ。
-    onset_ticks = [tick for tick in ticks if tick.time < t0 + ONSET_AFTER]
-    price = mid_at(onset_ticks, t0 - ONSET_BEFORE)
-    if price is None:
+    start_index = bisect_left(ticks, t0 - ONSET_BEFORE, key=lambda tick: tick.time) - 1
+    if start_index < 0:
         return Observation(t0=t0, post10_tick_count=tick_count,
                            missing_reason="missing_start_price")
+    price = ticks[start_index].mid
     returns = []
     bins = onset_bins(t0)
     for _, _, end in bins:
-        next_price = mid_at(onset_ticks, end)
+        next_price = ticks[bisect_left(ticks, end, key=lambda tick: tick.time) - 1].mid
         returns.append(math.log(float(next_price / price)) * 10_000)
         price = next_price
     largest = max(range(len(returns)), key=lambda i: abs(returns[i]))
@@ -97,10 +97,13 @@ def measure(ticks: Sequence[Tick], t0: datetime) -> Observation:
     k_star = bins[largest][0]
     subbin_max = None
     if k_star == 0:
+        subprices = [
+            ticks[bisect_left(ticks, t0 + i * SUBBIN, key=lambda tick: tick.time) - 1].mid
+            for i in range(BIN // SUBBIN + 1)
+        ]
         subreturns = [
-            math.log(float(mid_at(onset_ticks, t0 + (i + 1) * SUBBIN)
-                           / mid_at(onset_ticks, t0 + i * SUBBIN))) * 10_000
-            for i in range(BIN // SUBBIN)
+            math.log(float(end_price / start_price)) * 10_000
+            for start_price, end_price in pairwise(subprices)
         ]
         subbin_max = max(range(len(subreturns)), key=lambda i: abs(subreturns[i]))
     return Observation(t0=t0, returns_bp=tuple(returns), k_star=k_star,
@@ -353,7 +356,7 @@ def study_definition() -> dict[str, Any]:
         "onset_window": "[t0 - ONSET_BEFORE, t0 + ONSET_AFTER)",
         "post10_liquidity_window": "[t0, t0 + POST_PRIMARY]",
         "tie_break": "earliest", "all_zero": "no_movement",
-        "price": "last tick at or before endpoint, excluding ticks at/after onset window end",
+        "price": "last tick strictly before endpoint",
         "primary_order": ["onset_at_publication", "incomplete", "not_established"],
     }
 

@@ -56,7 +56,7 @@ def test_registered_constants_and_bins():
 @pytest.mark.parametrize("k", [-10, -3, 0, 9])
 @pytest.mark.parametrize("price", ["102", "98"])
 def test_unique_largest_absolute_return_and_empty_intervals(k, price):
-    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE),
+    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
              make_tick(price, price, T0 + k * study.BIN + timedelta(seconds=5))]
     observation = study.measure(ticks, T0)
     assert observation.k_star == k
@@ -68,7 +68,7 @@ def test_unique_largest_absolute_return_and_empty_intervals(k, price):
 
 
 def test_tie_chooses_earlier_interval():
-    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE),
+    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
              make_tick("200", "200", T0 - timedelta(minutes=2, seconds=30)),
              make_tick("400", "400", T0 + timedelta(seconds=30))]
     observation = study.measure(ticks, T0)
@@ -76,18 +76,32 @@ def test_tie_chooses_earlier_interval():
     assert observation.k_star == -3
 
 
-def test_endpoint_uses_last_tick_at_or_before_without_future_price():
-    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE),
+def test_endpoint_uses_last_tick_strictly_before_without_future_price():
+    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
              make_tick("200", "200", T0), make_tick("400", "400", T0),
              make_tick("800", "800", T0 + timedelta(minutes=1, microseconds=1))]
     observation = study.measure(ticks, T0)
-    assert observation.returns_bp[9] == pytest.approx(math.log(4) * 10_000)
-    assert observation.returns_bp[10] == 0
+    assert observation.returns_bp[9] == 0
+    assert observation.returns_bp[10] == pytest.approx(math.log(4) * 10_000)
     assert observation.returns_bp[11] == pytest.approx(math.log(2) * 10_000)
+    assert observation.k_star == 0
+    assert observation.subbin_max == 0
+
+
+@pytest.mark.parametrize("k", range(-10, 10))
+def test_tick_on_minute_boundary_belongs_to_interval_starting_there(k):
+    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
+             make_tick("101", "101", T0 + k * study.BIN)]
+    observation = study.measure(ticks, T0)
+    assert observation.k_star == k
+    assert observation.returns_bp[k + 10] == pytest.approx(math.log(1.01) * 10_000)
+    assert sum(r != 0 for r in observation.returns_bp) == 1
+    if k == 0:
+        assert observation.subbin_max == 0
 
 
 def test_window_end_tick_is_excluded_from_onset_but_counts_for_post10_floor():
-    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE)]
+    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1))]
     ticks += [make_tick("100", "100", T0 + timedelta(seconds=i)) for i in range(29)]
     ticks.append(make_tick("101", "101", T0 + timedelta(minutes=9, seconds=59)))
     ticks.append(make_tick("999", "999", T0 + study.ONSET_AFTER))
@@ -100,7 +114,7 @@ def test_window_end_tick_is_excluded_from_onset_but_counts_for_post10_floor():
 
 def test_no_movement_including_price_change_only_at_window_end():
     observation = study.measure([
-        make_tick("100", "100", T0 - study.ONSET_BEFORE),
+        make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
         make_tick("999", "999", T0 + study.ONSET_AFTER),
     ], T0)
     assert observation.k_star is None
@@ -109,7 +123,10 @@ def test_no_movement_including_price_change_only_at_window_end():
     assert study.control_exclusion(observation) == "no_movement"
 
 
-@pytest.mark.parametrize("ticks", [[], [make_tick("100", "100", T0)]])
+@pytest.mark.parametrize("ticks", [
+    [], [make_tick("100", "100", T0)],
+    [make_tick("100", "100", T0 - study.ONSET_BEFORE)],
+])
 def test_missing_start_price(ticks):
     observation = study.measure(ticks, T0)
     assert observation.k_star is None
@@ -118,10 +135,11 @@ def test_missing_start_price(ticks):
 
 
 @pytest.mark.parametrize("bucket", range(6))
-def test_ten_second_bucket_position(bucket):
+@pytest.mark.parametrize("offset", [timedelta(), timedelta(seconds=1)])
+def test_ten_second_bucket_position(bucket, offset):
     observation = study.measure([
-        make_tick("100", "100", T0 - study.ONSET_BEFORE),
-        make_tick("101", "101", T0 + bucket * study.SUBBIN + timedelta(seconds=1)),
+        make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
+        make_tick("101", "101", T0 + bucket * study.SUBBIN + offset),
     ], T0)
     assert observation.k_star == 0
     assert observation.subbin_max == bucket
@@ -129,7 +147,7 @@ def test_ten_second_bucket_position(bucket):
 
 def test_ten_second_bucket_tie_uses_earliest():
     observation = study.measure([
-        make_tick("100", "100", T0 - study.ONSET_BEFORE),
+        make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
         make_tick("200", "200", T0 + timedelta(seconds=11)),
         make_tick("400", "400", T0 + timedelta(seconds=41)),
     ], T0)
@@ -230,7 +248,7 @@ def test_post_hoc_tail_and_markdown_verdict_first(corpus):
 
 @pytest.mark.parametrize("count,reason", [(29, "insufficient_post10_ticks"), (30, None)])
 def test_liquidity_uses_closed_post10_only(count, reason):
-    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE)]
+    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1))]
     ticks += [make_tick("101", "101", T0 + timedelta(seconds=i + 1)) for i in range(count - 1)]
     ticks += [make_tick("999", "999", T0 + study.POST_PRIMARY)]
     observation = study.measure(ticks, T0)
@@ -245,7 +263,7 @@ def test_observe_reuses_cached_hours_and_does_not_treat_fetch_failure_as_flat(tm
     path.parent.mkdir(parents=True)
     path.write_bytes(lzma.compress(b"".join(
         struct.pack(">IIIff", msec, price, price, 1.0, 1.0)
-        for msec, price in [(40 * 60_000, 100_000), (50 * 60_000 + 1000, 101_000)]
+        for msec, price in [(40 * 60_000 - 1, 100_000), (50 * 60_000 + 1000, 101_000)]
     )))
     boundary_path = study.cache_path(tmp_path, boundary)
     boundary_path.parent.mkdir(parents=True)
@@ -263,7 +281,7 @@ def test_observe_reuses_cached_hours_and_does_not_treat_fetch_failure_as_flat(tm
 
 
 def test_failure_in_hour_starting_at_end_affects_liquidity_only(tmp_path, monkeypatch):
-    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE),
+    ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
              make_tick("101", "101", T0 + timedelta(seconds=1))]
     first, boundary = study.required_hours(T0)
     path = study.cache_path(tmp_path, first)

@@ -95,6 +95,39 @@ def test_partial_fills_are_quantity_weighted(payload):
     assert metric["weighted_executable_pips"] == Decimal("2.8")
 
 
+def test_slippage_aggregates_comparable_quantity_with_coverage_for_order_and_symbol(payload):
+    result = report(payload)
+    usd, eur = result["symbols"]
+    metric = next(m for m in usd["decision_slippage"] if m["basis"] == "simulated")
+    assert metric["compared_quantity"] == Decimal(1400)
+    assert metric["weighted_adverse_pips"] == Decimal(13) / 7
+    assert metric["orders_compared"] == 2 and metric["orders_total"] == 5
+    assert metric["coverage_over_orders"] == Decimal(".4")
+    assert metric["statuses"] == {"ok": 3}
+    buy = next(m for m in row(result)["decision_slippage"] if m["basis"] == "simulated")
+    assert buy["weighted_adverse_pips"] == Decimal("2.2")
+    sell = next(m for m in eur["decision_slippage"] if m["basis"] == "simulated")
+    assert sell["weighted_adverse_pips"] == Decimal(1)
+    observed = next(m for m in usd["decision_slippage"] if m["basis"] == "observed_utc")
+    assert observed["weighted_adverse_pips"] is None
+    assert observed["statuses"] == {"other_basis": 3}
+    assert "判断時の滑りの由来" in markdown(result)
+
+
+def test_missing_slippage_is_not_weighted_as_zero(payload):
+    payload["orders"][0]["fills"][0]["executed_at"]["basis"] = "reconstructed"
+    result = report(payload)
+    metric = next(m for m in row(result)["decision_slippage"] if m["basis"] == "simulated")
+    assert metric["compared_quantity"] == Decimal(600)
+    assert metric["weighted_adverse_pips"] == Decimal(3)
+    assert metric["statuses"] == {"missing_or_mixed_fill_basis": 1, "ok": 1}
+    payload["quotes"] = []
+    metric = next(m for m in row(report(payload))["decision_slippage"] if m["basis"] == "simulated")
+    assert metric["weighted_adverse_pips"] is None
+    assert metric["compared"] == 0
+    assert metric["coverage_over_orders"] == Decimal(0)
+
+
 def test_quote_selection_never_moves_future_quote_backwards_and_checks_freshness(payload):
     # t=3 の quote を取り除く。t=3.001 の好条件 quote は t=3 の評価には使えない。
     payload["quotes"] = [q for q in payload["quotes"] if q["observed_at"] != stamp(3)]
@@ -249,6 +282,21 @@ def test_fill_before_decision_cannot_be_used_for_slippage(payload, execution_mis
     assert measured["fills"][1]["decision_slippage"]["status"] == "ok"
     if not execution_missing:
         assert measured["fills"][0]["markouts"][0]["executable_pips"] == Decimal(1)
+
+
+@pytest.mark.parametrize("quote_status", ["missing", "stale"])
+def test_fill_clock_inconsistency_is_reported_even_without_a_usable_quote(payload, quote_status):
+    buy = payload["orders"][0]
+    buy["decision_at"] = stamp(4)
+    buy["sent_at"]["basis"] = "reconstructed"
+    if quote_status == "missing":
+        payload["quotes"] = []
+    else:
+        payload["quote_max_age_seconds"] = "0"
+    measured = row(report(payload))
+    assert measured["fills"][0]["decision_slippage"]["status"] == "invalid_chronology"
+    assert measured["fills"][0]["decision_slippage"]["adverse_pips"] is None
+    assert measured["fills"][1]["decision_slippage"]["status"] == f"{quote_status}_quote"
 
 
 def test_unsorted_quotes_are_indexed_without_mixing_symbol_or_basis(payload):

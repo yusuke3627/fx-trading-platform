@@ -50,10 +50,12 @@ Issue [#203](https://github.com/yusuke3627/fx-trading-platform/issues/203) の�
 評価時点は `executed_at + horizon`。symbol・由来ごとの時刻順索引を1回作り、その時点以前に届いた最新 quote を二分探索で選ぶ。最大経過秒を超えたら欠測とする。未来に届く quote を評価期限へ遡って採用しない。評価時点が観測窓の終了を超えた場合は `right_censored`。
 
 - BUY は `(評価時 bid − fill 価格) / pip_size`、SELL は `(fill 価格 − 評価時 ask) / pip_size`。有利な変化が正。mid 基準も個々の fill に併記する。
-- 判断時からの滑りは BUY が `(fill 価格 − 判断時 ask) / pip_size`、SELL が `(判断時 bid − fill 価格) / pip_size`。こちらは不利な滑りが正。fill の時刻（約定時刻がなければ受信時刻）が判断時刻と同じ由来で、判断時刻以後の場合だけ計測する。逆転時は滑りだけを `invalid_chronology` の欠測にする。
+- 判断時からの滑りは BUY が `(fill 価格 − 判断時 ask) / pip_size`、SELL が `(判断時 bid − fill 価格) / pip_size`。こちらは不利な滑りが正。fill の時刻（約定時刻がなければ受信時刻）が判断時刻と同じ由来で、判断時刻以後の場合だけ計測する。quote が欠ける場合も時刻の逆転を先に判定し、逆転時は滑りだけを `invalid_chronology` の欠測にする。
 - 複数 fill は実際の fill 数量で加重する。quote 通貨の価格差×数量も個別に残すが、手数料・carry を含む実現損益ではない。
 
 symbol・horizon・由来別に、全注文に対する計測注文数と、既知 fill に対する計測 fill 数を出す。計測注文は、その条件で1件以上の fill を評価できた注文。全 fill が評価できたことを意味しない。fill 履歴の不完全な注文数も併記する。別由来の標本は `other_basis` とし、同じ分布へ混ぜない。
+
+判断時の滑りも、計測できた fill の実数量で加重し、欠測を0として加重しない。JSON には注文内と symbol ごとに由来別の数量加重値、計測可能率、欠測理由を出し、Markdown には symbol ごとの表を表示する。約定がない注文は全注文の母数に残る。
 
 ### 3. UNKNOWN・部分約定の滞留と新規リスク停止
 

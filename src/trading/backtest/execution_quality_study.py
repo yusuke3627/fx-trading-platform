@@ -280,10 +280,11 @@ def fill_metrics(
     )
     slippage = None
     fill_stamp = fill.executed_at or fill.received_at
-    if quote and (fill_stamp is None or fill_stamp.basis != order.decision_at.basis):
-        quote, status = None, "missing_or_mixed_fill_basis"
-    if quote and fill_stamp.at < order.decision_at.at:
-        quote, status = None, "invalid_chronology"
+    if order.decision_at:
+        if fill_stamp is None or fill_stamp.basis != order.decision_at.basis:
+            quote, status = None, "missing_or_mixed_fill_basis"
+        elif fill_stamp.at < order.decision_at.at:
+            quote, status = None, "invalid_chronology"
     if quote:
         reference = quote.ask if order.side is ExecutionSide.BUY else quote.bid
         slippage = sign * (fill.price - reference) / spec.pip_size
@@ -369,6 +370,34 @@ def distribution(values: list[Decimal]) -> dict[str, Any]:
             "p95": percentile(Decimal("0.95")), "max": max(values, default=None)}
 
 
+def slippage_summary(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fills = [(o["order_id"], f) for o in orders if o["status"] == "ok" for f in o["fills"]]
+    invalid_fills = sum(o["known_fills_count"] for o in orders if o["status"] != "ok")
+    rows = []
+    for basis in BASES:
+        eligible = [(order_id, f) for order_id, f in fills
+                    if f["decision_slippage"]["status"] == "ok"
+                    and f["decision_slippage"]["basis"] == basis]
+        quantity = sum((f["quantity"] for _, f in eligible), Decimal(0))
+        compared_orders = len({order_id for order_id, _ in eligible})
+        statuses = Counter(
+            "other_basis" if f["decision_slippage"]["basis"] is not None
+            and f["decision_slippage"]["basis"] != basis else f["decision_slippage"]["status"]
+            for _, f in fills
+        )
+        if invalid_fills:
+            statuses["invalid_order"] += invalid_fills
+        rows.append({"basis": basis, "fills_total": len(fills) + invalid_fills,
+                     "compared": len(eligible), "orders_total": len(orders),
+                     "orders_compared": compared_orders,
+                     "coverage_over_orders": Decimal(compared_orders) / len(orders) if orders else None,
+                     "statuses": dict(statuses), "compared_quantity": quantity,
+                     "weighted_adverse_pips": (
+                         sum((f["quantity"] * f["decision_slippage"]["adverse_pips"]
+                              for _, f in eligible), Decimal(0)) / quantity if quantity else None)})
+    return rows
+
+
 def summarize(rows: list[dict[str, Any]], data: StudyInput, spec: InstrumentSpec) -> dict[str, Any]:
     selected = [row for row in rows if row["symbol"] == spec.symbol]
     latency = {}
@@ -430,7 +459,8 @@ def summarize(rows: list[dict[str, Any]], data: StudyInput, spec: InstrumentSpec
             "orders_without_known_fills": sum(r["known_fills_count"] == 0 for r in selected),
             "incomplete_fill_histories": sum(not o.fills_complete for o in data.orders
                                               if o.symbol == spec.symbol),
-            "latencies_seconds": latency, "markouts": markouts, "pending": pending,
+            "latencies_seconds": latency, "markouts": markouts,
+            "decision_slippage": slippage_summary(selected), "pending": pending,
             "pending_statuses": dict(Counter(r["pending"]["status"] for r in selected)),
             "pending_orders_compared": pending_compared,
             "pending_coverage_over_orders": (Decimal(pending_compared) / len(selected)
@@ -468,6 +498,7 @@ def measure(data: StudyInput) -> dict[str, Any]:
                                             for f in order.fills],
                "pending": {"status": "invalid_order", "intervals": []} if errors
                else pending_intervals(order, data)}
+        row["decision_slippage"] = slippage_summary([row])
         rows.append(row)
     return {"schema_version": "execution_quality_report_v1",
             "population_description": data.population_description,
@@ -511,6 +542,12 @@ def markdown(report: dict[str, Any]) -> str:
             for basis, stats in metric["by_basis"].items():
                 lines.append(f"| {name} | {basis} | {stats['count']} / {symbol['orders_total']} "
                              f"| {stats['p50']} | {stats['p95']} |")
+        lines += ["", "| 判断時の滑りの由来 | 比較注文 / 全注文 | 比較 / 既知 fill | 数量加重 pips（不利が正） |",
+                  "|---|---:|---:|---:|"]
+        for row in symbol["decision_slippage"]:
+            lines.append(f"| {row['basis']} | {row['orders_compared']} / {symbol['orders_total']} "
+                         f"| {row['compared']} / {symbol['known_fills_total']} | "
+                         f"{row['weighted_adverse_pips']} |")
         lines += ["", "| markout 秒 | 由来 | 比較注文 / 全注文 | 比較 / 既知 fill | 数量加重 pips（有利が正） |",
                   "|---:|---|---:|---:|---:|"]
         for row in symbol["markouts"]:

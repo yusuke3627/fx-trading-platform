@@ -186,6 +186,62 @@ def test_missing_history_cannot_be_reconstructed_from_final_state(payload, mutat
     assert pending == {"status": expected, "intervals": []}
 
 
+def test_truncated_state_history_preserves_independent_latency_and_markout(payload):
+    buy = payload["orders"][0]
+    buy["history_complete"] = False
+    buy["states"].pop()
+    result = report(payload)
+    measured = row(result)
+    assert measured["status"] == "ok"
+    assert measured["pending"]["status"] == "incomplete_state_history"
+    assert measured["latencies"]["send_to_first_execution"]["seconds"] == Decimal(1)
+    assert measured["fills"][0]["markouts"][0]["executable_pips"] == Decimal(1)
+    assert mark(result)["compared"] == 3
+    buy["history_complete"] = True
+    assert "final_state_mismatch" in row(report(payload))["errors"]
+
+
+@pytest.mark.parametrize("partial_time", [-1, 1])
+def test_mixed_state_clocks_only_exclude_pending_intervals(payload, partial_time):
+    payload["window_start"] = stamp(-10)
+    buy = payload["orders"][0]
+    buy["states"][6]["at"] = stamp(partial_time, "reconstructed")
+    measured = row(report(payload))
+    assert measured["status"] == "ok"
+    assert measured["pending"]["status"] == "incomplete"
+    assert all(i["status"] == "mixed_basis" for i in measured["pending"]["intervals"])
+    assert all(i["seconds"] is None for i in measured["pending"]["intervals"])
+    assert measured["latencies"]["send_to_first_execution"]["seconds"] == Decimal(1)
+    assert measured["fills"][0]["markouts"][0]["executable_pips"] == Decimal(1)
+    buy["states"][6]["at"]["basis"] = "simulated"
+    assert "state_history_not_ordered" in row(report(payload))["errors"]
+
+
+def test_unsorted_quotes_are_indexed_without_mixing_symbol_or_basis(payload):
+    expected = report(payload)
+    payload["quotes"].reverse()
+    different_basis = deepcopy(payload["quotes"])
+    for quote in different_basis:
+        quote["observed_at"]["basis"] = "observed_utc"
+        quote["bid"], quote["ask"] = "999", "1000"
+    payload["quotes"].extend(different_basis)
+    assert report(payload) == expected
+
+
+def test_window_filters_utc_values_but_censor_duration_requires_matching_basis(payload):
+    unknown = payload["orders"][-2]
+    for name in ("created_at", "input_received_at", "decision_at", "sent_at"):
+        unknown[name]["basis"] = "observed_utc"
+    for state in unknown["states"]:
+        state["at"]["basis"] = "observed_utc"
+    measured = row(report(payload), "unknown")
+    assert measured["status"] == "ok"
+    assert measured["pending"]["intervals"][0]["status"] == "mixed_basis"
+    assert measured["pending"]["intervals"][0]["seconds"] is None
+    unknown["states"][-1]["at"] = stamp(11, "observed_utc")
+    assert "timestamp_outside_window" in row(report(payload), "unknown")["errors"]
+
+
 def test_pending_mixed_clock_has_no_fabricated_zero_quantity(payload):
     payload["orders"][-1]["fills"][0]["received_at"]["basis"] = "reconstructed"
     interval = row(report(payload), "partial-open")["pending"]["intervals"][0]

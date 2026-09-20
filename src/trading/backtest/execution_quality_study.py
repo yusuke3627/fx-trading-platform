@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import sys
+from bisect import bisect_right
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -118,6 +119,9 @@ class BlockedEntry(Record):
         return self
 
 
+QuoteIndex = dict[tuple[str, Basis], list[QuoteObservation]]
+
+
 class StudyInput(Record):
     schema_version: Literal["execution_quality_v1"]
     population_description: str = Field(min_length=1)
@@ -195,15 +199,18 @@ def order_errors(order: OrderObservation, data: StudyInput) -> list[str]:
               order.sent_at, order.response_at]
     stamps += [s.at for s in order.states]
     stamps += [t for f in order.fills for t in (f.executed_at, f.received_at)]
+    # 窓は正規化済み UTC 値の共通抽出範囲で、状態間の時計順序とは分ける。
     if any(t and not data.window_start.at <= t.at <= data.window_end.at for t in stamps):
         errors.append("timestamp_outside_window")
-    if any(s.at.at < order.created_at.at for s in order.states):
+    if any(s.at.basis == order.created_at.basis and s.at.at < order.created_at.at
+           for s in order.states):
         errors.append("state_before_creation")
-    if any(a.at.at > b.at.at for a, b in zip(order.states, order.states[1:])):
+    if any(a.at.basis == b.at.basis and a.at.at > b.at.at
+           for a, b in zip(order.states, order.states[1:])):
         errors.append("state_history_not_ordered")
     if any(s.terminal for s in order.states[:-1]):
         errors.append("state_after_terminal")
-    if order.states and order.states[-1].state != order.final_state:
+    if order.history_complete and order.states and order.states[-1].state != order.final_state:
         errors.append("final_state_mismatch")
     if order.history_complete and (
         not order.states or order.states[0].state is not CommandState.CREATED
@@ -236,14 +243,25 @@ def order_errors(order: OrderObservation, data: StudyInput) -> list[str]:
     return sorted(set(errors))
 
 
-def quote_at(data: StudyInput, symbol: str, stamp: Stamp) -> tuple[QuoteObservation | None, str]:
+def index_quotes(quotes: tuple[QuoteObservation, ...]) -> QuoteIndex:
+    index: QuoteIndex = {}
+    for quote in quotes:
+        index.setdefault((quote.symbol, quote.observed_at.basis), []).append(quote)
+    for group in index.values():
+        group.sort(key=lambda q: q.observed_at.at)
+    return index
+
+
+def quote_at(
+    data: StudyInput, index: QuoteIndex, symbol: str, stamp: Stamp,
+) -> tuple[QuoteObservation | None, str]:
     if stamp.at > data.window_end.at:
         return None, "right_censored"
-    quotes = [q for q in data.quotes if q.symbol == symbol
-              and q.observed_at.basis == stamp.basis and q.observed_at.at <= stamp.at]
-    quote = max(quotes, key=lambda q: q.observed_at.at, default=None)
-    if quote is None:
+    quotes = index.get((symbol, stamp.basis), [])
+    position = bisect_right(quotes, stamp.at, key=lambda q: q.observed_at.at) - 1
+    if position < 0:
         return None, "missing_quote"
+    quote = quotes[position]
     if seconds(stamp.at - quote.observed_at.at) > data.quote_max_age_seconds:
         return None, "stale_quote"
     return quote, "ok"
@@ -251,9 +269,10 @@ def quote_at(data: StudyInput, symbol: str, stamp: Stamp) -> tuple[QuoteObservat
 
 def fill_metrics(
     order: OrderObservation, fill: FillObservation, spec: InstrumentSpec, data: StudyInput,
+    quote_index: QuoteIndex,
 ) -> dict[str, Any]:
     sign = Decimal(1) if order.side is ExecutionSide.BUY else Decimal(-1)
-    quote, status = quote_at(data, order.symbol, order.decision_at) if order.decision_at else (
+    quote, status = quote_at(data, quote_index, order.symbol, order.decision_at) if order.decision_at else (
         None, "missing_decision_timestamp"
     )
     slippage = None
@@ -274,7 +293,7 @@ def fill_metrics(
             target = fill.executed_at.model_copy(update={
                 "at": fill.executed_at.at + timedelta(microseconds=int(horizon * 1_000_000)),
             })
-            future, row["status"] = quote_at(data, order.symbol, target)
+            future, row["status"] = quote_at(data, quote_index, order.symbol, target)
             row["basis"] = target.basis
             if future:
                 mid = (future.bid + future.ask) / 2
@@ -418,6 +437,7 @@ def summarize(rows: list[dict[str, Any]], data: StudyInput, spec: InstrumentSpec
 
 def measure(data: StudyInput) -> dict[str, Any]:
     specs = {s.symbol: s for s in data.instruments}
+    quote_index = index_quotes(data.quotes)
     rows = []
     for order in data.orders:
         errors = order_errors(order, data)
@@ -439,7 +459,7 @@ def measure(data: StudyInput) -> dict[str, Any]:
                "quantity": order.quantity, "final_state": order.final_state.value,
                "status": "invalid" if errors else "ok", "errors": errors,
                "known_fills_count": len(order.fills), "latencies": latencies,
-               "fills": [] if errors else [fill_metrics(order, f, specs[order.symbol], data)
+               "fills": [] if errors else [fill_metrics(order, f, specs[order.symbol], data, quote_index)
                                             for f in order.fills],
                "pending": {"status": "invalid_order", "intervals": []} if errors
                else pending_intervals(order, data)}

@@ -28,6 +28,10 @@ _PUBLICATION = re.compile(
     r"主な意見[―—]+(?P<month>\d{1,2})月(?P<day>\d{1,2})日"
     r"\([月火水木金土日]\)(?P<hour>\d{1,2}):(?P<minute>\d{2})予定"
 )
+_MINUTES_PUBLICATION = re.compile(
+    r"議事要旨[―—]+(?:(?P<year>\d{4})年)?(?P<month>\d{1,2})月(?P<day>\d{1,2})日"
+    r"\([月火水木金土日]\)(?P<hour>\d{1,2}):(?P<minute>\d{2})予定"
+)
 
 
 def opinions_url(decision_date: date) -> str:
@@ -60,6 +64,21 @@ def publication_from_statement(text: str, decision_date: date) -> datetime:
     published_at = datetime(year=year, tzinfo=JST, **parts)
     if published_at.date() < decision_date:
         raise ValueError("主な意見の公表日が会合日より前です")
+    return published_at
+
+
+def minutes_publication_from_statement(text: str, decision_date: date) -> datetime:
+    """議事要旨の告知を読み、年の明記がなければ会合月から年を繰り上げる。"""
+    compact = "".join(unicodedata.normalize("NFKC", text).split())
+    matches = list(_MINUTES_PUBLICATION.finditer(compact))
+    if len(matches) != 1:
+        raise ValueError("議事要旨の公表日時を一意に取得できません")
+    parts = {key: int(value) for key, value in matches[0].groupdict().items()
+             if value is not None}
+    parts.setdefault("year", decision_date.year + (parts["month"] < decision_date.month))
+    published_at = datetime(tzinfo=JST, **parts)
+    if published_at.date() < decision_date:
+        raise ValueError("議事要旨の公表日が会合日より前です")
     return published_at
 
 

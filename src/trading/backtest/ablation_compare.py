@@ -17,6 +17,10 @@ their timestamp or side, receive different shocks.
 Intervals resampling whole broker business days are shown for reference.
 Judgments use the pre-registered i.i.d. intervals; adopting block intervals for
 decisions requires an updated pre-registration.
+
+未値付けの swap がある腕の損益・区間は参考値とし、その腕を含む判定を保留する。
+これは carry 込み損益の欠損に対する共通条件で、個別の事前登録の採否条件とは別に適用する。
+単腕の主判定でも ArmSummary.hold_reason を先に確認する。
 """
 from __future__ import annotations
 
@@ -44,6 +48,7 @@ KEEP = "有効のまま維持（寄与あり）"
 REMOVE = "無効にする（絞るだけで質が上がらない）"
 UNDECIDED_SAMPLE = "判定不能（標本不足）。維持したまま再測定"
 UNDECIDED_DIFFERENCE = "判定不能（差が検出できない）。維持したまま再測定"
+DEFERRED_SWAP = "保留（未値付けの swap あり）。値付け後に再判定"
 MIN_TRADES = 10
 # H4 の時間切れ決済 ablation は有効側に 25 か月中 15 か月（60%）の末尾空白があり、
 # H5 は両腕とも最終月まで建玉があった。その間を分ける比較基準として 10% を採る。
@@ -104,6 +109,11 @@ class ArmSummary:
     block_low: float
     block_high: float
     blocks: int
+    unpriced_rollovers: int
+
+    @property
+    def hold_reason(self) -> str | None:
+        return DEFERRED_SWAP if self.unpriced_rollovers > 0 else None
 
 
 def load_run(run_dir: Path) -> RunArtifacts:
@@ -298,7 +308,8 @@ def verify_comparable(
 
 
 def arm_summary(
-    pnls: Sequence[Decimal], blocks: Sequence[date], max_drawdown: Decimal, seed: int
+    pnls: Sequence[Decimal], blocks: Sequence[date], max_drawdown: Decimal, seed: int,
+    *, unpriced_rollovers: int,
 ) -> ArmSummary:
     count = len(pnls)
     total = sum(pnls, Decimal(0))
@@ -317,6 +328,7 @@ def arm_summary(
         block_low=block_low,
         block_high=block_high,
         blocks=len(set(blocks)),
+        unpriced_rollovers=unpriced_rollovers,
     )
 
 
@@ -399,7 +411,9 @@ def judge(
     without: ArmSummary,
     difference: tuple[float, float],
 ) -> str:
-    """Apply the pre-registered decision table from top to bottom."""
+    """Defer incomplete carry before applying the pre-registered decision table."""
+    if with_.hold_reason or without.hold_reason:
+        return DEFERRED_SWAP
     low, _ = difference
     if with_.count > 0 and without.count > 0:
         if with_.mean > without.mean and low > 0:
@@ -434,10 +448,12 @@ def report(
     with_blocks = [broker_day(at) for at in with_.entry_ats]
     without_blocks = [broker_day(at) for at in without.entry_ats]
     with_summary = arm_summary(
-        with_.pnls, with_blocks, Decimal(with_.metrics["max_drawdown"]), seed
+        with_.pnls, with_blocks, Decimal(with_.metrics["max_drawdown"]), seed,
+        unpriced_rollovers=int(with_.metrics["unpriced_rollovers"]),
     )
     without_summary = arm_summary(
-        without.pnls, without_blocks, Decimal(without.metrics["max_drawdown"]), seed
+        without.pnls, without_blocks, Decimal(without.metrics["max_drawdown"]), seed,
+        unpriced_rollovers=int(without.metrics["unpriced_rollovers"]),
     )
     difference = difference_interval(
         [float(pnl) for pnl in with_.pnls],
@@ -451,12 +467,18 @@ def report(
     )
 
     lines: list[str] = [f"比較: {param} with={with_value!r} → without={without_value!r}"]
-    for label, run in (("with", with_), ("without", without)):
+    for label, run, summary in (
+        ("with", with_, with_summary), ("without", without, without_summary),
+    ):
         lines.append(f"{label}:")
         lines.extend(
             f"  {field:<22} {_manifest_value(run.manifest, field)}"
             for field in MANIFEST_FIELDS
         )
+        if summary.hold_reason:
+            lines.append(
+                f"  {'hold_reason':<22} {summary.hold_reason}。この腕の損益・区間は参考値"
+            )
         period_from, period_to = _period(run.manifest)
         coverage = run_coverage(run.entry_ats, period_from, period_to)
         lines.extend(

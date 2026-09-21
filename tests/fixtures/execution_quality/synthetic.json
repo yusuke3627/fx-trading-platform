@@ -1,0 +1,624 @@
+{
+  "schema_version": "execution_quality_v1",
+  "population_description": "合成 fixture: 観測窓内に作成した全6注文。実口座・実測データではない。",
+  "orders_complete": true,
+  "window_start": {
+    "at": "2026-08-13T00:00:00+00:00",
+    "basis": "simulated"
+  },
+  "window_end": {
+    "at": "2026-08-13T00:00:10+00:00",
+    "basis": "simulated"
+  },
+  "horizons_seconds": [
+    "1",
+    "5",
+    "20"
+  ],
+  "quote_max_age_seconds": "1",
+  "instruments": [
+    {
+      "symbol": "USDJPY",
+      "base_currency": "USD",
+      "quote_currency": "JPY",
+      "digits": 3,
+      "pip_size": "0.01",
+      "contract_size": "1000",
+      "volume_min": "1000",
+      "volume_step": "1000",
+      "volume_max": "100000",
+      "stop_level_points": 0,
+      "accepted_filling_modes": [
+        "IMMEDIATE_OR_CANCEL"
+      ]
+    },
+    {
+      "symbol": "EURUSD",
+      "base_currency": "EUR",
+      "quote_currency": "USD",
+      "digits": 5,
+      "pip_size": "0.0001",
+      "contract_size": "1000",
+      "volume_min": "1000",
+      "volume_step": "1000",
+      "volume_max": "100000",
+      "stop_level_points": 0,
+      "accepted_filling_modes": [
+        "IMMEDIATE_OR_CANCEL"
+      ]
+    }
+  ],
+  "orders": [
+    {
+      "order_id": "buy-split",
+      "symbol": "USDJPY",
+      "side": "BUY",
+      "quantity": "1000",
+      "final_state": "FILLED",
+      "created_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "input_received_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "decision_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "sent_at": {
+        "at": "2026-08-13T00:00:01+00:00",
+        "basis": "simulated"
+      },
+      "response_at": {
+        "at": "2026-08-13T00:00:01.200000+00:00",
+        "basis": "simulated"
+      },
+      "history_complete": true,
+      "fills_complete": true,
+      "states": [
+        {
+          "state": "CREATED",
+          "at": {
+            "at": "2026-08-13T00:00:00+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "RISK_APPROVED",
+          "at": {
+            "at": "2026-08-13T00:00:00.200000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "READY",
+          "at": {
+            "at": "2026-08-13T00:00:00.300000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "CLAIMED",
+          "at": {
+            "at": "2026-08-13T00:00:00.800000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "SUBMITTING",
+          "at": {
+            "at": "2026-08-13T00:00:01+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "UNKNOWN",
+          "at": {
+            "at": "2026-08-13T00:00:01.500000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "PARTIAL_FILL",
+          "at": {
+            "at": "2026-08-13T00:00:03+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "FILLED",
+          "at": {
+            "at": "2026-08-13T00:00:05+00:00",
+            "basis": "simulated"
+          }
+        }
+      ],
+      "fills": [
+        {
+          "fill_id": "buy-1",
+          "quantity": "400",
+          "price": "100.02",
+          "broker_time": "2026-08-13T03:00:02+00:00",
+          "executed_at": {
+            "at": "2026-08-13T00:00:02+00:00",
+            "basis": "simulated"
+          },
+          "received_at": {
+            "at": "2026-08-13T00:00:03+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "fill_id": "buy-2",
+          "quantity": "600",
+          "price": "100.04",
+          "broker_time": "2026-08-13T03:00:04+00:00",
+          "executed_at": {
+            "at": "2026-08-13T00:00:04+00:00",
+            "basis": "simulated"
+          },
+          "received_at": {
+            "at": "2026-08-13T00:00:05+00:00",
+            "basis": "simulated"
+          }
+        }
+      ]
+    },
+    {
+      "order_id": "sell",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "quantity": "1000",
+      "final_state": "FILLED",
+      "created_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "input_received_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "decision_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "sent_at": {
+        "at": "2026-08-13T00:00:01+00:00",
+        "basis": "simulated"
+      },
+      "response_at": {
+        "at": "2026-08-13T00:00:01.200000+00:00",
+        "basis": "simulated"
+      },
+      "history_complete": true,
+      "fills_complete": true,
+      "states": [
+        {
+          "state": "CREATED",
+          "at": {
+            "at": "2026-08-13T00:00:00+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "RISK_APPROVED",
+          "at": {
+            "at": "2026-08-13T00:00:00.200000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "READY",
+          "at": {
+            "at": "2026-08-13T00:00:00.300000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "CLAIMED",
+          "at": {
+            "at": "2026-08-13T00:00:00.800000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "SUBMITTING",
+          "at": {
+            "at": "2026-08-13T00:00:01+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "FILLED",
+          "at": {
+            "at": "2026-08-13T00:00:03+00:00",
+            "basis": "simulated"
+          }
+        }
+      ],
+      "fills": [
+        {
+          "fill_id": "sell-1",
+          "quantity": "1000",
+          "price": "1.1000",
+          "broker_time": "2026-08-13T03:00:02+00:00",
+          "executed_at": {
+            "at": "2026-08-13T00:00:02+00:00",
+            "basis": "simulated"
+          },
+          "received_at": {
+            "at": "2026-08-13T00:00:03+00:00",
+            "basis": "simulated"
+          }
+        }
+      ]
+    },
+    {
+      "order_id": "expired",
+      "symbol": "USDJPY",
+      "side": "BUY",
+      "quantity": "1000",
+      "final_state": "EXPIRED",
+      "created_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "input_received_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "decision_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "sent_at": null,
+      "response_at": null,
+      "history_complete": true,
+      "fills_complete": true,
+      "states": [
+        {
+          "state": "CREATED",
+          "at": {
+            "at": "2026-08-13T00:00:00+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "EXPIRED",
+          "at": {
+            "at": "2026-08-13T00:00:01+00:00",
+            "basis": "simulated"
+          }
+        }
+      ],
+      "fills": []
+    },
+    {
+      "order_id": "rejected",
+      "symbol": "USDJPY",
+      "side": "BUY",
+      "quantity": "1000",
+      "final_state": "REJECTED",
+      "created_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "input_received_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "decision_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "sent_at": {
+        "at": "2026-08-13T00:00:01+00:00",
+        "basis": "simulated"
+      },
+      "response_at": {
+        "at": "2026-08-13T00:00:01.200000+00:00",
+        "basis": "simulated"
+      },
+      "history_complete": true,
+      "fills_complete": true,
+      "states": [
+        {
+          "state": "CREATED",
+          "at": {
+            "at": "2026-08-13T00:00:00+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "RISK_APPROVED",
+          "at": {
+            "at": "2026-08-13T00:00:00.200000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "READY",
+          "at": {
+            "at": "2026-08-13T00:00:00.300000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "CLAIMED",
+          "at": {
+            "at": "2026-08-13T00:00:00.800000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "SUBMITTING",
+          "at": {
+            "at": "2026-08-13T00:00:01+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "REJECTED",
+          "at": {
+            "at": "2026-08-13T00:00:01.200000+00:00",
+            "basis": "simulated"
+          }
+        }
+      ],
+      "fills": []
+    },
+    {
+      "order_id": "unknown",
+      "symbol": "USDJPY",
+      "side": "BUY",
+      "quantity": "1000",
+      "final_state": "UNKNOWN",
+      "created_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "input_received_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "decision_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "sent_at": {
+        "at": "2026-08-13T00:00:01+00:00",
+        "basis": "simulated"
+      },
+      "response_at": null,
+      "history_complete": true,
+      "fills_complete": true,
+      "states": [
+        {
+          "state": "CREATED",
+          "at": {
+            "at": "2026-08-13T00:00:00+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "RISK_APPROVED",
+          "at": {
+            "at": "2026-08-13T00:00:00.200000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "READY",
+          "at": {
+            "at": "2026-08-13T00:00:00.300000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "CLAIMED",
+          "at": {
+            "at": "2026-08-13T00:00:00.800000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "SUBMITTING",
+          "at": {
+            "at": "2026-08-13T00:00:01+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "UNKNOWN",
+          "at": {
+            "at": "2026-08-13T00:00:02+00:00",
+            "basis": "simulated"
+          }
+        }
+      ],
+      "fills": []
+    },
+    {
+      "order_id": "partial-open",
+      "symbol": "USDJPY",
+      "side": "BUY",
+      "quantity": "1000",
+      "final_state": "PARTIAL_FILL",
+      "created_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "input_received_at": {
+        "at": "2026-08-13T00:00:00+00:00",
+        "basis": "simulated"
+      },
+      "decision_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "sent_at": {
+        "at": "2026-08-13T00:00:01+00:00",
+        "basis": "simulated"
+      },
+      "response_at": {
+        "at": "2026-08-13T00:00:01.200000+00:00",
+        "basis": "simulated"
+      },
+      "history_complete": true,
+      "fills_complete": true,
+      "states": [
+        {
+          "state": "CREATED",
+          "at": {
+            "at": "2026-08-13T00:00:00+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "RISK_APPROVED",
+          "at": {
+            "at": "2026-08-13T00:00:00.200000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "READY",
+          "at": {
+            "at": "2026-08-13T00:00:00.300000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "CLAIMED",
+          "at": {
+            "at": "2026-08-13T00:00:00.800000+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "SUBMITTING",
+          "at": {
+            "at": "2026-08-13T00:00:01+00:00",
+            "basis": "simulated"
+          }
+        },
+        {
+          "state": "PARTIAL_FILL",
+          "at": {
+            "at": "2026-08-13T00:00:03+00:00",
+            "basis": "simulated"
+          }
+        }
+      ],
+      "fills": [
+        {
+          "fill_id": "partial-1",
+          "quantity": "400",
+          "price": "100.02",
+          "broker_time": "2026-08-13T03:00:02+00:00",
+          "executed_at": {
+            "at": "2026-08-13T00:00:02+00:00",
+            "basis": "simulated"
+          },
+          "received_at": {
+            "at": "2026-08-13T00:00:03+00:00",
+            "basis": "simulated"
+          }
+        }
+      ]
+    }
+  ],
+  "quotes": [
+    {
+      "symbol": "USDJPY",
+      "observed_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "bid": "99.99",
+      "ask": "100.01"
+    },
+    {
+      "symbol": "USDJPY",
+      "observed_at": {
+        "at": "2026-08-13T00:00:03+00:00",
+        "basis": "simulated"
+      },
+      "bid": "100.03",
+      "ask": "100.05"
+    },
+    {
+      "symbol": "USDJPY",
+      "observed_at": {
+        "at": "2026-08-13T00:00:05+00:00",
+        "basis": "simulated"
+      },
+      "bid": "100.08",
+      "ask": "100.10"
+    },
+    {
+      "symbol": "USDJPY",
+      "observed_at": {
+        "at": "2026-08-13T00:00:07+00:00",
+        "basis": "simulated"
+      },
+      "bid": "100.00",
+      "ask": "100.02"
+    },
+    {
+      "symbol": "USDJPY",
+      "observed_at": {
+        "at": "2026-08-13T00:00:09+00:00",
+        "basis": "simulated"
+      },
+      "bid": "100.01",
+      "ask": "100.03"
+    },
+    {
+      "symbol": "EURUSD",
+      "observed_at": {
+        "at": "2026-08-13T00:00:00.500000+00:00",
+        "basis": "simulated"
+      },
+      "bid": "1.1001",
+      "ask": "1.1003"
+    },
+    {
+      "symbol": "EURUSD",
+      "observed_at": {
+        "at": "2026-08-13T00:00:03+00:00",
+        "basis": "simulated"
+      },
+      "bid": "1.0996",
+      "ask": "1.0998"
+    },
+    {
+      "symbol": "EURUSD",
+      "observed_at": {
+        "at": "2026-08-13T00:00:07+00:00",
+        "basis": "simulated"
+      },
+      "bid": "1.1003",
+      "ask": "1.1005"
+    }
+  ],
+  "blocked_entries_complete": true,
+  "blocked_entries": [
+    {
+      "event_id": "blocked-1",
+      "symbol": "EURUSD",
+      "at": {
+        "at": "2026-08-13T00:00:04+00:00",
+        "basis": "simulated"
+      },
+      "action": "OPEN",
+      "reason": "NO_UNKNOWN_ORDERS",
+      "related_order_ids": [
+        "unknown",
+        "buy-split"
+      ]
+    }
+  ]
+}

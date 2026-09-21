@@ -69,14 +69,61 @@ symbol・horizon・由来別に、全注文に対する計測注文数と、既�
 
 | 保存元・既存型 | 対応と不足 |
 |---|---|
-| [`ExecutionCommand`](../../src/trading/domain/order.py) / `execution_commands` | command_id→order_id、symbol、side、数量、最終 state、created_at は利用可能。broker_request_started_at は実際の呼出し境界を確認した上で sent_at の候補。claimed_at / submitting_at だけを約定・応答時刻にしない。応答時刻と全状態遷移履歴は不足 |
+| [`ExecutionCommand`](../../src/trading/domain/order.py) / `execution_commands` | command_id→order_id、symbol、side、数量、最終 state、created_at は利用可能。broker_request_started_at は実際の呼出し境界を確認した上で sent_at の候補。claimed_at / submitting_at だけを約定・応答時刻にしない。応答時刻と旧行の全状態遷移履歴は不足 |
 | [`Fill`](../../src/trading/domain/fill.py) / 保存済み fill | execution_command_id で注文に対応付ける。quantity / price / broker_time / received_at を転記可能。received_at と broker_time は別時計。比較可能な executed_at は既存型から保証できない |
 | [`Tick`](../../src/trading/domain/market.py) / 保存済み tick | bid / ask とローカル受信を表す known_time を quote に対応付ける。broker の event_time を受信時刻として扱わない |
-| [`state_machine.transition`](../../src/trading/oms/state_machine.py) | `now` 引数から全状態時刻は保存されない。現在の command 行だけから history_complete=true を作れない |
+| [`state_machine.transition`](../../src/trading/oms/state_machine.py) | #212以後は注入`now`と遷移番号をcommandへ保持し、Postgres保存時に観測を追記する。保存前の複数遷移、旧行、欠測時刻を完全な履歴へ補完しない |
 | [`RiskEngine`](../../src/trading/risk/engine.py) | 新規リスクだけを止める既存チェックを使用する。停止した試行 ID・時刻・完全なログがない場合は blocked_entries_complete=false |
-| [`FillRecord`](../../src/trading/backtest/engine.py) / 既存 trades.json・CSV | command ID と状態・段階時刻が揃わないため、このファイルだけでは本契約を復元できない。今の CLI に自動変換器は含めない |
+| [`FillRecord`](../../src/trading/backtest/engine.py) / 既存 trades.json・CSV | command ID と状態・段階時刻が揃わないため、このファイルだけでは本契約を復元できない。下記exportも対象としない |
 
-実測入力を作る際は、注文抽出件数と保存元件数を照合し、結合できない fill や重複、保存時計の同期状況を確認する。足りない情報を `null` または完全性 false として残した入力でも報告できる。本変更には収集機能・migration・本番設定の追加を含めない。
+実測入力を作る際は、注文抽出件数と保存元件数を照合し、結合できない fill や重複、保存時計の同期状況を確認する。足りない情報を `null` または完全性 false として残した入力でも報告できる。study CLI自体は収集・DB接続・設定変更を行わない。#212のexportと状態観測は次節の範囲を追加する。
+
+## 保存DBからのexport（#212）
+
+[`execution_quality_export.py`](../../src/trading/backtest/execution_quality_export.py)は、全migration適用済みのDBを`REPEATABLE READ READ ONLY`の同一snapshotで読み、`input.json`と抽出根拠の`export.json`を生成する。接続先は`--dsn-env`で明示した環境変数だけを使う。引き継いだ`TRADING_DB_DSN`を暗黙に使わず、出力へDSNや口座番号を記録しない。
+
+```bash
+.venv/bin/python -m trading.backtest.execution_quality_export \
+  --dsn-env QUALITY_READ_DSN \
+  --start 2026-09-20T00:00:00Z --end 2026-09-21T00:00:00Z \
+  --time-basis observed_utc --provenance '保存元と時計の対応を確認した根拠を記す' \
+  --instruments /path/to/saved-instruments.json \
+  --horizon-seconds 1 --horizon-seconds 5 --quote-max-age-seconds 2 \
+  --output-dir /path/to/new-export
+.venv/bin/python -m trading.backtest.execution_quality_study \
+  --input /path/to/new-export/input.json --output-dir /path/to/new-report
+```
+
+`--instruments`は抽出する注文に対応する、事前保存した`InstrumentSpec`のJSON配列。Brokerへ取得しに行かず、pip sizeや数量単位も推測しない。実測・合成・復元の時計が混在する保存元を単一の`--time-basis`で出してはならない。由来の指定は利用者の申告であり、ツールが同期や変換精度を証明するものではない。
+
+抽出母集団は`created_at`が開始・終了の両端を含む全command行で、状態やfillの有無で絞らない。口座別の抽出は行わない。`orders_complete`はこの保存行集合の完全性であり、broker上の全注文、保存前の失敗、削除済み行まで含むという意味ではない。期間内にcommandへ結合できないCOMMAND-origin fillがあれば件数を残し、完全性をfalseにする。各種類の行数が`--max-rows`（既定100,000）を超えた場合は切り捨てず中止する。
+
+現在状態が抽出終了後に更新されていた場合は、完全な状態観測から終了時点の状態と要求数量を復元する。根拠がなければ現在状態を過去へ持ち込まず中止する。その場合は終了を最新snapshotまで広げるか、必要な期間の観測を取得する。抽出根拠には件数、最終状態の内訳、完全な状態履歴の件数、指定した由来、入力・InstrumentSpecファイルのSHA-256を残す。
+
+### 価格と時刻の採用条件
+
+既存`market_ticks`はMT5のpollと履歴backfillが同じ形式で保存される。`received_at`は受信時刻であり、その価格が当時の現行quoteだったことを保証しない。このためquoteは既定で欠測とする。保存区間を確認して採用するときだけ、`--quote-provenance '採用できると判断した根拠'`を追加する。申告文も証明ではなく、その限界を`export.json`へ残す。
+
+採用時は`received_at`を使い、開始前の鮮度幅から終了までを読む。同一symbol・受信時刻・bid/askの同値行だけをまとめ、同時刻に異なる価格が残れば入力契約違反として中止する。brokerのevent_timeで任意に並べ替えず、backfillの受信を市場の発生時刻へ置き換えない。
+
+| 指標・入力 | 既存行のexport | 状態観測追加後 |
+|---|---|---|
+| 保存注文数・最終状態・既知fill数量 | 抽出可能。拒否・期限切れ・未約定を保持 | 同じ |
+| 判断時刻 | 紐付いたSignalの`generated_at`。紐付かなければ欠測 | 同じ |
+| 判断時の滑り | 上記判断時刻・fill受信・採用根拠付きquoteが揃う分だけ計測 | 同じ |
+| 全状態履歴 | 旧行は不完全 | 遷移番号0からの連続性、CREATED時刻、許可遷移、時刻順、現在状態・数量の一致を満たす場合だけ完全 |
+| UNKNOWN等の数量×秒 | fill完全性が未証明のため欠測 | 状態履歴が揃ってもfill完全性が未証明なら欠測 |
+| 入力受信・実送信・応答・正規化約定時刻 | 欠測 | 本件のjournalでは増えない。実発注runnerや時計対応の観測が別途必要 |
+| 約定遅延・markout | executed_at欠測 | 同じ。raw broker_timeを流用しない |
+| 全fill・新規リスク停止の完全性 | false | 同じ。Shadowの拒否記録を実執行の停止件数へ混ぜない |
+
+### 状態観測の保存と導入
+
+`0011_execution_state_observations.sql`はcommandへ`state_revision`と`state_changed_at`を加え、`execution_state_observations`を作る。`transition`の注入Clock、Postgresのclaim時刻を保持し、insert・CAS更新・claimと観測を同じSQLで保存する。CAS失敗・観測保存失敗ではcommandだけが確定することはない。同一revisionの送信開始マーカー保存等は新しい状態遷移として数えない。取引許可やUNKNOWNの再送条件は変更しない。
+
+遷移を2回行ってから1回保存した場合は番号が欠ける。旧行の履歴、途中状態で初めて保存した行、時刻なしの状態はbackfillしない。`recorded_at`はDB保存時刻で、欠けた遷移時刻・送信時刻の代用にしない。アプリ更新より先にmigrationを適用する。既存tickへ受信時刻indexを作るため、大きな保存表ではindex作成中の書込ロックと所要時間を考慮して適用する。本作業では運用DBへ適用していない。
+
+現在は実発注runnerがこの保存経路へ接続されていないため、追加後の実測履歴はまだ得られていない。専用テストDBの架空注文でexportから既存study CLIまでを確認することと、実測データが揃って較正を完了することは別である。
 
 既存 failure テストとの対応は、[`test_unknown_recovery.py`](../../tests/failure/test_unknown_recovery.py) の応答前クラッシュ、broker 注文が生きている部分約定、履歴照合による解決である。CLI はそれらの保存済み結果を読む立場であり、UNKNOWN 再送禁止や Reconciliation の解決条件は変更しない。期限切れは全注文の母数と EXPIRED 件数に残す。
 

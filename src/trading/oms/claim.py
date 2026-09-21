@@ -18,6 +18,8 @@ from trading.oms.state_machine import transition
 CLAIM_SQL = """
 UPDATE execution_commands
 SET state = 'CLAIMED',
+    state_revision = state_revision + 1,
+    state_changed_at = %(now)s,
     claimed_by = %(worker)s,
     claimed_at = %(now)s,
     claim_expires_at = %(expires)s

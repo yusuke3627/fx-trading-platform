@@ -29,6 +29,8 @@ class StaleCommandStateError(RuntimeError):
 
 
 class CommandRepository(Protocol):
+    # PostgreSQL は各保存に状態観測を追記する。state_revision の欠番は
+    # 保存前に通った遷移の欠落であり、現在状態から補完しない。
     def insert(self, command: ExecutionCommand) -> None: ...
 
     def get(self, command_id: str) -> ExecutionCommand | None: ...

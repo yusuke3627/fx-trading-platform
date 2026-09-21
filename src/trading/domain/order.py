@@ -72,6 +72,10 @@ class ExecutionCommand(BaseModel):
     expires_at: datetime | None = None
 
     state: CommandState = CommandState.CREATED
+    # 永続化を挟まない遷移も数える。観測履歴の欠番を検出するための情報で、
+    # 送信許可・claim の判定には使わない。
+    state_revision: int = 0
+    state_changed_at: datetime | None = None
 
     claimed_by: str | None = None
     claimed_at: datetime | None = None

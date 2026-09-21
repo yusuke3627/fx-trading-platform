@@ -49,6 +49,8 @@ _TICK_ADVISORY_LOCK_CLASS_ID = 0x5449434B
 _SAVE_STATE_RELEASING_CLAIM_SQL = """
     UPDATE execution_commands
     SET state = %(state)s,
+        state_revision = %(state_revision)s,
+        state_changed_at = %(state_changed_at)s,
         quantity = %(quantity)s,
         claimed_by = %(claimed_by)s,
         claimed_at = %(claimed_at)s,
@@ -130,6 +132,8 @@ def _row_to_command(row: dict[str, Any]) -> ExecutionCommand:
         broker_position_ticket=row["broker_position_ticket"],
         expires_at=row["expires_at"],
         state=row["state"],
+        state_revision=row["state_revision"],
+        state_changed_at=row["state_changed_at"],
         claimed_by=row["claimed_by"],
         claimed_at=row["claimed_at"],
         claim_expires_at=row["claim_expires_at"],
@@ -200,23 +204,44 @@ def _row_to_event(row: dict[str, Any]) -> EventEnvelope:
     )
 
 
+def _with_state_observation(statement: str) -> str:
+    # 一文で command と観測を確定させる。CAS 失敗なら written が空なので
+    # 観測も残らず、autocommit 接続でも片方だけ保存されることはない。
+    return f"""
+        WITH written AS ({statement} RETURNING *), observations AS (
+            INSERT INTO execution_state_observations (
+                command_id, state_revision, state, changed_at, quantity
+            )
+            SELECT id, state_revision, state,
+                CASE WHEN state = 'CREATED' AND state_revision = 0
+                     THEN created_at ELSE state_changed_at END,
+                quantity
+            FROM written
+            ON CONFLICT (command_id, state_revision) DO NOTHING
+        )
+        SELECT * FROM written
+    """
+
+
 class PostgresCommandRepository:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
 
     def insert(self, command: ExecutionCommand) -> None:
         self._conn.execute(
-            """
+            _with_state_observation("""
             INSERT INTO execution_commands (
                 id, intent_id, idempotency_key, symbol, side, action, direction,
                 quantity, stop_loss_price, take_profit_price,
-                broker_position_ticket, expires_at, state, created_at
+                broker_position_ticket, expires_at, state, created_at,
+                state_revision, state_changed_at
             ) VALUES (
                 %(id)s, %(intent_id)s, %(idempotency_key)s, %(symbol)s, %(side)s,
                 %(action)s, %(direction)s, %(quantity)s, %(sl)s, %(tp)s,
-                %(ticket)s, %(expires_at)s, %(state)s, %(created_at)s
+                %(ticket)s, %(expires_at)s, %(state)s, %(created_at)s,
+                %(state_revision)s, %(state_changed_at)s
             )
-            """,
+            """),
             {
                 "id": command.command_id,
                 "intent_id": command.intent_id,
@@ -231,6 +256,8 @@ class PostgresCommandRepository:
                 "ticket": command.broker_position_ticket,
                 "expires_at": command.expires_at,
                 "state": command.state,
+                "state_revision": command.state_revision,
+                "state_changed_at": command.state_changed_at,
                 "created_at": command.created_at,
             },
         )
@@ -256,11 +283,13 @@ class PostgresCommandRepository:
             if retains_claim
             else _SAVE_STATE_RELEASING_CLAIM_SQL
         )
-        cursor = self._conn.execute(
-            statement,
+        row = self._conn.execute(
+            _with_state_observation(statement),
             {
                 "id": command.command_id,
                 "state": command.state,
+                "state_revision": command.state_revision,
+                "state_changed_at": command.state_changed_at,
                 "quantity": command.quantity,
                 "expected_state": expected_state,
                 "claimed_by": command.claimed_by,
@@ -269,9 +298,9 @@ class PostgresCommandRepository:
                 "submitting_at": command.submitting_at,
                 "broker_request_started_at": command.broker_request_started_at,
             },
-        )
+        ).fetchone()
         self._conn.commit()
-        if cursor.rowcount != 1:
+        if row is None:
             raise StaleCommandStateError(
                 f"command {command.command_id} state or claim generation no longer "
                 f"matches {expected_state}; "
@@ -293,9 +322,11 @@ class PostgresCommandRepository:
         # uncommitted — a crash after the broker call would then roll the
         # claim back to READY and let another worker re-send the order.
         row = self._conn.execute(
-            """
+            _with_state_observation("""
             UPDATE execution_commands
             SET state = 'CLAIMED',
+                state_revision = state_revision + 1,
+                state_changed_at = %(now)s,
                 claimed_by = %(worker)s,
                 claimed_at = %(now)s,
                 claim_expires_at = %(expires)s
@@ -307,8 +338,7 @@ class PostgresCommandRepository:
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            RETURNING *
-            """,
+            """),
             {
                 "worker": worker,
                 "now": now,

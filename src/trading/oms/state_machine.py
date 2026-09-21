@@ -88,7 +88,11 @@ def transition(
                 "CLAIMED with a started broker request must go to UNKNOWN, not READY"
             )
 
-    updates: dict = {"state": new_state}
+    updates: dict = {
+        "state": new_state,
+        "state_revision": command.state_revision + 1,
+        "state_changed_at": now,
+    }
     if new_state is CommandState.READY:
         updates.update(
             {"claimed_by": None, "claimed_at": None, "claim_expires_at": None}

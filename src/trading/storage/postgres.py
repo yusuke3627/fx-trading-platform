@@ -44,11 +44,13 @@ _OMS_DISPATCHER_LOCK_OBJECT_ID = 1
 _TICK_ADVISORY_LOCK_CLASS_ID = 0x5449434B
 
 # A write that gives the claim up (the sweep's CLAIMED -> READY, whose
-# transition nulls the claim columns) compares state alone; requiring the
-# columns it is about to clear would match no row and strand the recovery.
+# transition nulls the claim columns) compares state and revision without the
+# lease columns; comparing the columns it clears would strand the recovery.
 _SAVE_STATE_RELEASING_CLAIM_SQL = """
     UPDATE execution_commands
     SET state = %(state)s,
+        state_revision = %(state_revision)s,
+        state_changed_at = %(state_changed_at)s,
         quantity = %(quantity)s,
         claimed_by = %(claimed_by)s,
         claimed_at = %(claimed_at)s,
@@ -57,6 +59,7 @@ _SAVE_STATE_RELEASING_CLAIM_SQL = """
         broker_request_started_at = %(broker_request_started_at)s,
         updated_at = now()
     WHERE id = %(id)s AND state = %(expected_state)s
+      AND state_revision <= %(state_revision)s
 """
 
 # A write that keeps the claim names the generation it observed. The values it
@@ -130,6 +133,8 @@ def _row_to_command(row: dict[str, Any]) -> ExecutionCommand:
         broker_position_ticket=row["broker_position_ticket"],
         expires_at=row["expires_at"],
         state=row["state"],
+        state_revision=row["state_revision"],
+        state_changed_at=row["state_changed_at"],
         claimed_by=row["claimed_by"],
         claimed_at=row["claimed_at"],
         claim_expires_at=row["claim_expires_at"],
@@ -200,23 +205,58 @@ def _row_to_event(row: dict[str, Any]) -> EventEnvelope:
     )
 
 
+def _with_state_observation(statement: str) -> str:
+    # 同一revisionの再保存は同じ観測だけ許す。競合する既存行はロックして
+    # 比較し、異なる観測なら呼出し元がtransaction全体を取り消す。
+    return f"""
+        WITH written AS ({statement} RETURNING *), observations AS (
+            INSERT INTO execution_state_observations AS stored (
+                command_id, state_revision, state, changed_at, quantity
+            )
+            SELECT id, state_revision, state,
+                CASE WHEN state = 'CREATED' AND state_revision = 0
+                     THEN created_at ELSE state_changed_at END,
+                quantity
+            FROM written
+            ON CONFLICT (command_id, state_revision) DO UPDATE
+                SET state_revision = EXCLUDED.state_revision
+                WHERE (stored.state, stored.changed_at, stored.quantity)
+                    IS NOT DISTINCT FROM (EXCLUDED.state, EXCLUDED.changed_at, EXCLUDED.quantity)
+            RETURNING 1
+        )
+        SELECT written.*, EXISTS (SELECT 1 FROM observations) AS observation_written FROM written
+    """
+
+
 class PostgresCommandRepository:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
 
+    def _write_observation(self, statement: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        # autocommitでも競合の検出前にcommandだけが確定しないようにする。
+        with self._conn.transaction():
+            row = self._conn.execute(statement, params).fetchone()
+            if row is not None and not row["observation_written"]:
+                raise StaleCommandStateError(
+                    f"command {row['id']} observation revision conflicts; re-read and reconcile"
+                )
+        return row
+
     def insert(self, command: ExecutionCommand) -> None:
-        self._conn.execute(
-            """
+        self._write_observation(
+            _with_state_observation("""
             INSERT INTO execution_commands (
                 id, intent_id, idempotency_key, symbol, side, action, direction,
                 quantity, stop_loss_price, take_profit_price,
-                broker_position_ticket, expires_at, state, created_at
+                broker_position_ticket, expires_at, state, created_at,
+                state_revision, state_changed_at
             ) VALUES (
                 %(id)s, %(intent_id)s, %(idempotency_key)s, %(symbol)s, %(side)s,
                 %(action)s, %(direction)s, %(quantity)s, %(sl)s, %(tp)s,
-                %(ticket)s, %(expires_at)s, %(state)s, %(created_at)s
+                %(ticket)s, %(expires_at)s, %(state)s, %(created_at)s,
+                %(state_revision)s, %(state_changed_at)s
             )
-            """,
+            """),
             {
                 "id": command.command_id,
                 "intent_id": command.intent_id,
@@ -231,6 +271,8 @@ class PostgresCommandRepository:
                 "ticket": command.broker_position_ticket,
                 "expires_at": command.expires_at,
                 "state": command.state,
+                "state_revision": command.state_revision,
+                "state_changed_at": command.state_changed_at,
                 "created_at": command.created_at,
             },
         )
@@ -256,11 +298,13 @@ class PostgresCommandRepository:
             if retains_claim
             else _SAVE_STATE_RELEASING_CLAIM_SQL
         )
-        cursor = self._conn.execute(
-            statement,
+        row = self._write_observation(
+            _with_state_observation(statement),
             {
                 "id": command.command_id,
                 "state": command.state,
+                "state_revision": command.state_revision,
+                "state_changed_at": command.state_changed_at,
                 "quantity": command.quantity,
                 "expected_state": expected_state,
                 "claimed_by": command.claimed_by,
@@ -271,7 +315,7 @@ class PostgresCommandRepository:
             },
         )
         self._conn.commit()
-        if cursor.rowcount != 1:
+        if row is None:
             raise StaleCommandStateError(
                 f"command {command.command_id} state or claim generation no longer "
                 f"matches {expected_state}; "
@@ -287,15 +331,15 @@ class PostgresCommandRepository:
     def claim_next(
         self, worker: str, lease_seconds: int, now: datetime
     ) -> ExecutionCommand | None:
-        # Single-statement claim + explicit commit. A `transaction()` block
-        # would degrade to a savepoint if a prior SELECT on this connection
-        # opened an implicit transaction, leaving the CLAIMED update
-        # uncommitted — a crash after the broker call would then roll the
-        # claim back to READY and let another worker re-send the order.
-        row = self._conn.execute(
-            """
+        # 観測用transactionが既存transactionのsavepointになった場合も、
+        # 明示commitでclaimを確定する。broker呼出し後のクラッシュで
+        # CLAIMEDがREADYへrollbackされ、再送可能になることを防ぐ。
+        row = self._write_observation(
+            _with_state_observation("""
             UPDATE execution_commands
             SET state = 'CLAIMED',
+                state_revision = state_revision + 1,
+                state_changed_at = %(now)s,
                 claimed_by = %(worker)s,
                 claimed_at = %(now)s,
                 claim_expires_at = %(expires)s
@@ -307,14 +351,13 @@ class PostgresCommandRepository:
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            RETURNING *
-            """,
+            """),
             {
                 "worker": worker,
                 "now": now,
                 "expires": now + timedelta(seconds=lease_seconds),
             },
-        ).fetchone()
+        )
         self._conn.commit()
         return _row_to_command(row) if row else None
 

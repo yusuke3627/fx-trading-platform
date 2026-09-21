@@ -165,7 +165,8 @@ def test_a_state_that_moved_underneath_the_caller_is_refused(workers):
     repo, _ = worker()
     written = command(prefix, 1)
     repo.insert(written)
-    repo.save_state(written.model_copy(update={"state": CommandState.UNKNOWN}), CommandState.READY)
+    claimed = repo.claim_next("worker-a", 30, T0)
+    repo.save_state(transition(claimed, CommandState.UNKNOWN, now=T0), CommandState.CLAIMED)
 
     with pytest.raises(StaleCommandStateError):
         repo.save_state(
@@ -231,9 +232,8 @@ def test_save_state_persists_send_time_adjusted_quantity(workers):
     repo.insert(written)
     claimed = repo.claim_next("worker-a", 30, T0)
     assert claimed is not None
-    adjusted = claimed.model_copy(
-        update={"state": CommandState.SUBMITTING, "quantity": Decimal(400)}
-    )
+    adjusted = transition(claimed, CommandState.SUBMITTING, now=T0).model_copy(
+        update={"quantity": Decimal(400)})
 
     repo.save_state(adjusted, CommandState.CLAIMED)
 

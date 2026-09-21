@@ -42,9 +42,36 @@ python -m trading.data.policy.opinions_comparison prepare \
 固定ID、原文・本文・corpus・要求body・promptのhash、要求model、研究版を記録する。
 要求に人手ラベルや既存の政策スコアは入れない。
 
-モデル応答を見ずにラベル下書きをコピーし、各行の`stance`、`status="reviewed"`、
-`reviewer`、タイムゾーン付き`reviewed_at`を記入する。本文・ID・hashは変更しない。
-全290意見が確認済みになるまで意味指標は`null`、statusは`pending_human_review`になる。
+### 画面で人手ラベルを確認する
+
+追加の依存関係は不要。次のコマンドで起動し、表示された `http://127.0.0.1:8765` を開く。
+`--output` の親ディレクトリは事前に用意し、初回は存在しないファイルを指定する。
+
+```bash
+python -m trading.data.policy.opinions_review \
+  --run-dir tmp/opinions-comparison/run-1 \
+  --output tmp/opinions-comparison/run-1/labels.reviewed.jsonl
+```
+
+本文と4分類の定義を読み、分類と確認者名を入力して「確認して保存・次の未確認へ」を押す。
+未確認の意見には初期選択を置かない。選択・入力・移動だけでは確認済みにならず、
+明示保存時に `status="reviewed"`、確認者とタイムゾーン付き確認日時を記録する。
+前後の意見へ戻って訂正でき、「未確認に戻す」で分類・確認者・日時を消せる。
+モデルの予測・応答は画面へ読み込まない。確認ルールは画面内で開ける。
+
+保存は意見ごとに指定JSONLへ反映する。終了は `Ctrl+C`。再開時は同じコマンドに
+`--resume` を付ける。既存ファイルへの初回上書きと元の `labels.draft.jsonl` への保存は拒否する。
+別の下書きから始める場合だけ `--labels <JSONL>` を追加する。そのファイルも保存先にできない。
+同じ保存先で複数の画面サーバーを起動せず、起動中は別のエディタで編集しない。
+古いタブや外部更新を検出した場合は保存を止める。表示された手順で再読み込み・再開する。
+
+「保存済みJSONLをダウンロード」は途中でも使える。ダウンロードしたファイルは
+`--output <ダウンロード先> --resume` で再開できる。ID・本文・hashは評価処理と同じ検査で
+照合し、欠損や重複のあるラベルは受け付けない。ローカル画面は `127.0.0.1` のみで待ち受け、
+外部APIやDBには接続しない。ポートが使用中なら `--port <番号>` を指定する。
+
+全290意見が確認済みになるまで意味指標は `null`、statusは `pending_human_review` になる。
+途中のJSONLを評価に渡しても、この全件確認の条件は変わらない。
 一部だけ確認しても、確認しやすい意見だけで精度を発表しない。
 
 既存Lunaの保存Batch応答は、そのまま取り込める。
@@ -77,7 +104,7 @@ Lunaは標準Batch形式を使う。Jevの直接API応答は各行を次の形�
 ```bash
 python -m trading.data.policy.opinions_comparison evaluate \
   --run-dir tmp/opinions-comparison/run-1 \
-  --labels tmp/opinions-comparison/run-1/labels.draft.jsonl \
+  --labels tmp/opinions-comparison/run-1/labels.reviewed.jsonl \
   --output-dir tmp/opinions-comparison/evaluation-1
 ```
 

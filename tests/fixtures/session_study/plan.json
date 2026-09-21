@@ -1,0 +1,38 @@
+{
+  "schema_version": "session_study_v1",
+  "population_description": "合成価格によるCLI動作確認。実測成績ではない",
+  "instrument": {
+    "symbol": "USDJPY",
+    "base_currency": "USD",
+    "quote_currency": "JPY",
+    "digits": 3,
+    "pip_size": "0.01",
+    "contract_size": "1000",
+    "volume_min": "1000",
+    "volume_step": "1000",
+    "volume_max": "100000",
+    "stop_level_points": 0,
+    "accepted_filling_modes": [
+      "IMMEDIATE_OR_CANCEL"
+    ]
+  },
+  "from_date": "2026-03-09",
+  "to_date": "2026-03-10",
+  "basis": "simulated",
+  "quotes_complete": true,
+  "calendar_source": "架空の空カレンダー",
+  "calendar_start": "2026-03-08T00:00:00Z",
+  "calendar_end": "2026-04-02T00:00:00Z",
+  "exclusions": [],
+  "quote_max_age_seconds": "2",
+  "latency_ms": "0",
+  "slippage_pips_per_side": "0.3",
+  "commission_pips_round_trip": "0",
+  "server_ahead_of_ny_hours": 7.0,
+  "minimum_effect_pips": "0.1",
+  "planned_days": 2,
+  "sample_size_rationale": "単体テスト用の最小件数。実測の検出力を表さない",
+  "block_days": 1,
+  "bootstrap_replicates": 2000,
+  "seed": 7
+}

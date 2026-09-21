@@ -66,25 +66,42 @@ def build_input(
     for row in rows["fills"]:
         fills[str(row["execution_command_id"])].append(row)
     orders = []
+    decisions_outside_window = 0
     for command in rows["commands"]:
         order_id = str(command["id"])
         history = histories[order_id]
         complete = _complete_history(command, history)
         visible = [row for row in history if row["changed_at"] is not None and row["changed_at"] <= end]
         final_state, quantity = command["state"], command["quantity"]
-        # mutable な現在行を過去の終了時刻へ持ち込まない。完全な遷移列が
-        # なければ、最終状態も当時の要求数量も安全には復元できない。
-        if command["updated_at"] > end:
-            if not complete or not visible:
+        # 状態時計とDB保存時計は同一とは限らない。完全な履歴は常に状態時計で
+        # 切り出し、不完全な履歴で終了後の変更が見えている場合は復元を拒否する。
+        future_state = any(row["changed_at"] is not None and row["changed_at"] > end for row in history)
+        changed_at = command.get("state_changed_at")
+        future_state = future_state or (changed_at is not None and changed_at > end)
+        if complete:
+            if not visible:
                 raise ValueError(f"注文 {order_id} の終了時点の状態を復元できません。観測窓を広げてください")
             final_state, quantity = visible[-1]["state"], visible[-1]["quantity"]
+        elif future_state or (basis == "observed_utc" and command["updated_at"] > end):
+            raise ValueError(f"注文 {order_id} の終了時点の状態を復元できません。観測窓を広げてください")
+        elif basis != "observed_utc" and not (
+            history and history[-1]["state_revision"] == command["state_revision"]
+            and history[-1]["state"] == command["state"]
+            and history[-1]["quantity"] == command["quantity"]
+            and changed_at is not None and history[-1]["changed_at"] == changed_at
+        ):
+            raise ValueError(f"注文 {order_id} の現在状態の時計を確認できません。状態観測が必要です")
+        decision_at = command["decision_at"]
+        if decision_at is not None and not start <= decision_at <= end:
+            decisions_outside_window += 1
+            decision_at = None
         order_fills = fills[order_id]
         if any(row["side"] != command["side"] or row["origin"] != "COMMAND" for row in order_fills):
             raise ValueError(f"注文 {order_id} と fill の方向・由来が一致しません")
         orders.append(OrderObservation(
             order_id=order_id, symbol=command["symbol"], side=command["side"],
             quantity=quantity, final_state=final_state, created_at=stamp(command["created_at"]),
-            decision_at=stamp(command["decision_at"]),
+            decision_at=stamp(decision_at),
             # broker_request_started_at は呼出し予定の記録。実際の送信境界の
             # 保存経路が無いため、sent_at と response_at は欠測のままにする。
             history_complete=complete,
@@ -127,6 +144,7 @@ def build_input(
         "exported_orders": len(data.orders),
         "final_states": dict(Counter(order.final_state for order in orders)),
         "complete_state_histories": sum(order.history_complete for order in orders),
+        "decision_timestamps_outside_window": decisions_outside_window,
         "time_basis": basis,
         "provenance": provenance,
         "quote_provenance": quote_provenance,

@@ -191,8 +191,13 @@ def test_quote_export_uses_receipt_clock_and_requires_explicit_provenance(db):
 
 def test_export_and_study_cli_keep_rejected_expired_and_unknown_orders(db, tmp_path, monkeypatch):
     conn, repo = db
-    for state in (CommandState.REJECTED, CommandState.EXPIRED, CommandState.UNKNOWN):
-        insert_command(repo, state)
+    for path in (
+        (CommandState.REJECTED,), (CommandState.EXPIRED,),
+        (CommandState.RISK_APPROVED, CommandState.READY, CommandState.CLAIMED, CommandState.UNKNOWN),
+    ):
+        command = insert_command(repo)
+        for seconds, state in enumerate(path, 1):
+            command = advance(repo, command, state, seconds)
     end = conn.execute("SELECT clock_timestamp() AS at").fetchone()["at"]
     conn.commit()
     specs = tmp_path / "instruments.json"
@@ -210,5 +215,5 @@ def test_export_and_study_cli_keep_rejected_expired_and_unknown_orders(db, tmp_p
     report = json.loads((report_dir / "report.json").read_text())
     assert report["orders_total"] == 3
     assert report["symbols"][0]["final_states"] == {"REJECTED": 1, "EXPIRED": 1, "UNKNOWN": 1}
-    assert report["symbols"][0]["pending_statuses"] == {"incomplete_state_history": 3}
+    assert report["symbols"][0]["pending_statuses"] == {"incomplete_fill_history": 3}
     assert "3" in (report_dir / "report.md").read_text()

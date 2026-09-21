@@ -73,8 +73,8 @@ class Plan(Record):
             raise ValueError("一度の診断は10年以内にしてください")
         if self.calendar_start >= self.calendar_end:
             raise ValueError("カレンダーの確認範囲が逆転しています")
-        if self.instrument.pip_size <= 0:
-            raise ValueError("pip_sizeは正の値が必要です")
+        if not self.instrument.pip_size.is_finite() or self.instrument.pip_size <= 0:
+            raise ValueError("pip_sizeは有限の正の値が必要です")
         if 2 * self.block_days > self.planned_days:
             raise ValueError("planned_daysにはblock_daysの2倍以上が必要です")
         return self

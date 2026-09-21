@@ -214,6 +214,20 @@ def test_rejects_naive_calendar_and_uninformative_block_size():
         Exclusion(start="2026-03-01T00:00:00Z", end="2026-03-01T00:00:00Z", reason="macro")
 
 
+@pytest.mark.parametrize("pip_size", ["NaN", "Infinity", "-Infinity", "0", "-0.01"])
+def test_cli_rejects_nonfinite_or_nonpositive_pip_size_before_analysis(tmp_path, pip_size):
+    values = plan().model_dump(mode="json")
+    values["instrument"]["pip_size"] = pip_size
+    with pytest.raises(ValidationError):
+        Plan.model_validate(values)
+    source = tmp_path / "invalid-plan.json"
+    source.write_text(json.dumps(values))
+    output = tmp_path / "result"
+    assert main(["--plan", str(source), "--quotes", str(tmp_path / "unused.jsonl"),
+                 "--output-dir", str(output)]) == 2
+    assert not output.exists()
+
+
 def test_cli_keeps_input_plan_reports_provenance_and_refuses_overwrite(tmp_path):
     p = plan()
     source = tmp_path / "plan.json"

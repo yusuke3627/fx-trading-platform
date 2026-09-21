@@ -24,6 +24,7 @@ from trading.data.policy.opinions import (
     event_from_opinions,
     extract_pdf_text,
     japanese_statement_pdf_url,
+    minutes_publication_from_statement,
     opinions_url,
     publication_from_statement,
 )
@@ -135,6 +136,33 @@ def test_publication_rolls_over_the_year():
 def test_missing_ambiguous_or_invalid_publication_fails(text):
     with pytest.raises(ValueError):
         publication_from_statement(text, DECISION)
+
+
+@pytest.mark.parametrize("decision, text, expected", [
+    (date(2026, 7, 30), "議事要旨――2026年9月18日(金)8:50予定",
+     datetime(2026, 9, 18, 8, 50, tzinfo=JST)),
+    (date(2026, 7, 30), STATEMENT, datetime(2026, 9, 18, 8, 50, tzinfo=JST)),
+    (date(2024, 12, 19), "議事要旨――2025年1月29日(水)8:50予定",
+     datetime(2025, 1, 29, 8, 50, tzinfo=JST)),
+    (date(2024, 12, 19), "議事要旨—1月29日（水）8:50予定",
+     datetime(2025, 1, 29, 8, 50, tzinfo=JST)),
+    (date(2026, 7, 30), "議 事 要 旨 ―― ２０２６年９月１８日（金） ９：１５ 予 定",
+     datetime(2026, 9, 18, 9, 15, tzinfo=JST)),
+])
+def test_minutes_publication_year_and_normalization(decision, text, expected):
+    assert minutes_publication_from_statement(text, decision) == expected
+
+
+@pytest.mark.parametrize("text, message", [
+    ("公表予定の記載がありません", "一意に取得できません"),
+    ("主な意見――9月18日(金)8:50予定", "一意に取得できません"),
+    (STATEMENT + "議事要旨――9月19日(土)8:50予定", "一意に取得できません"),
+    ("議事要旨――2025年9月18日(木)8:50予定", "会合日より前"),
+    ("議事要旨――7月29日(水)8:50予定", "会合日より前"),
+])
+def test_missing_ambiguous_or_past_minutes_publication_fails(text, message):
+    with pytest.raises(ValueError, match=message):
+        minutes_publication_from_statement(text, DECISION)
 
 
 def test_event_archives_original_bytes_and_text_with_publication_known_at(meeting):

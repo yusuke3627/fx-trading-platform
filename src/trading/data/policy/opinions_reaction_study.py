@@ -15,6 +15,7 @@ import time
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -140,6 +141,9 @@ def prepare_cases(
 
 def control_days(
     publications: Sequence[datetime], meetings: Sequence[PolicyMeeting],
+    *,
+    radius_days: int = CONTROL_RADIUS_DAYS,
+    extra_excluded_jst_days: AbstractSet[date] = frozenset(),
 ) -> tuple[list[datetime], dict[str, list[str]]]:
     utc = [t.astimezone(UTC) for t in publications]
     if len({t.time() for t in utc}) != 1:
@@ -149,7 +153,7 @@ def control_days(
     nearby_days = {
         day + timedelta(days=offset)
         for day in publication_days
-        for offset in range(-CONTROL_RADIUS_DAYS, CONTROL_RADIUS_DAYS + 1)
+        for offset in range(-radius_days, radius_days + 1)
     }
     policy_days = {
         m.decision_date + timedelta(days=offset)
@@ -166,6 +170,8 @@ def control_days(
             reasons.append("publication_day")
         if jst_day in policy_days:
             reasons.append("policy_decision_window")
+        if jst_day in extra_excluded_jst_days:
+            reasons.append("other_publication_day")
         if reasons:
             excluded[day.isoformat()] = reasons
         else:

@@ -164,6 +164,43 @@ def test_preregistered_publication_dates_produce_231_control_days():
     assert controls[-1].date() == date(2026, 8, 19)
 
 
+def test_control_days_custom_radius_is_inclusive():
+    publications = [datetime(2024, 1, 14, 23, 50, tzinfo=UTC)]
+    controls, excluded = study.control_days(publications, [], radius_days=15)
+    all_days = {t.date() for t in controls} | {date.fromisoformat(day) for day in excluded}
+    assert all_days == {date(2023, 12, 30) + timedelta(days=i) for i in range(31)}
+    assert date(2023, 12, 31) in {t.date() for t in controls}
+    assert date(2024, 1, 29) in {t.date() for t in controls}
+
+
+def test_extra_publication_exclusion_uses_jst_date():
+    publications = [datetime(2024, 1, 10, 23, 50, tzinfo=UTC)]
+    controls, excluded = study.control_days(
+        publications, [], extra_excluded_jst_days={date(2024, 1, 9)},
+    )
+    assert excluded["2024-01-08"] == ["other_publication_day"]
+    assert date(2024, 1, 8) not in {t.date() for t in controls}
+    assert date(2024, 1, 9) in {t.date() for t in controls}
+
+
+def test_control_days_default_arguments_preserve_existing_results():
+    publications = [datetime(2024, 1, 10, 23, 50, tzinfo=UTC)]
+    controls, excluded = study.control_days(publications, [])
+    assert [t.date().isoformat() for t in controls] == [
+        "2023-12-31", "2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04",
+        "2024-01-07", "2024-01-08", "2024-01-09", "2024-01-11", "2024-01-14",
+        "2024-01-15", "2024-01-16", "2024-01-17", "2024-01-18",
+    ]
+    assert excluded == {
+        "2024-01-05": ["weekend"], "2024-01-06": ["weekend"],
+        "2024-01-10": ["publication_day"], "2024-01-12": ["weekend"],
+        "2024-01-13": ["weekend"], "2024-01-19": ["weekend"], "2024-01-20": ["weekend"],
+    }
+    assert study.control_days(
+        publications, [], radius_days=10, extra_excluded_jst_days=frozenset(),
+    ) == (controls, excluded)
+
+
 def test_inconsistent_publication_clock_time_is_an_error():
     times = [T0 + timedelta(days=i) for i in range(20)]
     times[-1] += timedelta(minutes=1)

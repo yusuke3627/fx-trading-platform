@@ -122,6 +122,39 @@ def test_journal_failure_rolls_back_command_even_on_autocommit_connection(db):
         conn.execute("ALTER TABLE execution_state_observations DROP CONSTRAINT example_failure")
 
 
+@pytest.mark.parametrize("autocommit", [False, True])
+def test_conflicting_partial_fill_revision_rolls_back_but_identical_resave_is_allowed(db, autocommit):
+    from trading.storage.postgres import PostgresCommandRepository, connect
+
+    conn, repo = db
+    command = insert_command(repo)
+    for seconds, state in enumerate((CommandState.RISK_APPROVED, CommandState.READY,
+                                    CommandState.CLAIMED, CommandState.SUBMITTING,
+                                    CommandState.PARTIAL_FILL), 1):
+        command = advance(repo, command, state, seconds)
+    with connect(DSN) as other:
+        other.autocommit = autocommit
+        stale_repo = PostgresCommandRepository(other)
+        stale = stale_repo.get(str(command.command_id))
+        saved = advance(repo, command, CommandState.PARTIAL_FILL, 6)
+        conflicting = transition(stale, CommandState.PARTIAL_FILL, now=at(seconds=7))
+        with pytest.raises(StaleCommandStateError, match="observation revision conflicts"):
+            stale_repo.save_state(conflicting, CommandState.PARTIAL_FILL)
+        stored = stale_repo.get(str(command.command_id))
+        assert stored.state_revision == saved.state_revision
+        assert stored.state_changed_at == at(seconds=6)
+        other.rollback()
+
+    before = observations(conn)
+    repo.save_state(saved, CommandState.PARTIAL_FILL)
+    assert observations(conn) == before
+    # 古い非遷移オブジェクトの再保存でrevisionを巻き戻してもならない。
+    with pytest.raises(StaleCommandStateError):
+        repo.save_state(stale, CommandState.PARTIAL_FILL)
+    assert repo.get(str(command.command_id)).state_changed_at == at(seconds=6)
+    assert convert(read(conn)).orders[0].history_complete
+
+
 def test_persisted_late_fill_does_not_enter_an_older_read_snapshot(db):
     from trading.storage.postgres import connect
 

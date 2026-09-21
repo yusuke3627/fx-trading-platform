@@ -50,6 +50,7 @@ def history(rows):
         for index, state in enumerate(path)
     ]
     rows["commands"][0]["state_revision"] = len(path) - 1
+    rows["commands"][0]["state_changed_at"] = rows["states"][-1]["changed_at"]
 
 
 def test_legacy_rows_keep_missing_clocks_and_only_measure_supported_slippage(rows):
@@ -139,7 +140,7 @@ def test_decision_before_created_at_window_does_not_discard_valid_order_or_fill(
     assert report["symbols"][0]["final_states"] == {"FILLED": 1}
 
 
-@pytest.mark.parametrize("defect", ["missing_transition", "no_creation", "missing_clock", "invalid_path"])
+@pytest.mark.parametrize("defect", ["missing_transition", "no_creation", "missing_clock", "invalid_path", "stale_clock"])
 def test_incomplete_history_is_never_promoted(rows, defect):
     history(rows)
     if defect == "missing_transition":
@@ -148,8 +149,10 @@ def test_incomplete_history_is_never_promoted(rows, defect):
         del rows["states"][0]
     elif defect == "missing_clock":
         rows["states"][3]["changed_at"] = None
-    else:
+    elif defect == "invalid_path":
         rows["states"][1]["state"] = "UNKNOWN"
+    else:
+        rows["commands"][0]["state_changed_at"] = at(seconds=6)
     data, _ = convert(rows)
     assert not data.orders[0].history_complete
     rows["commands"][0]["updated_at"] = at(days=1)

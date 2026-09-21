@@ -38,7 +38,11 @@ def _complete_history(command: dict, states: list[dict]) -> bool:
     if (states[0]["state"] != CommandState.CREATED
             or states[0]["changed_at"] != command["created_at"]
             or states[-1]["state"] != command["state"]
-            or states[-1]["quantity"] != command["quantity"]):
+            or states[-1]["quantity"] != command["quantity"]
+            or states[-1]["changed_at"] != (
+                command["created_at"] if command["state"] == CommandState.CREATED
+                and command["state_revision"] == 0 else command.get("state_changed_at")
+            )):
         return False
     if any(row["changed_at"] is None for row in states):
         return False

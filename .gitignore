@@ -11,6 +11,8 @@ build/
 .envrc
 *.local.yaml
 reports/
+# 実行中に増えるログを再現性ハッシュへ含めない。他の生成物は logs/ または tmp/ に置く。
+*.log
 # エージェントが worktree 内に書く作業ログ（Codex の実行ログ・セッション ID 等）
 tmp/
 logs/

@@ -489,14 +489,14 @@ def test_every_registered_strategy_computes_a_positive_warmup():
 
 
 def test_warmup_follows_the_evaluated_configuration():
-    from trading.strategy.base import StrategyConfig
+    from trading.strategy.base import StrategyConfig, market_span_to_calendar
     from trading.strategy.parameters import StrategyParameters
     from trading.strategy.registry import STRATEGIES
 
     swing = STRATEGIES["monetary_policy_convergence"]
     default = StrategyConfig(strategy_id=swing.strategy_id, instruments=["USDJPY"])
-    # The trend gate's EMA(50) on 1d needs ~50 trading days of lead-in.
-    assert swing.warmup(default) >= timedelta(days=70)
+    # 期間50の EMA でも、定常時と同じ200本を開始時から読む。
+    assert swing.warmup(default) == market_span_to_calendar(200 * 86400)
 
     intraday = STRATEGIES["post_event_failed_breakout"]
     base_config = StrategyConfig(strategy_id=intraday.strategy_id, instruments=["USDJPY"])

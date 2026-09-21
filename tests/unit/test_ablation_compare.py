@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from trading.backtest.ablation_compare import (
+    DEFERRED_SWAP,
     KEEP,
     REMOVE,
     UNDECIDED_DIFFERENCE,
@@ -37,7 +38,7 @@ PERIOD_FROM = datetime(2026, 1, 1, tzinfo=UTC)
 PERIOD_TO = datetime(2026, 2, 1, tzinfo=UTC)
 
 
-def arm(count: int, mean: str) -> ArmSummary:
+def arm(count: int, mean: str, *, unpriced_rollovers: int = 0) -> ArmSummary:
     value = Decimal(mean)
     return ArmSummary(
         count=count,
@@ -50,6 +51,7 @@ def arm(count: int, mean: str) -> ArmSummary:
         block_low=float("nan"),
         block_high=float("nan"),
         blocks=1,
+        unpriced_rollovers=unpriced_rollovers,
     )
 
 
@@ -80,6 +82,25 @@ def test_judge_applies_the_pre_registered_rules(
     expected: str,
 ):
     assert judge(with_, without, interval) == expected
+
+
+@pytest.mark.parametrize(("with_unpriced", "without_unpriced"), [(1, 0), (0, 15), (1, 15)])
+@pytest.mark.parametrize(
+    ("with_count", "with_mean", "without_count", "without_mean", "interval"),
+    [
+        (10, "2", 10, "1", (0.1, 1.5)),
+        (10, "1", 20, "1", (-0.5, 0.5)),
+        (5, "1", 5, "2", (-2.0, 0.0)),
+        (10, "1", 10, "1", (-0.5, 0.5)),
+    ],
+)
+def test_unpriced_swap_defers_every_statistical_verdict(
+    with_unpriced, without_unpriced, with_count, with_mean, without_count, without_mean, interval,
+):
+    with_ = arm(with_count, with_mean, unpriced_rollovers=with_unpriced)
+    without = arm(without_count, without_mean, unpriced_rollovers=without_unpriced)
+
+    assert judge(with_, without, interval) == DEFERRED_SWAP
 
 
 def test_difference_interval_is_seeded_and_independently_resampled():
@@ -205,11 +226,14 @@ def test_block_intervals_require_one_block_key_per_pnl():
         block_difference_interval(pnls, blocks, pnls, blocks[:1], seed=42)
 
 
-def test_arm_summary_keeps_iid_interval_alongside_block_interval():
+@pytest.mark.parametrize("unpriced_rollovers", [0, 1])
+def test_arm_summary_keeps_intervals_and_marks_unpriced_swap_as_deferred(unpriced_rollovers):
     pnls = [Decimal("1.1"), Decimal("2.2"), Decimal("3.3")]
     blocks = [date(2026, 1, 1), date(2026, 1, 1), date(2026, 1, 2)]
 
-    summary = arm_summary(pnls, blocks, Decimal("4.5"), seed=43)
+    summary = arm_summary(
+        pnls, blocks, Decimal("4.5"), seed=43, unpriced_rollovers=unpriced_rollovers,
+    )
 
     assert (summary.low, summary.high) == bootstrap_interval([float(p) for p in pnls], seed=43)
     assert (summary.block_low, summary.block_high) == block_bootstrap_interval(
@@ -218,6 +242,8 @@ def test_arm_summary_keeps_iid_interval_alongside_block_interval():
     assert summary.count == 3
     assert summary.blocks == 2
     assert summary.max_drawdown == Decimal("4.5")
+    assert summary.unpriced_rollovers == unpriced_rollovers
+    assert summary.hold_reason == (DEFERRED_SWAP if unpriced_rollovers else None)
 
 
 def run_metrics(**overrides: str) -> dict[str, str]:
@@ -379,6 +405,43 @@ def test_load_run_and_report_round_trip_trade_pnls_and_provenance(tmp_path):
         for field in ("first_trade_at", "last_trade_at"):
             assert f"  {field:<22} {coverage[field]}" in section
         assert f"  {'months_with_trades':<22} {coverage['months_with_trades']}/6" in section
+
+
+@pytest.mark.parametrize(
+    ("with_unpriced", "without_unpriced"), [(0, 0), (1, 0), (0, 15), (1, 15)],
+)
+def test_main_defers_only_the_unpriced_arms_and_their_comparison(
+    tmp_path, monkeypatch, capsys, with_unpriced, without_unpriced,
+):
+    runs = {}
+    for label, pnl, unpriced in (
+        ("with", Decimal(2), with_unpriced), ("without", Decimal(1), without_unpriced),
+    ):
+        result = backtest_result([pnl] * 10, [Decimal(0)] * 10, "0")
+        result.metrics["unpriced_rollovers"] = str(unpriced)
+        overrides = {} if label == "with" else {"macro_confirmation_enabled": False}
+        runs[label] = write_report(result, manifest(label, overrides), tmp_path)
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "ablation_compare", "--with", str(runs["with"]), "--without", str(runs["without"]),
+            "--param", "macro_confirmation_enabled", "--seed", "42",
+        ],
+    )
+
+    main()
+
+    rendered = capsys.readouterr().out
+    expected = DEFERRED_SWAP if with_unpriced or without_unpriced else KEEP
+    assert rendered.splitlines()[-1] == f"verdict: {expected}"
+    assert f"{'unpriced_rollovers':<28} {with_unpriced:>22} {without_unpriced:>22}" in rendered
+    assert "difference of means (with - without): 1 CI90 [1, 1] seed=42" in rendered
+    for label, unpriced in (("with", with_unpriced), ("without", without_unpriced)):
+        section = rendered.split(f"{label}:\n", 1)[1].split("\nwithout:\n")[0].split("\n\n")[0]
+        assert ("hold_reason" in section) == bool(unpriced)
+        if unpriced:
+            assert DEFERRED_SWAP in section
+            assert "この腕の損益・区間は参考値" in section
 
 
 def test_load_run_reports_a_missing_trades_file(tmp_path):
@@ -611,7 +674,10 @@ def test_partial_closes_are_one_bootstrap_sample(tmp_path):
     run = load_run(run_dir)
     assert run.pnls == [Decimal(2), Decimal(17)]
     blocks = [broker_day(at) for at in run.entry_ats]
-    summary = arm_summary(run.pnls, blocks, Decimal(0), seed=42)
+    summary = arm_summary(
+        run.pnls, blocks, Decimal(0), seed=42,
+        unpriced_rollovers=int(run.metrics["unpriced_rollovers"]),
+    )
     assert summary.count == 2
     assert summary.blocks == 1
     assert run.entry_ats == [result.trades[0].entry_at, result.trades[2].entry_at]

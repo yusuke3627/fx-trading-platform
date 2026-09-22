@@ -25,6 +25,7 @@ TIMEFRAMES = {
     "failed_spike_reversal": {"entry": "1m"},
     "post_event_failed_breakout": {"setup": "15m", "entry": "5m"},
     "range_edge_reversal": {"regime": "1h", "entry": "5m"},
+    "breakout_first_pullback": {"regime": "1h", "entry": "5m"},
     "monetary_policy_convergence": {"trend": "1d", "trigger": "4h"},
 }
 
@@ -105,6 +106,21 @@ def scenario(strategy_id: str, *, swing_rebound: bool = False):
                      start=START + timedelta(minutes=5), timeframe="5m"),
         ])
         ticks.append(make_tick("149.05", "149.06", time=START + timedelta(minutes=10)))
+    elif strategy_id == "breakout_first_pullback":
+        series["1h"] = [
+            bar.model_copy(update={"high": Decimal(150), "low": Decimal("149.8"),
+                                   "open": Decimal("149.9"), "close": Decimal("149.9")})
+            for bar in series["1h"]
+        ]
+        series["1h"][-1] = series["1h"][-1].model_copy(
+            update={"high": Decimal("150.25"), "close": Decimal("150.2")}
+        )
+        series["5m"].extend([
+            make_bar("150.2", "150.3", "150.1", "150.2", start=START, timeframe="5m"),
+            make_bar("150.2", "150.21", "149.98", "150.02",
+                     start=START + timedelta(minutes=5), timeframe="5m"),
+        ])
+        ticks.append(make_tick("150.015", "150.025", time=START + timedelta(minutes=10)))
     return config, [bar for bars in series.values() for bar in bars], ticks
 
 
@@ -147,6 +163,9 @@ async def decisions(
                     "ema50": indicators.ema("USDJPY", tf, 50),
                 }
                 for tf in config.timeframes.all()
+                # この戦略のH1 EMAは21本に限定する。IndicatorServiceのH1 EMA50/
+                # ATR200は参照せず、その初期化までwarmupを水増ししない。
+                if config.strategy_id != "breakout_first_pullback" or tf == "5m"
             },
             "signals": [signal.model_dump(exclude={"signal_id"}) for signal in signals],
         })

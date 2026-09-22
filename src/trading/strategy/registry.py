@@ -8,6 +8,7 @@ a thing that should be possible.
 from __future__ import annotations
 
 from trading.strategy.base import Strategy
+from trading.strategy.intraday.breakout_first_pullback import BreakoutFirstPullbackStrategy
 from trading.strategy.intraday.post_event_failed_breakout import (
     PostEventFailedBreakoutStrategy,
 )
@@ -24,5 +25,6 @@ STRATEGIES: dict[str, type[Strategy]] = {
         PostEventFailedBreakoutStrategy,
         MonetaryPolicyConvergenceStrategy,
         RangeEdgeReversalStrategy,
+        BreakoutFirstPullbackStrategy,
     )
 }

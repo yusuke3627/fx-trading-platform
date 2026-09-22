@@ -211,6 +211,34 @@ strategies:
           absolute_max_spread_pips: "1.5"
           session_profile: usdjpy_core
 
+  breakout_first_pullback:
+    enabled: false
+    status: RESEARCH_ONLY
+    instruments: [USDJPY]
+    timeframes:
+      regime: 1h
+      entry: 5m
+    parameters:
+      defaults:
+        breakout_lookback_bars: 20
+        ema_period: 20
+        atr_period: 14
+        pullback_wait_seconds: 3600
+        retest_tolerance_atr: "0.25"
+        stop_buffer_atr: "0.25"
+        first_pullback_only: true
+        confirmation_max_age_seconds: 5
+        take_profit_r: "2"
+        horizon_exit_enabled: true
+        expected_horizon_seconds: 14400
+        rollover_entry_buffer_seconds: 60
+        spread_gate:
+          max_spread_to_atr: "0.5"
+      instruments:
+        USDJPY:
+          absolute_max_spread_pips: "1.5"
+          session_profile: usdjpy_core
+
   monetary_policy_convergence:
     enabled: false
     status: RESEARCH_ONLY

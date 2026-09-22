@@ -297,3 +297,23 @@ def test_old_setup_gets_last_m5_before_next_h1_replaces_it():
     ctx.market.add_bar(make_bar("150.2", "150.3", "149.98", "150.02", start=START,
                                 timeframe="1h"))
     assert strategy._evaluate("USDJPY", ctx) is not None
+
+
+def test_entry_at_hour_boundary_still_observes_new_breakout_immediately():
+    strategy, ctx = context(params={"retest_tolerance_atr": "2"})
+    old_setup = strategy._breakouts["USDJPY"]
+    for minutes in range(5, 60, 5):
+        touch(ctx, minutes=minutes, row=("150.9", "151", "150.9", "150.9"))
+        assert strategy._evaluate("USDJPY", ctx) is None
+    touch(ctx, minutes=60, row=("150.9", "151", "150.2", "150.3"),
+          bid="150.295", ask="150.305")
+    ctx.market.add_bar(make_bar("150.2", "151", "150.2", "150.3",
+                                start=START, timeframe="1h"))
+
+    assert strategy._evaluate("USDJPY", ctx) is not None
+    assert old_setup.consumed
+    current = strategy._breakouts["USDJPY"]
+    assert current is not old_setup
+    assert current.level == Decimal("150.25")
+    assert current.next_start == START + timedelta(hours=1)
+    assert current.expires_at == START + timedelta(hours=2)

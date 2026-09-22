@@ -102,13 +102,12 @@ class BreakoutFirstPullbackStrategy(Strategy):
         entry_tf = ctx.config.timeframes.role("entry", "5m")
         bars = list(ctx.market.bars(symbol, entry_tf, _entry_count(params, entry_tf)))
         setup = self._breakouts.get(symbol)
+        signal = None
         # 60分境界で新しいH1が確定しても、既存候補の最後のM5を先に評価する。
         if setup is not None and not setup.consumed:
             signal = self._advance(symbol, ctx, setup, bars)
-            if signal is not None:
-                return signal
         self._arm(symbol, ctx, bars)
-        return None
+        return signal
 
     def _arm(self, symbol: str, ctx: StrategyContext, entry_bars: list[Bar]) -> None:
         params = ctx.config.params_for(symbol)

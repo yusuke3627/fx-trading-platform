@@ -51,7 +51,8 @@ class BarObserver(Strategy):
 
 
 def run_observer(
-    *, count: int, observed: str, configured: dict[str, str] | None = None
+    *, count: int, observed: str, configured: dict[str, str] | None = None,
+    on_bar=None, evaluate_from=None,
 ) -> BarObserver:
     """Replays `count` one-second ticks and returns the strategy instance."""
     spec = usdjpy_spec()
@@ -76,8 +77,11 @@ def run_observer(
                 **({"entry": observed} if configured is None else configured)
             ),
         ),
+        evaluate_from=evaluate_from,
     )
-    engine.run(synthetic_ticks(spec=spec, start=DATASET_START, count=count, seed=7))
+    engine.run(
+        synthetic_ticks(spec=spec, start=DATASET_START, count=count, seed=7), on_bar=on_bar,
+    )
     return built[-1]
 
 
@@ -148,3 +152,25 @@ def test_a_strategy_without_configured_timeframes_receives_no_bars():
     observer = run_observer(count=600, observed="1m", configured={})
     assert observer.observations
     assert all(bars == () for _, bars in observer.observations)
+
+
+def test_bar_callback_includes_warmup_and_delivers_the_same_bars_the_strategy_sees():
+    captured = []
+    observer = run_observer(
+        count=900, observed="1m", configured={"entry": "1m", "regime": "5m"},
+        on_bar=captured.append, evaluate_from=DATASET_START + timedelta(minutes=5),
+    )
+    ones = [bar for bar in captured if bar.timeframe == "1m"]
+    fives = [bar for bar in captured if bar.timeframe == "5m"]
+    assert len(ones) == 14
+    assert len(fives) == 2
+    assert tuple(ones) == observer.observations[-1][1]
+    assert [bar.timeframe for bar in captured if bar.known_at == DATASET_START + timedelta(minutes=5)] == ["1m", "5m"]
+    assert observer.observations[0][0] == DATASET_START + timedelta(minutes=5)
+    assert len(observer.observations[0][1]) == 5
+    first_seen = {}
+    for now, bars in observer.observations:
+        for bar in bars:
+            first_seen.setdefault(bar.start, now)
+    for bar in ones[5:]:
+        assert first_seen[bar.start] == bar.known_at

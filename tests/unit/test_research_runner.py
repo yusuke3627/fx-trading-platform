@@ -9,26 +9,29 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.support import FakeEventRepository, FakeObservationRepository
+from tests.support import FakeEventRepository, FakeObservationRepository, usdjpy_spec
+from trading.backtest.costs import CostModel
+from trading.backtest.engine import BacktestEngine, ScriptedStrategy
 from trading.backtest.research import (
     broker_label_to_known,
-    capture_bars,
     open_market_seconds,
     parse_param_override,
     reconstructed,
     with_param_overrides,
     with_progress,
+    write_bar,
 )
 from trading.config import load_config
 from trading.data.features import StoredFeatureSource
 from trading.data.intervention.features import RECENCY_WINDOW_DAYS
 from trading.data.macro.registry import US_TREASURY_2Y_YIELD
-from trading.data.market.bars import BarBuilder
 from trading.domain.economic import EconomicObservation
 from trading.domain.event import EventEnvelope
 from trading.domain.market import Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
+from trading.risk.engine import RiskConfig
+from trading.strategy.base import StrategyConfig, TimeframeMap
 from trading.strategy.parameters import StrategyParameters
 
 START = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
@@ -591,6 +594,17 @@ def test_progress_reports_the_broker_label_axis_the_period_is_given_in():
     assert out.getvalue().startswith("2026-05-01")
 
 
+def bar_capture_engine(timeframes):
+    return BacktestEngine(
+        risk_config=RiskConfig(), spec=usdjpy_spec(), costs=CostModel(), seed=7,
+        strategy_factory=lambda: ScriptedStrategy({}),
+        strategy_config=StrategyConfig(
+            strategy_id=ScriptedStrategy.strategy_id, instruments=["USDJPY"],
+            timeframes=TimeframeMap(**{timeframe: timeframe for timeframe in timeframes}),
+        ),
+    )
+
+
 def test_captured_bars_are_the_closed_candles_on_the_broker_label_axis():
     # The stored bar series starts at the bar service's first run, so a
     # replay's own candles are the only record of what it saw.
@@ -599,8 +613,14 @@ def test_captured_bars_are_the_closed_candles_on_the_broker_label_axis():
     ticks = [tick(at + minute * i, at + minute * i) for i in range(3)]
     out = io.StringIO()
 
-    consumed = list(capture_bars(iter(ticks), [BarBuilder("USDJPY", "1m")], [out]))
+    consumed = []
 
+    def stream():
+        for item in ticks:
+            consumed.append(item)
+            yield item
+
+    bar_capture_engine(["1m"]).run_stream(stream(), on_bar=lambda bar: write_bar(bar, out))
     assert consumed == ticks
     rows = out.getvalue().splitlines()
     # The bucket the last tick opened has not closed, so it is not written.
@@ -615,16 +635,30 @@ def test_captured_bars_keep_each_timeframe_in_its_own_file():
     ticks = [tick(at + minute * i, at + minute * i) for i in range(6)]
     one_minute, five_minute = io.StringIO(), io.StringIO()
 
-    list(
-        capture_bars(
-            iter(ticks),
-            [BarBuilder("USDJPY", "1m"), BarBuilder("USDJPY", "5m")],
-            [one_minute, five_minute],
-        )
+    files = {"1m": one_minute, "5m": five_minute}
+    bar_capture_engine(files).run_stream(
+        iter(ticks), on_bar=lambda bar: write_bar(bar, files[bar.timeframe]),
     )
 
     assert len(one_minute.getvalue().splitlines()) == 5
     assert len(five_minute.getvalue().splitlines()) == 1
+
+
+def test_captured_bars_are_flushed_before_a_later_tick_fails(tmp_path):
+    at = datetime(2026, 5, 1, tzinfo=UTC)
+    path = tmp_path / "bars_1m.csv"
+
+    def stream():
+        yield tick(at, at)
+        yield tick(at + timedelta(minutes=1), at + timedelta(minutes=1))
+        # ファイルを閉じる前でも、確定した行を別の reader から読める。
+        assert path.read_text() == "2026-05-01T00:00:00+00:00,157.000,157.000,157.000,157.000,1\n"
+        raise RuntimeError("入力中断")
+
+    with path.open("w", encoding="utf-8") as out, pytest.raises(RuntimeError, match="入力中断"):
+        bar_capture_engine(["1m"]).run_stream(
+            stream(), on_bar=lambda bar: write_bar(bar, out),
+        )
 
 
 def test_progress_says_so_when_no_feature_is_visible():

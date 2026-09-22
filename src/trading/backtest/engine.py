@@ -55,7 +55,7 @@ from trading.domain.event import EventEnvelope
 from trading.domain.exposure import OpenPositionExposure
 from trading.domain.instrument import InstrumentSpec
 from trading.domain.intent import PositionIntent
-from trading.domain.market import Tick
+from trading.domain.market import Bar, Tick
 from trading.domain.order import ExecutionCommand, ExecutionSide
 from trading.domain.position import BrokerPosition, PositionAction, PositionDirection
 from trading.domain.risk import EventRiskMode, KillSwitchLevel
@@ -381,13 +381,17 @@ class BacktestEngine:
         self._server_ahead_hours = broker_server_ahead_of_ny_hours
         self._swap_triple_weekday = swap_triple_weekday
 
-    def run(self, ticks: list[Tick]) -> BacktestResult:
+    def run(
+        self, ticks: list[Tick], *, on_bar: Callable[[Bar], None] | None = None,
+    ) -> BacktestResult:
         ordered = sorted(ticks, key=lambda t: t.known_time)
         if not ordered:
             raise ValueError("backtest requires at least one tick")
-        return self._replay(iter(ordered))
+        return self._replay(iter(ordered), on_bar=on_bar)
 
-    def run_stream(self, ticks: Iterable[Tick]) -> BacktestResult:
+    def run_stream(
+        self, ticks: Iterable[Tick], *, on_bar: Callable[[Bar], None] | None = None,
+    ) -> BacktestResult:
         """Replay from an iterator without materializing the dataset.
 
         The caller supplies ticks in known-time order — a stored series read
@@ -396,9 +400,11 @@ class BacktestEngine:
         of being silently resorted: resorting needs the whole dataset in
         memory, which is exactly what this path exists to avoid.
         """
-        return self._replay(iter(ticks))
+        return self._replay(iter(ticks), on_bar=on_bar)
 
-    def _replay(self, ticks: Iterator[Tick]) -> BacktestResult:
+    def _replay(
+        self, ticks: Iterator[Tick], *, on_bar: Callable[[Bar], None] | None,
+    ) -> BacktestResult:
         try:
             first = next(ticks)
         except StopIteration:
@@ -427,6 +433,8 @@ class BacktestEngine:
             for builder in w.bar_builders:
                 bar = builder.on_tick(item)
                 if bar is not None:
+                    if on_bar is not None:
+                        on_bar(bar)
                     w.market.add_bar(bar)
             if state.marking_tick is None or item.time >= state.marking_tick.time:
                 state.marking_tick = item

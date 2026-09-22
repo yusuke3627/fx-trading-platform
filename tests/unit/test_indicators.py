@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from tests.support import T0, FixedClock, make_bar, make_tick
+from trading.backtest.market import ReplayMarketData
 from trading.data.market import InMemoryMarketData, MarketDataService
 from trading.indicators import IndicatorService
 from trading.indicators.atr import atr
@@ -112,6 +113,29 @@ def test_tick_momentum_sign():
     ] + [make_tick("100.100", "100.104", time=T0 + timedelta(seconds=5))]
     momentum = tick_momentum(ticks, window_seconds=10)
     assert momentum is not None and momentum > 0
+
+
+@pytest.mark.parametrize("market_type", [InMemoryMarketData, ReplayMarketData])
+def test_reused_tick_window_keeps_boundaries_ties_late_ticks_and_decimal_subtraction(market_type):
+    market = market_type()
+    ticks = [
+        make_tick("150.001", "150.003", time=T0),
+        make_tick("150.004", "150.006", time=T0 + timedelta(seconds=10)),
+        make_tick("150.005", "150.007", time=T0 + timedelta(seconds=10)),
+        make_tick("150.002", "150.004", time=T0 + timedelta(seconds=5)),
+        make_tick("140.000", "140.002", time=T0 - timedelta(microseconds=1)),
+    ]
+    for tick in ticks:
+        market.add_tick(tick)
+    service = IndicatorService(market)
+    wide = market.ticks("USDJPY", 60)
+    expected = float(ticks[2].mid - ticks[0].mid)
+    assert expected != float(ticks[2].mid) - float(ticks[0].mid)
+    assert service.tick_momentum("USDJPY", 10) == expected
+    with patch.object(market, "ticks", side_effect=AssertionError("窓を再取得した")):
+        assert service.tick_momentum("USDJPY", 10, ticks=wide) == expected
+        assert service.tick_momentum("USDJPY", 10, ticks=[]) is None
+        assert service.tick_momentum("USDJPY", 10, ticks=[ticks[0]]) is None
 
 
 def test_service_read_follows_a_period_beyond_the_default_window():

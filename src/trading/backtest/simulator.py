@@ -197,60 +197,73 @@ class ExecutionSimulator:
         )
 
         if opening:
-            if self._mode is AccountMode.NETTING:
-                # A netting account holds ONE position per symbol: same-side
-                # fills merge quantity, volume-weighted entry price and the
-                # latest protection, instead of stacking tranches with
-                # divergent SLs.
-                existing = next(
-                    (
-                        p
-                        for p in self._positions.values()
-                        if p.symbol == command.symbol
-                        and p.direction is command.direction
-                    ),
-                    None,
-                )
-                if existing is not None:
-                    total = existing.quantity + quantity
-                    average = (
-                        existing.entry_price * existing.quantity + price * quantity
-                    ) / total
-                    merged = replace(
-                        existing,
-                        quantity=total,
-                        protection_effective_at=max(
-                            existing.protection_effective_at or existing.opened_at,
-                            fill_tick.time,
-                        ),
-                        entry_price=average,
-                        stop_loss=(
-                            command.stop_loss_price
-                            if command.stop_loss_price is not None
-                            else existing.stop_loss
-                        ),
-                        take_profit=(
-                            command.take_profit_price
-                            if command.take_profit_price is not None
-                            else existing.take_profit
-                        ),
-                    )
-                    self._positions[existing.position_id] = merged
-                    return SimulationResult(fill=fill, rejected=False, position=merged)
-            position = SimulatedPosition(
-                position_id=f"simpos-{uuid4().hex[:12]}",
-                symbol=command.symbol,
-                direction=command.direction,
-                quantity=quantity,
-                entry_price=price,
-                stop_loss=command.stop_loss_price,
-                take_profit=command.take_profit_price,
-                opened_at=fill_tick.time,
-            )
-            self._positions[position.position_id] = position
-            self._position_shock_ids[position.position_id] = shock_id
-            return SimulationResult(fill=fill, rejected=False, position=position)
+            position = self._open_position(command, fill, shock_id)
+        else:
+            position = self._reduce_positions(book, quantity)
+        return SimulationResult(fill=fill, rejected=False, position=position)
 
+    def _open_position(
+        self, command: ExecutionCommand, fill: Fill, shock_id: str
+    ) -> SimulatedPosition:
+        quantity = fill.quantity
+        price = fill.price
+        if self._mode is AccountMode.NETTING:
+            # A netting account holds ONE position per symbol: same-side
+            # fills merge quantity, volume-weighted entry price and the
+            # latest protection, instead of stacking tranches with
+            # divergent SLs.
+            existing = next(
+                (
+                    p
+                    for p in self._positions.values()
+                    if p.symbol == command.symbol
+                    and p.direction is command.direction
+                ),
+                None,
+            )
+            if existing is not None:
+                total = existing.quantity + quantity
+                average = (
+                    existing.entry_price * existing.quantity + price * quantity
+                ) / total
+                merged = replace(
+                    existing,
+                    quantity=total,
+                    protection_effective_at=max(
+                        existing.protection_effective_at or existing.opened_at,
+                        fill.broker_time,
+                    ),
+                    entry_price=average,
+                    stop_loss=(
+                        command.stop_loss_price
+                        if command.stop_loss_price is not None
+                        else existing.stop_loss
+                    ),
+                    take_profit=(
+                        command.take_profit_price
+                        if command.take_profit_price is not None
+                        else existing.take_profit
+                    ),
+                )
+                self._positions[existing.position_id] = merged
+                return merged
+        position = SimulatedPosition(
+            position_id=f"simpos-{uuid4().hex[:12]}",
+            symbol=command.symbol,
+            direction=command.direction,
+            quantity=quantity,
+            entry_price=price,
+            stop_loss=command.stop_loss_price,
+            take_profit=command.take_profit_price,
+            opened_at=fill.broker_time,
+        )
+        self._positions[position.position_id] = position
+        self._position_shock_ids[position.position_id] = shock_id
+        return position
+
+    def _reduce_positions(
+        self, book: Sequence[SimulatedPosition], quantity: Decimal
+    ) -> SimulatedPosition | None:
         # Apply the exit FIFO across the matched positions.
         to_apply = quantity
         last_remaining: SimulatedPosition | None = None
@@ -265,7 +278,7 @@ class ExecutionSimulator:
                 self._positions[held.position_id] = last_remaining
             else:
                 del self._positions[held.position_id]
-        return SimulationResult(fill=fill, rejected=False, position=last_remaining)
+        return last_remaining
 
     def check_protection(
         self, position: SimulatedPosition, tick: Tick

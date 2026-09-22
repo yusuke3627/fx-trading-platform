@@ -269,10 +269,12 @@ def window_stats(ticks: Sequence[Tick], start: datetime, end: datetime) -> Windo
     )
 
 
-def observe(t0: datetime, cache_dir: Path, errors: Mapping[datetime, str]) -> Observation:
-    ticks = []
-    failed_hours = {}
-    for hour in hours_for(t0):
+def read_cached_ticks(
+    hours: Sequence[datetime], cache_dir: Path, errors: Mapping[datetime, str],
+) -> tuple[list[Tick], dict[datetime, str]]:
+    ticks: list[Tick] = []
+    failed_hours: dict[datetime, str] = {}
+    for hour in hours:
         if hour in errors:
             failed_hours[hour] = errors[hour]
             continue
@@ -282,6 +284,11 @@ def observe(t0: datetime, cache_dir: Path, errors: Mapping[datetime, str]) -> Ob
         except (OSError, ValueError, lzma.LZMAError) as exc:
             failed_hours[hour] = f"{type(exc).__name__}: {exc}"
     ticks.sort(key=lambda tick: tick.time)
+    return ticks, failed_hours
+
+
+def observe(t0: datetime, cache_dir: Path, errors: Mapping[datetime, str]) -> Observation:
+    ticks, failed_hours = read_cached_ticks(hours_for(t0), cache_dir, errors)
     windows, window_errors = {}, {}
     for name, start, end in (
         ("pre10", t0 - PRE_WINDOW, t0),

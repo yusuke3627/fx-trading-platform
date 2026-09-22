@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import lzma
 import math
 import sys
 from bisect import bisect_left
@@ -21,7 +20,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from trading.data.market.dukascopy import decode_bi5
 from trading.data.policy.extraction_study import write_json
 from trading.data.policy.meetings import DEFAULT_MEETINGS_PATH, load_meetings
 from trading.data.policy.opinions_reaction_study import (
@@ -33,11 +31,11 @@ from trading.data.policy.opinions_reaction_study import (
     POST_PRIMARY,
     SYMBOL,
     Case,
-    cache_path,
     control_days,
     fetch_hours,
     hours_for,
     prepare_cases,
+    read_cached_ticks,
     select_meetings,
     window_stats,
 )
@@ -118,17 +116,7 @@ def required_hours(t0: datetime) -> list[datetime]:
 
 
 def observe(t0: datetime, cache_dir: Path, errors: Mapping[datetime, str]) -> Observation:
-    ticks, failed_hours = [], {}
-    for hour in required_hours(t0):
-        if hour in errors:
-            failed_hours[hour] = errors[hour]
-            continue
-        try:
-            # DBを経由しない研究なので、段階3bと同じ実UTCを使う。
-            ticks.extend(decode_bi5(cache_path(cache_dir, hour).read_bytes(), SYMBOL, hour, hour))
-        except (OSError, ValueError, lzma.LZMAError) as exc:
-            failed_hours[hour] = f"{type(exc).__name__}: {exc}"
-    ticks.sort(key=lambda tick: tick.time)
+    ticks, failed_hours = read_cached_ticks(required_hours(t0), cache_dir, errors)
     onset_errors = [f"{hour.isoformat()}: {error}" for hour, error in failed_hours.items()
                     if hour < t0 + ONSET_AFTER]
     post10_error = "; ".join(f"{hour.isoformat()}: {error}"

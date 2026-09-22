@@ -1,5 +1,6 @@
 """raw archive のハッシュ参照契約。DB 接続は使わない。"""
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -91,3 +92,18 @@ def test_postgres_initial_guard_checks_latest_hash_under_the_insert_lock(raw_eve
     assert any(query.startswith("INSERT INTO events") for query in queries) == (
         existing_hash != "other-version"
     )
+
+
+@pytest.mark.parametrize("method", ["insert", "insert_new", "insert_raw_archive", "upsert"])
+def test_event_writes_reject_mutated_payload_before_database_access(raw_event, method):
+    pytest.importorskip("psycopg")
+    from trading.storage.postgres import PostgresEventRepository
+
+    raw_event.payload["nested"] = {"amount": Decimal("1.25")}
+    connection = MagicMock()
+    repository = PostgresEventRepository(connection)
+
+    with pytest.raises(ValueError):
+        getattr(repository, method)(raw_event)
+
+    assert connection.mock_calls == []

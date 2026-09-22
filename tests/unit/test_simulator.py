@@ -2,6 +2,8 @@ from dataclasses import fields
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
+
 from tests.support import T0, at, make_command, make_tick, usdjpy_spec
 from trading.backtest.costs import STRESS_SCENARIOS, CostModel
 from trading.backtest.simulator import ExecutionSimulator, SimulatedPosition
@@ -338,6 +340,57 @@ def test_netting_same_direction_fills_merge_into_single_position():
     assert second.entry_price == Decimal("158.690")
     assert second.stop_loss == Decimal("159.30")
     assert sim.position(first.position_id).quantity == Decimal(4000)
+
+
+@pytest.mark.parametrize("direction", [PositionDirection.LONG, PositionDirection.SHORT])
+def test_netting_increase_without_protection_keeps_existing_sl_and_tp(direction):
+    sim = ExecutionSimulator(
+        deterministic_costs(), usdjpy_spec(), seed=1, account_mode=AccountMode.NETTING
+    )
+    side = ExecutionSide.BUY if direction is PositionDirection.LONG else ExecutionSide.SELL
+    stop, target = ("158", "160") if direction is PositionDirection.LONG else ("160", "158")
+    command = make_command(side=side, direction=direction, stop_loss=stop).model_copy(
+        update={"take_profit_price": Decimal(target)}
+    )
+    first = sim.submit(command, [make_tick("159", "159.004")]).position
+    increased = sim.submit(
+        make_command(side=side, direction=direction, action=PositionAction.INCREASE,
+                     quantity="3000", created_at=at(seconds=1)),
+        [make_tick("159.1", "159.104", time=at(seconds=1))],
+    ).position
+
+    assert increased.position_id == first.position_id
+    assert increased.quantity == Decimal(4000)
+    assert increased.stop_loss == first.stop_loss == Decimal(stop)
+    assert increased.take_profit == first.take_profit == Decimal(target)
+    assert increased.opened_at == first.opened_at
+    assert increased.protection_effective_at == at(seconds=1)
+    assert sim.open_positions() == [increased]
+
+
+@pytest.mark.parametrize("mode", [AccountMode.HEDGING, AccountMode.NETTING])
+def test_partial_entry_and_exit_update_the_book_by_filled_quantity(mode):
+    sim = ExecutionSimulator(
+        CostModel(latency_ms=0, slippage_sigma_pips=0, partial_fill_probability=1),
+        usdjpy_spec(), seed=1, account_mode=mode,
+    )
+    entered = sim.submit(
+        make_command(side=ExecutionSide.BUY, direction=PositionDirection.LONG, quantity="8000"),
+        [make_tick("159", "159.004")],
+    )
+    assert entered.fill.quantity == entered.position.quantity == Decimal(4000)
+
+    exited = sim.submit(
+        make_command(side=ExecutionSide.SELL, direction=PositionDirection.LONG,
+                     action=PositionAction.CLOSE, quantity="4000",
+                     broker_position_ticket=(entered.position.position_id
+                                             if mode is AccountMode.HEDGING else None)),
+        [make_tick("159.1", "159.104")],
+    )
+    assert exited.fill.quantity == Decimal(2000)
+    assert exited.position.quantity == Decimal(2000)
+    assert exited.position.position_id == entered.position.position_id
+    assert sim.open_positions() == [exited.position]
 
 
 def test_netting_exit_with_empty_book_does_not_execute():

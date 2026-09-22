@@ -47,6 +47,25 @@ def event(event_type: str, known_offset_hours: int = 0) -> EventEnvelope:
     )
 
 
+@pytest.mark.parametrize("method", ["insert", "insert_new", "insert_raw_archive", "upsert"])
+def test_every_write_preserves_event_metadata_and_json_types(repo, method):
+    r, event_type = repo
+    original = event(event_type).model_copy(update={
+        "source_uri": "https://example.invalid/fictional-release",
+        "raw_uri": "archive://fictional-release",
+        "payload_hash": "fictional-digest",
+        "payload": {"nested": [None, True, 7, 1.25, "7", {"value": False}]},
+        "effective_at": T0 - timedelta(hours=2),
+        "published_at": T0 - timedelta(hours=1),
+        "processed_at": T0 + timedelta(hours=1),
+        "superseded_at": T0 + timedelta(hours=2),
+    })
+
+    getattr(r, method)(original)
+
+    assert r.known_before(T0, event_type) == [original]
+
+
 def test_upsert_inserts_corrects_and_leaves_identical_facts_alone(repo):
     # Deterministic-id ingests (policy meeting scores) correct transcription
     # errors by editing the curated file; the store must follow the file, and

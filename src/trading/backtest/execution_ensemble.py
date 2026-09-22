@@ -6,12 +6,15 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
+from threading import Event, Lock, current_thread, main_thread
 from uuid import uuid4
 
 from trading.backtest.costs import STRESS_SCENARIOS
@@ -68,6 +71,16 @@ def _probability(value: str) -> Decimal:
         raise argparse.ArgumentTypeError("quantile must be a decimal in (0, 1]") from error
     if not number.is_finite() or not 0 < number <= 1:
         raise argparse.ArgumentTypeError("quantile must be a decimal in (0, 1]")
+    return number
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive integer") from error
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
     return number
 
 
@@ -206,7 +219,7 @@ def summarize(plan: dict, trials: list[dict]) -> dict:
     }
 
 
-def run_ensemble(plan: dict, out: Path, *, research_dsn: str) -> dict:
+def run_ensemble(plan: dict, out: Path, *, research_dsn: str, max_parallel: int = 1) -> dict:
     """計画を先に保存する。強制停止時にも未着手・実行中の試行を残す。"""
     child_env = {**os.environ, plan["config"]["storage"]["dsn_env"]: research_dsn}
     out.mkdir(parents=True, exist_ok=False)
@@ -220,7 +233,125 @@ def run_ensemble(plan: dict, out: Path, *, research_dsn: str) -> dict:
         _write_json(out / "summary.json", summary)
         return summary
 
+    def record_success(trial: dict, repro: dict | None = None) -> None:
+        nonlocal baseline
+        if trial["returncode"] != 0:
+            raise ValueError(f"research exited with code {trial['returncode']}; see stderr.log")
+        common, metrics = _validate_trial(trial, plan["expected_manifest"], baseline)
+        # 逐次は従来どおり検証後、並列は親が完了を回収した時点の Git 状態を使う。
+        if (git_state() if repro is None else repro) != plan["git_state"]:
+            raise ValueError("git state changed during the ensemble")
+        if baseline is None:
+            baseline = common
+        trial.update(status="succeeded", metrics=metrics)
+
     checkpoint()
+    if max_parallel > 1:
+        processes: dict[int, subprocess.Popen] = {}
+        futures: dict[Future[int | None], int] = {}
+        finished: dict[int, dict | None] = {}
+        stopping = Event()
+        process_lock = Lock()
+        next_trial = 0
+        next_result = 0
+
+        def run_trial(index: int) -> int | None:
+            trial = trials[index]
+            trial_out = Path(trial["out"])
+            with (trial_out / "stdout.json").open("w", encoding="utf-8") as stdout, (
+                trial_out / "stderr.log"
+            ).open("w", encoding="utf-8") as stderr:
+                # 子の生成途中に親が割り込まれても、終了対象への登録を完了させる。
+                with process_lock:
+                    if stopping.is_set():
+                        return None
+                    process = subprocess.Popen(
+                        trial["command"], stdout=stdout, stderr=stderr, env=child_env,
+                    )
+                    processes[index] = process
+                return process.wait()
+
+        with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+            interrupted = False
+            try:
+                while next_result < len(trials):
+                    while len(futures) < max_parallel and next_trial < len(trials):
+                        index = next_trial
+                        next_trial += 1
+                        trial = trials[index]
+                        trial["status"] = "running"
+                        checkpoint()
+                        print(f"{trial['scenario']} seed={trial['seed']}",
+                              file=sys.stderr, flush=True)
+                        try:
+                            trial_out = Path(trial["out"])
+                            trial_out.mkdir()
+                            futures[pool.submit(run_trial, index)] = index
+                        except (OSError, TypeError, ValueError) as error:
+                            trial.update(status="failed", error=str(error))
+                            finished[index] = None
+                            checkpoint()
+                    if futures:
+                        done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            index = futures.pop(future)
+                            trial = trials[index]
+                            try:
+                                trial["returncode"] = future.result()
+                                # Git は親で完了時に採取し、先行試行の待機中の変更と区別する。
+                                finished[index] = git_state() if trial["returncode"] == 0 else None
+                            except (OSError, TypeError, ValueError) as error:
+                                trial.update(status="failed", error=str(error))
+                                finished[index] = None
+                            with process_lock:
+                                processes.pop(index, None)
+                        checkpoint()
+                    # 検証を試行順に進め、最初に成功した試行を baseline にする。
+                    while next_result in finished:
+                        trial = trials[next_result]
+                        repro = finished.pop(next_result)
+                        if trial["status"] != "failed":
+                            try:
+                                record_success(trial, repro)
+                            except (OSError, TypeError, ValueError) as error:
+                                trial.update(status="failed", error=str(error))
+                        next_result += 1
+                        checkpoint()
+            except KeyboardInterrupt:
+                interrupted = True
+                raise
+            finally:
+                # 再度の Ctrl-C で kill・回収・保存が飛ばされないよう、終了処理を守る。
+                on_main_thread = current_thread() is main_thread()
+                if on_main_thread:
+                    previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+                try:
+                    stopping.set()
+                    for future in futures:
+                        future.cancel()
+                    with process_lock:
+                        remaining = list(processes.values())
+                        if interrupted:
+                            for index, trial in enumerate(trials):
+                                if trial["status"] == "running":
+                                    if index in processes or "returncode" in trial:
+                                        trial.update(status="failed", error="interrupted")
+                                    else:
+                                        trial["status"] = "planned"
+                    for process in remaining:
+                        if process.poll() is None:
+                            process.terminate()
+                    for process in remaining:
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                    checkpoint()
+                finally:
+                    if on_main_thread:
+                        signal.signal(signal.SIGINT, previous_sigint)
+        return checkpoint()
     for trial in trials:
         trial_out = Path(trial["out"])
         trial_out.mkdir()
@@ -236,14 +367,7 @@ def run_ensemble(plan: dict, out: Path, *, research_dsn: str) -> dict:
                     trial["command"], stdout=stdout, stderr=stderr, check=False, env=child_env,
                 )
             trial["returncode"] = result.returncode
-            if result.returncode != 0:
-                raise ValueError(f"research exited with code {result.returncode}; see stderr.log")
-            common, metrics = _validate_trial(trial, plan["expected_manifest"], baseline)
-            if git_state() != plan["git_state"]:
-                raise ValueError("git state changed during the ensemble")
-            if baseline is None:
-                baseline = common
-            trial.update(status="succeeded", metrics=metrics)
+            record_success(trial)
         except (OSError, TypeError, ValueError) as error:
             trial.update(status="failed", error=str(error))
         except KeyboardInterrupt:
@@ -264,6 +388,11 @@ def main() -> None:
     parser.add_argument("--to", dest="end", required=True, type=broker_label)
     parser.add_argument("--seeds", nargs="+", required=True, type=int)
     parser.add_argument("--scenarios", nargs="+", required=True, choices=sorted(STRESS_SCENARIOS))
+    parser.add_argument(
+        "--max-parallel", type=_positive_int, default=1, metavar="N",
+        help="同時実行する試行数（既定: 1、逐次）。live 収集や MT5 と同居する場合はコア数未満にし、"
+             "研究対象の過去区間へのバックフィルを同時に実行しない。",
+    )
     parser.add_argument("--param", action="append", default=[], type=parse_param_override)
     parser.add_argument("--warmup-days", type=warmup_days, default=None)
     parser.add_argument("--pnl-quantile", type=_probability, default=Decimal("0.05"))
@@ -361,7 +490,7 @@ def main() -> None:
         "drawdown_quantile": str(args.drawdown_quantile),
         "trials": trials,
     }
-    summary = run_ensemble(plan, out, research_dsn=research_dsn)
+    summary = run_ensemble(plan, out, research_dsn=research_dsn, max_parallel=args.max_parallel)
     print(json.dumps({"ensemble_dir": str(out), **summary}, ensure_ascii=False, indent=2))
     if summary["status"] != "complete":
         raise SystemExit(1)

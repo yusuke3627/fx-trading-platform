@@ -1,6 +1,6 @@
 # 執行条件を変えた研究リプレイの反復
 
-`trading.backtest.execution_ensemble` は、事前に指定した seed と cost scenario の全組を、既存の `trading.backtest.research` で直列実行する。価格履歴をシャッフルせず、既存の PIT、Strategy → Portfolio → Risk → OMS → ExecutionSimulator を使う。外部フレームワークは追加しない。
+`trading.backtest.execution_ensemble` は、事前に指定した seed と cost scenario の全組を、既存の `trading.backtest.research` で実行する。既定は直列実行で、`--max-parallel N` に正の整数を指定すると最大 N 試行を同時に実行する。価格履歴をシャッフルせず、既存の PIT、Strategy → Portfolio → Risk → OMS → ExecutionSimulator を使う。外部フレームワークは追加しない。
 
 結果は**固定した履歴と仮定した執行モデルへの感度**である。seed は同じモデルの乱数系列を変えるだけで、将来の市場経路を生成しない。損失試行割合は将来の損失確率ではなく、戦略の採用・本番昇格の根拠には単独で使えない。異なる scenario の試行を混ぜた分布は出さない。
 
@@ -23,6 +23,8 @@ python -m trading.backtest.execution_ensemble \
 
 この例は実データ測定結果ではない。`--from/--to` は既存 research と同じ broker-clock の半開区間で、UTC 表記のラベルのみを受け付ける。warmup は戦略の宣言を使い、必要なら `--warmup-days` を指定する。`--param KEY=VALUE` は既存 research と同様に扱い、銘柄別設定が最優先となる。これらの条件は全試行で固定する。seed/scenario の重複はエラーにする。
 
+live のティック収集や MT5 と同居するホストでは、`--max-parallel` をコア数より小さくする。研究対象の過去区間へのバックフィルは同時に実行しない。
+
 現時点の `config/backtest.yaml` は日次損失・直近24時間損失・最高資産からのドローダウンによる停止値をすべて **100% に緩和した研究用設定**である。これを運用損失制限下の実験とは表示しない。`--risk-mode operational-limits` は、取引が有効で、この3つの停止値がすべて 0% 超・100% 未満の場合だけ受け付ける。設定は自動変更しない。別の設定を使う場合も `--env` と `--risk-basis` に評価条件と根拠を明示する。この区分は運用環境との同等性や安全性を保証しない。
 
 ## 保存物と成功の条件
@@ -34,11 +36,11 @@ python -m trading.backtest.execution_ensemble \
 - `summary.json`: scenario 別の計画・成功・失敗・実行中・未着手件数と分布。目的・Risk 停止値・解釈上の制約も含む。
 - 各試行のディレクトリ: `stdout.json`、`stderr.log` と既存 research が作る manifest・summary・約定・エクイティ・バーの記録。
 
-各 manifest を実行前の git commit/差分、config hash、期間、戦略 ID/version、engine version、symbol、warmup、パラメータ、Python version に照合する。最初の有効な試行を基準として、tick/feature/swap の fingerprint と tick 件数、初期資産を含む再現入力の一致を確認する。全 manifest のうち seed、scenario、run ID、作成時刻以外は同じでなければならない。実行中のコード変更も検出する。データ更新などで入力が変わった場合、異なる試行を成功分布へ混ぜない。
+各 manifest を実行前の git commit/差分、config hash、期間、戦略 ID/version、engine version、symbol、warmup、パラメータ、Python version に照合する。計画順で最初に成功した試行を基準として、tick/feature/swap の fingerprint と tick 件数、初期資産を含む再現入力の一致を確認する。全 manifest のうち seed、scenario、run ID、作成時刻以外は同じでなければならない。実行中のコード変更も検出する。データ更新などで入力が変わった場合、異なる試行を成功分布へ混ぜない。
 
 子プロセスの失敗、出力欠損、不正な金額・件数、入力不一致、未値付け swap（`unpriced_rollovers > 0`）、期末に残った執行コマンド（`pending_commands_at_end > 0`）は失敗として残し、後続の計画済み試行を続ける。scenario に1件でも失敗・未着手・実行中があれば、その scenario の分布を `null` にする。ほかの scenario が完了しても、実験全体は `incomplete`、CLI の終了コードは1になる。全件成功時だけ `complete`、終了コード0とする。
 
-Ctrl-C は当該試行を失敗として保存する。プロセス強制終了やホスト停止では最後の記録が `running` のまま残ることがあるが、全計画と不完全な状態は残る。保存に失敗した場合も、成功の終了コードは返さない。
+Ctrl-C は検証が確定していない開始済みの試行を失敗として保存し、未開始の試行を起動しない。並列実行時は実行中の子プロセスを終了してから中断する。プロセス強制終了やホスト停止では最後の記録が `running` のまま残ることがあるが、全計画と不完全な状態は残る。保存に失敗した場合も、成功の終了コードは返さない。
 
 ## 分布の定義
 

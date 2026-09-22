@@ -390,7 +390,9 @@ def main() -> None:
     parser.add_argument("--scenarios", nargs="+", required=True, choices=sorted(STRESS_SCENARIOS))
     parser.add_argument(
         "--max-parallel", type=_positive_int, default=1, metavar="N",
-        help="同時実行する試行数（既定: 1、逐次）。live 収集や MT5 と同居する場合はコア数未満にし、"
+        help="同時実行する試行数（既定: 1、逐次）。完了時間は ceil(試行数 / N) 波で決まるので、"
+             "波数が減らない N は資源競合を増やすだけになる（6 試行なら 4・5 は 3 と同じ 2 波）。"
+             "live 収集や MT5 と同居する場合はコア数未満にし、"
              "研究対象の過去区間へのバックフィルを同時に実行しない。",
     )
     parser.add_argument("--param", action="append", default=[], type=parse_param_override)

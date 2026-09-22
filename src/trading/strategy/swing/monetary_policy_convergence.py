@@ -37,20 +37,15 @@ from trading.strategy.base import (
 
 class MonetaryPolicyConvergenceStrategy(Strategy):
     strategy_id = "monetary_policy_convergence"
-    # 0.2.0: the fundamental gate reads statement scores instead of the
-    # expectation-path features nothing produced. Recorded signals from either
-    # side of that change must not compare as one strategy.
-    strategy_version = "0.2.0"
+    strategy_version = "0.2.1"
     horizon = StrategyHorizon.SWING
     EMA_FAST = 20
     EMA_SLOW = 50
 
     @classmethod
     def warmup(cls, config: StrategyConfig) -> timedelta:
-        # The slowest window is usually the trend gate's EMA(50) on the trend
-        # timeframe (~50 trading days on 1d), but every window _evaluate
-        # reads joins the max: a re-configured trigger timeframe or ATR
-        # period must widen the lead-in, not starve it.
+        # EMA / Wilder ATR は計算可能な最小本数だけでは初期値の影響が残る。
+        # IndicatorService が通常読む窓を開始時から満たす。
         trend_tf = config.timeframes.role("trend", "1d")
         trigger_tf = config.timeframes.role("trigger", "4h")
         params = [config.params_for(symbol) for symbol in config.instruments or [""]]
@@ -59,9 +54,9 @@ class MonetaryPolicyConvergenceStrategy(Strategy):
         )
         atr_period = max(int(item.param("atr_period", 14)) for item in params)
         span = max(
-            cls.EMA_SLOW * TIMEFRAME_SECONDS[trend_tf],
+            max(DEFAULT_BAR_COUNT, cls.EMA_SLOW + 1) * TIMEFRAME_SECONDS[trend_tf],
             (support_lookback + 10) * TIMEFRAME_SECONDS[trigger_tf],
-            (atr_period + 1) * TIMEFRAME_SECONDS[trigger_tf],
+            max(DEFAULT_BAR_COUNT, atr_period + 1) * TIMEFRAME_SECONDS[trigger_tf],
         )
         return market_span_to_calendar(span)
 

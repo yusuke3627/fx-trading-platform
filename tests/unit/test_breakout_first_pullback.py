@@ -189,6 +189,36 @@ def test_bad_breakout_history_never_arms(broken):
     assert "USDJPY" not in strategy._breakouts
 
 
+def test_longer_breakout_window_does_not_change_ema_initialization(monkeypatch):
+    from trading.indicators.ema import ema_series
+    from trading.strategy.intraday import breakout_first_pullback
+
+    observed = []
+
+    def observe_ema(closes, period):
+        series = ema_series(closes, period)
+        observed.append(series[-2:])
+        return series
+
+    monkeypatch.setattr(breakout_first_pullback, "ema_series", observe_ema)
+    for older_close in ("140", "149.9"):
+        strategy, ctx = context(arm=False, params={"breakout_lookback_bars": 40})
+        ctx.market._bars[("USDJPY", "1h")][:0] = [
+            make_bar(
+                older_close, "150", "139", older_close,
+                start=START - timedelta(hours=hours_before), timeframe="1h",
+            )
+            for hours_before in range(41, 21, -1)
+        ]
+        assert strategy._evaluate("USDJPY", ctx) is None
+        assert "USDJPY" in strategy._breakouts
+        touch(ctx)
+        assert strategy._evaluate("USDJPY", ctx) is not None
+
+    assert observed[0] == pytest.approx([149.9, 149.9 + (150.2 - 149.9) * 2 / 21])
+    assert observed[1] == pytest.approx(observed[0])
+
+
 @pytest.mark.parametrize("date,end_hour", [(datetime(2026, 1, 14, tzinfo=UTC), 22),
                                           (datetime(2026, 8, 18, tzinfo=UTC), 21)])
 @pytest.mark.parametrize("remaining,emits", [(14460, False), (14461, True), (3600, False)])

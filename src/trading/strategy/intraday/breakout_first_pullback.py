@@ -129,7 +129,8 @@ class BreakoutFirstPullbackStrategy(Strategy):
         lookback = int(params.param("breakout_lookback_bars", 20))
         previous = bars[-lookback - 1:-1]
         high, low = max(bar.high for bar in previous), min(bar.low for bar in previous)
-        series = ema_series([float(bar.close) for bar in bars], int(params.param("ema_period", 20)))
+        ema_period = int(params.param("ema_period", 20))
+        series = ema_series([float(bar.close) for bar in bars[-(ema_period + 1):]], ema_period)
         if last.close > high and series[-1] > series[-2]:
             direction, level = PositionDirection.LONG, high
         elif last.close < low and series[-1] < series[-2]:

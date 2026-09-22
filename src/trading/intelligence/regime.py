@@ -114,29 +114,18 @@ def default_currency_rules(
     無いままルールだけ置いても永久に発火しない死んだ分岐になる。データが
     繋がった時点で BOE / ECB の score を同じ形で足す。
     """
-    t = {
-        "usd_hawkish_min": 0.0,
-        "jpy_hawkish_min": 0.0,
-        "intervention_risk_high": 0.6,
-        **(thresholds or {}),
-    }
+    rules = default_rules(thresholds)
     return {
         Currency.USD: {
-            RegimeLabel.USD_POLICY_HAWKISH: _gt(
-                f.FED_POLICY_SHIFT_SCORE, t["usd_hawkish_min"]
-            )
+            RegimeLabel.USD_POLICY_HAWKISH: rules[RegimeLabel.USD_POLICY_HAWKISH]
         },
         Currency.JPY: {
-            RegimeLabel.JPY_POLICY_HAWKISH: _gt(
-                f.BOJ_POLICY_SHIFT_SCORE, t["jpy_hawkish_min"]
-            ),
+            RegimeLabel.JPY_POLICY_HAWKISH: rules[RegimeLabel.JPY_POLICY_HAWKISH],
             # 介入リスクは日本の為替介入から算出される JPY の状態
             # （設計書 §12.3）。global に置くと EURUSD のような無関係な
             # ペアまで抑制する。JPY を含むペア（USDJPY / GBPJPY）だけが
             # これを受け取る。
-            RegimeLabel.INTERVENTION_RISK_HIGH: _gt(
-                f.INTERVENTION_RISK, t["intervention_risk_high"]
-            ),
+            RegimeLabel.INTERVENTION_RISK_HIGH: rules[RegimeLabel.INTERVENTION_RISK_HIGH],
         },
     }
 

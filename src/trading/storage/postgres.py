@@ -998,79 +998,58 @@ class PostgresSwapSnapshotRepository:
         return _row_to_swap_snapshot(row) if row else None
 
 
+_INSERT_EVENT_SQL = """
+    INSERT INTO events (
+        id, event_type, source, source_uri, payload, payload_hash,
+        raw_uri, effective_at, published_at, retrieved_at, known_at,
+        processed_at, superseded_at
+    ) VALUES (
+        %(id)s, %(event_type)s, %(source)s, %(source_uri)s, %(payload)s,
+        %(payload_hash)s, %(raw_uri)s, %(effective_at)s, %(published_at)s,
+        %(retrieved_at)s, %(known_at)s, %(processed_at)s, %(superseded_at)s
+    )
+"""
+
+
+def _event_params(e: EventEnvelope) -> dict[str, Any]:
+    # frozen model でも payload 内の container は変更できるため、保存境界で再検証する。
+    ensure_json_native(e.payload)
+    return {
+        "id": e.event_id,
+        "event_type": e.event_type,
+        "source": e.source,
+        "source_uri": e.source_uri,
+        "payload": Jsonb(e.payload),
+        "payload_hash": e.payload_hash,
+        "raw_uri": e.raw_uri,
+        "effective_at": e.effective_at,
+        "published_at": e.published_at,
+        "retrieved_at": e.retrieved_at,
+        "known_at": e.known_at,
+        "processed_at": e.processed_at,
+        "superseded_at": e.superseded_at,
+    }
+
+
 class PostgresEventRepository:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
 
     def insert(self, e: EventEnvelope) -> None:
-        # Construction-time validation is not enough: frozen models do not
-        # deep-freeze nested containers, so re-verify right before the JSONB
-        # adaptation to keep the round trip type-exact.
-        ensure_json_native(e.payload)
+        params = _event_params(e)
         self._conn.execute(
-            """
-            INSERT INTO events (
-                id, event_type, source, source_uri, payload, payload_hash,
-                raw_uri, effective_at, published_at, retrieved_at, known_at,
-                processed_at, superseded_at
-            ) VALUES (
-                %(id)s, %(event_type)s, %(source)s, %(source_uri)s, %(payload)s,
-                %(payload_hash)s, %(raw_uri)s, %(effective_at)s, %(published_at)s,
-                %(retrieved_at)s, %(known_at)s, %(processed_at)s, %(superseded_at)s
-            )
-            """,
-            {
-                "id": e.event_id,
-                "event_type": e.event_type,
-                "source": e.source,
-                "source_uri": e.source_uri,
-                # Jsonb adapts the dict for the JSONB column (a plain str
-                # would bind as text and fail the type check); EventEnvelope
-                # already guarantees JSON-native payloads, so the round-trip
-                # preserves types exactly.
-                "payload": Jsonb(e.payload),
-                "payload_hash": e.payload_hash,
-                "raw_uri": e.raw_uri,
-                "effective_at": e.effective_at,
-                "published_at": e.published_at,
-                "retrieved_at": e.retrieved_at,
-                "known_at": e.known_at,
-                "processed_at": e.processed_at,
-                "superseded_at": e.superseded_at,
-            },
+            _INSERT_EVENT_SQL,
+            params,
         )
         self._conn.commit()
 
     def insert_new(self, e: EventEnvelope) -> bool:
-        ensure_json_native(e.payload)
+        params = _event_params(e)
         cursor = self._conn.execute(
-            """
-            INSERT INTO events (
-                id, event_type, source, source_uri, payload, payload_hash,
-                raw_uri, effective_at, published_at, retrieved_at, known_at,
-                processed_at, superseded_at
-            ) VALUES (
-                %(id)s, %(event_type)s, %(source)s, %(source_uri)s, %(payload)s,
-                %(payload_hash)s, %(raw_uri)s, %(effective_at)s, %(published_at)s,
-                %(retrieved_at)s, %(known_at)s, %(processed_at)s, %(superseded_at)s
-            )
+            _INSERT_EVENT_SQL + """
             ON CONFLICT (id) DO NOTHING
             """,
-            {
-                "id": e.event_id,
-                "event_type": e.event_type,
-                "source": e.source,
-                "source_uri": e.source_uri,
-                "payload": Jsonb(e.payload),
-                "payload_hash": e.payload_hash,
-                "raw_uri": e.raw_uri,
-                "effective_at": e.effective_at,
-                "published_at": e.published_at,
-                "retrieved_at": e.retrieved_at,
-                "known_at": e.known_at,
-                "processed_at": e.processed_at,
-                "superseded_at": e.superseded_at,
-            },
+            params,
         )
         self._conn.commit()
         return cursor.rowcount == 1
@@ -1087,7 +1066,7 @@ class PostgresEventRepository:
         return row["payload_hash"] if row is not None else None
 
     def insert_raw_archive(self, e: EventEnvelope, *, require_initial: bool = False) -> bool:
-        ensure_json_native(e.payload)
+        params = _event_params(e)
         if not e.source_uri or not e.payload_hash:
             raise ValueError("raw archive requires source_uri and payload_hash")
         with self._conn.transaction():
@@ -1118,21 +1097,7 @@ class PostgresEventRepository:
                     ORDER BY known_at DESC, created_at DESC, id DESC LIMIT 1
                 ) IS DISTINCT FROM %(payload_hash)s
                 """,
-                {
-                    "id": e.event_id,
-                    "event_type": e.event_type,
-                    "source": e.source,
-                    "source_uri": e.source_uri,
-                    "payload": Jsonb(e.payload),
-                    "payload_hash": e.payload_hash,
-                    "raw_uri": e.raw_uri,
-                    "effective_at": e.effective_at,
-                    "published_at": e.published_at,
-                    "retrieved_at": e.retrieved_at,
-                    "known_at": e.known_at,
-                    "processed_at": e.processed_at,
-                    "superseded_at": e.superseded_at,
-                },
+                params,
             )
         self._conn.commit()
         return cursor.rowcount == 1
@@ -1143,18 +1108,9 @@ class PostgresEventRepository:
         # event_type / source are fixed by the deterministic id. retrieved_at
         # moves with every run, so it updates alongside a correction but
         # never triggers one.
-        ensure_json_native(e.payload)
+        params = _event_params(e)
         cursor = self._conn.execute(
-            """
-            INSERT INTO events (
-                id, event_type, source, source_uri, payload, payload_hash,
-                raw_uri, effective_at, published_at, retrieved_at, known_at,
-                processed_at, superseded_at
-            ) VALUES (
-                %(id)s, %(event_type)s, %(source)s, %(source_uri)s, %(payload)s,
-                %(payload_hash)s, %(raw_uri)s, %(effective_at)s, %(published_at)s,
-                %(retrieved_at)s, %(known_at)s, %(processed_at)s, %(superseded_at)s
-            )
+            _INSERT_EVENT_SQL + """
             ON CONFLICT (id) DO UPDATE SET
                 source_uri = EXCLUDED.source_uri,
                 payload = EXCLUDED.payload,
@@ -1175,21 +1131,7 @@ class PostgresEventRepository:
             )
             RETURNING (xmax = 0) AS inserted
             """,
-            {
-                "id": e.event_id,
-                "event_type": e.event_type,
-                "source": e.source,
-                "source_uri": e.source_uri,
-                "payload": Jsonb(e.payload),
-                "payload_hash": e.payload_hash,
-                "raw_uri": e.raw_uri,
-                "effective_at": e.effective_at,
-                "published_at": e.published_at,
-                "retrieved_at": e.retrieved_at,
-                "known_at": e.known_at,
-                "processed_at": e.processed_at,
-                "superseded_at": e.superseded_at,
-            },
+            params,
         )
         row = cursor.fetchone()
         self._conn.commit()

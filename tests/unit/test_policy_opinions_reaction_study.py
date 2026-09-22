@@ -313,6 +313,30 @@ def test_malformed_bi5_is_not_cached_as_no_ticks(tmp_path):
     assert not study.cache_path(tmp_path, hour).exists()
 
 
+def test_cached_ticks_are_sorted_without_reordering_equal_timestamps(tmp_path):
+    first = T0.replace(minute=0)
+    second = first + timedelta(hours=1)
+    for hour, records in (
+        (first, [(2000, 100006, 100004), (1000, 100002, 100000), (1000, 100004, 100002)]),
+        (second, [(0, 100010, 100008)]),
+    ):
+        path = study.cache_path(tmp_path, hour)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(bi5(records))
+
+    ticks, errors = study.read_cached_ticks([second, first], tmp_path, {})
+
+    assert errors == {}
+    assert [tick.bid for tick in ticks] == [
+        Decimal("100.000"), Decimal("100.002"), Decimal("100.004"), Decimal("100.008"),
+    ]
+    assert [tick.time for tick in ticks] == [
+        first + timedelta(seconds=1), first + timedelta(seconds=1),
+        first + timedelta(seconds=2), second,
+    ]
+    assert [tick.received_at for tick in ticks] == [first, first, first, second]
+
+
 def test_observe_uses_real_utc_and_keeps_decimal_prices(tmp_path):
     hours = study.hours_for(T0)
     payloads = [bi5([(40 * 60_000, 100002, 100000), (50 * 60_000, 101002, 101000)]),

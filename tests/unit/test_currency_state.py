@@ -22,6 +22,9 @@ from trading.intelligence.normalization import NormalizationConfig
 from trading.intelligence.regime import (
     RegimeLabel,
     RuleBasedCurrencyRegimeService,
+    RuleBasedRegimeService,
+    default_currency_rules,
+    default_rules,
 )
 
 T0 = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
@@ -308,6 +311,35 @@ def test_global_regimes_reach_every_currency():
 
     for currency in (Currency.USD, Currency.JPY, Currency.GBP, Currency.EUR):
         assert RegimeLabel.GLOBAL_RISK_OFF in snapshot.active(currency)
+
+
+@pytest.mark.parametrize("feature,key,currency,label,threshold", [
+    ("fed_policy_shift_score", "usd_hawkish_min", Currency.USD,
+     RegimeLabel.USD_POLICY_HAWKISH, 0.25),
+    ("boj_policy_shift_score", "jpy_hawkish_min", Currency.JPY,
+     RegimeLabel.JPY_POLICY_HAWKISH, -0.25),
+    ("intervention_risk", "intervention_risk_high", Currency.JPY,
+     RegimeLabel.INTERVENTION_RISK_HIGH, 0.8),
+])
+@pytest.mark.parametrize("offset", [None, -0.01, 0.0, 0.01])
+def test_custom_regime_thresholds_preserve_strict_boundary_and_currency_scope(
+    feature, key, currency, label, threshold, offset,
+):
+    store = InMemoryFeatureStore()
+    if offset is not None:
+        store.set(feature, threshold + offset)
+    thresholds = {key: threshold}
+    expected = frozenset({label}) if offset is not None and offset > 0 else frozenset()
+
+    assert RuleBasedRegimeService(store, default_rules(thresholds)).active() == expected
+    snapshot = RuleBasedCurrencyRegimeService(
+        store, currency_rules=default_currency_rules(thresholds),
+    ).snapshot(NOW)
+
+    assert snapshot.known_at == NOW
+    assert snapshot.global_regimes == frozenset()
+    for candidate in Currency:
+        assert snapshot.active(candidate) == (expected if candidate is currency else frozenset())
 
 
 def test_state_and_config_mappings_are_read_only():

@@ -13,6 +13,7 @@ import pytest
 
 from tests.support import make_tick
 from trading.data.policy import opinions_onset_study as study
+from trading.data.policy.opinions_reaction_study import cache_path
 
 T0 = datetime(2024, 1, 7, 23, 50, tzinfo=UTC)  # JST月曜、UTC日曜。
 
@@ -259,13 +260,13 @@ def test_liquidity_uses_closed_post10_only(count, reason):
 
 def test_observe_reuses_cached_hours_and_does_not_treat_fetch_failure_as_flat(tmp_path):
     first, boundary = study.required_hours(T0)
-    path = study.cache_path(tmp_path, first)
+    path = cache_path(tmp_path, first)
     path.parent.mkdir(parents=True)
     path.write_bytes(lzma.compress(b"".join(
         struct.pack(">IIIff", msec, price, price, 1.0, 1.0)
         for msec, price in [(40 * 60_000 - 1, 100_000), (50 * 60_000 + 1000, 101_000)]
     )))
-    boundary_path = study.cache_path(tmp_path, boundary)
+    boundary_path = cache_path(tmp_path, boundary)
     boundary_path.parent.mkdir(parents=True)
     boundary_path.write_bytes(b"")
     assert study.fetch_hours(study.required_hours(T0), tmp_path) == {}
@@ -284,10 +285,12 @@ def test_failure_in_hour_starting_at_end_affects_liquidity_only(tmp_path, monkey
     ticks = [make_tick("100", "100", T0 - study.ONSET_BEFORE - timedelta(microseconds=1)),
              make_tick("101", "101", T0 + timedelta(seconds=1))]
     first, boundary = study.required_hours(T0)
-    path = study.cache_path(tmp_path, first)
+    path = cache_path(tmp_path, first)
     path.parent.mkdir(parents=True)
     path.write_bytes(b"")
-    monkeypatch.setattr(study, "decode_bi5", lambda *args: ticks)
+    monkeypatch.setattr(
+        "trading.data.policy.opinions_reaction_study.decode_bi5", lambda *args: ticks,
+    )
     observation = study.observe(T0, tmp_path, {boundary: "download failed"})
     assert observation.k_star == 0 and observation.missing_reason is None
     assert observation.post10_tick_count is None

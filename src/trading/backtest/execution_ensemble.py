@@ -1,0 +1,371 @@
+"""固定した研究条件を seed × cost scenario で反復し、執行仮定への感度を集計する。"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import asdict, replace
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from pathlib import Path
+from uuid import uuid4
+
+from trading.backtest.costs import STRESS_SCENARIOS
+from trading.backtest.engine import ENGINE_VERSION
+from trading.backtest.research import (
+    broker_label,
+    parse_param_override,
+    warmup_days,
+    with_param_overrides,
+)
+from trading.backtest.run import git_state, synthetic_usdjpy_spec
+from trading.config import ENVIRONMENTS, load_config
+from trading.strategy.registry import STRATEGIES
+
+INPUT_FIELDS = ("dataset_hash", "feature_dataset_hash", "swap_dataset_hash")
+MONEY_FIELDS = (
+    "initial_equity", "realized_pnl", "unrealized_pnl", "net_pnl",
+    "final_equity", "max_drawdown", "carry_total",
+)
+COUNT_FIELDS = (
+    "fills", "trades", "unpriced_rollovers", "open_positions_at_end",
+    "pending_commands_at_end",
+)
+HALT_FIELDS = (
+    "daily_loss_halt_pct", "rolling_24h_loss_halt_pct", "high_water_mark_drawdown_halt_pct",
+)
+INTERPRETATION = (
+    "固定した履歴と執行モデルの仮定に対する感度であり、将来の損失確率ではない。"
+    "scenario 間は混合しない。期末の未決済ポジションは既存エンジンの Bid/Ask 時価評価を使い、"
+    "強制決済費用と期間終了後のリスクを含まない。"
+)
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _read_json(path: Path) -> dict:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError(f"{path.name} must be a JSON object")
+    return value
+
+
+def _probability(value: str) -> Decimal:
+    try:
+        number = Decimal(value)
+    except InvalidOperation as error:
+        raise argparse.ArgumentTypeError("quantile must be a decimal in (0, 1]") from error
+    if not number.is_finite() or not 0 < number <= 1:
+        raise argparse.ArgumentTypeError("quantile must be a decimal in (0, 1]")
+    return number
+
+
+def nearest_rank(values: list[Decimal], probability: Decimal) -> Decimal:
+    """昇順の ceil(n*p) 番目（1始まり）。補間しない経験分位点。"""
+    rank = int((len(values) * probability).to_integral_value(rounding=ROUND_CEILING))
+    return sorted(values)[rank - 1]
+
+
+def _metrics(summary: dict, symbol: str) -> dict[str, str]:
+    if summary.get("symbol") != symbol:
+        raise ValueError("summary symbol mismatch")
+    metrics = summary.get("metrics")
+    if not isinstance(metrics, dict):
+        raise TypeError("summary metrics are missing")
+    amounts: dict[str, Decimal] = {}
+    for field in MONEY_FIELDS:
+        value = metrics.get(field)
+        if not isinstance(value, str):
+            raise TypeError(f"{field} must be a decimal string")
+        try:
+            amount = Decimal(value)
+        except InvalidOperation as error:
+            raise ValueError(f"invalid {field}") from error
+        if not amount.is_finite():
+            raise ValueError(f"{field} must be finite")
+        amounts[field] = amount
+    for field in COUNT_FIELDS:
+        value = metrics.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value):
+            raise ValueError(f"{field} must be a non-negative integer string")
+    if amounts["initial_equity"] <= 0 or amounts["max_drawdown"] < 0:
+        raise ValueError("invalid equity or drawdown")
+    if amounts["net_pnl"] != amounts["realized_pnl"] + amounts["unrealized_pnl"]:
+        raise ValueError("net_pnl does not match realized plus unrealized PnL")
+    if amounts["final_equity"] != amounts["initial_equity"] + amounts["net_pnl"]:
+        raise ValueError("final_equity does not match initial equity plus net_pnl")
+    if int(metrics["fills"]) == 0 and (
+        any(int(metrics[field]) for field in ("trades", "open_positions_at_end"))
+        or any(amounts[field] != 0 for field in ("net_pnl", "max_drawdown", "carry_total"))
+    ):
+        raise ValueError("no-fill trial has positions, trades or nonzero PnL/costs")
+    if int(metrics["unpriced_rollovers"]):
+        raise ValueError("unpriced_rollovers: swap costs are incomplete")
+    if int(metrics["pending_commands_at_end"]):
+        raise ValueError("pending_commands_at_end: execution has not completed")
+    return {field: metrics[field] for field in (*MONEY_FIELDS, *COUNT_FIELDS)}
+
+
+def _validate_trial(
+    trial: dict, expected: dict, baseline: dict | None,
+) -> tuple[dict, dict[str, str]]:
+    out = Path(trial["out"])
+    stdout = _read_json(out / "stdout.json")
+    if not isinstance(stdout.get("run_dir"), str):
+        raise TypeError("research did not return run_dir")
+    run_dir = Path(stdout["run_dir"]).resolve()
+    if run_dir.parent != out.resolve():
+        raise ValueError("run_dir is outside the trial output directory")
+    trial["run_dir"] = str(run_dir)
+    manifest = _read_json(run_dir / "manifest.json")
+    if manifest.get("run_id") != run_dir.name:
+        raise ValueError("manifest run_id mismatch")
+    for field, value in {**expected, "seed": trial["seed"], "scenario": trial["scenario"]}.items():
+        if field not in manifest or manifest[field] != value:
+            raise ValueError(f"manifest mismatch: {field}")
+    for field in INPUT_FIELDS:
+        if not isinstance(manifest.get(field), str) or not re.fullmatch(
+            r"[0-9a-f]{64}", manifest[field]
+        ):
+            raise ValueError(f"missing or invalid input fingerprint: {field}")
+    if type(manifest.get("tick_count")) is not int or manifest["tick_count"] <= 0:
+        raise ValueError("tick_count must be a positive integer")
+    common = {
+        key: value for key, value in manifest.items()
+        if key not in {"run_id", "created_at", "seed", "scenario"}
+    }
+    metrics = _metrics(_read_json(run_dir / "summary.json"), expected["symbol"])
+    common["initial_equity"] = metrics["initial_equity"]
+    if baseline is not None and common != baseline:
+        differing = sorted(key for key in common.keys() | baseline.keys()
+                           if common.get(key) != baseline.get(key))
+        raise ValueError(f"trial input mismatch: {', '.join(differing)}")
+    return common, metrics
+
+
+def summarize(plan: dict, trials: list[dict]) -> dict:
+    scenarios = {}
+    for scenario in plan["scenarios"]:
+        group = [trial for trial in trials if trial["scenario"] == scenario]
+        success = [trial for trial in group if trial["status"] == "succeeded"]
+        complete = len(success) == len(group)
+        distribution = None
+        if complete:
+            pnl = [Decimal(trial["metrics"]["net_pnl"]) for trial in success]
+            drawdown = [Decimal(trial["metrics"]["max_drawdown"]) for trial in success]
+            losses = sum(value < 0 for value in pnl)
+            distribution = {
+                "sample_count": len(pnl),
+                "loss_trials": losses,
+                "loss_fraction": str(Decimal(losses) / Decimal(len(pnl))),
+                "lower_net_pnl": str(nearest_rank(pnl, Decimal(plan["pnl_quantile"]))),
+                "upper_max_drawdown": str(
+                    nearest_rank(drawdown, Decimal(plan["drawdown_quantile"]))
+                ),
+                "no_fill_trials": sum(int(t["metrics"]["fills"]) == 0 for t in success),
+                "no_closed_trade_trials": sum(
+                    int(t["metrics"]["trades"]) == 0 for t in success
+                ),
+                "open_position_trials": sum(
+                    int(t["metrics"]["open_positions_at_end"]) > 0 for t in success
+                ),
+            }
+        scenarios[scenario] = {
+            "status": "complete" if complete else "incomplete",
+            "planned": len(group),
+            "succeeded": len(success),
+            "failed": sum(t["status"] == "failed" for t in group),
+            "running": sum(t["status"] == "running" for t in group),
+            "not_started": sum(t["status"] == "planned" for t in group),
+            "distribution": distribution,
+        }
+    return {
+        "status": "complete" if all(s["status"] == "complete" for s in scenarios.values())
+        else "incomplete",
+        "interpretation": INTERPRETATION,
+        "risk_mode": plan["risk_mode"],
+        "purpose": plan["purpose"],
+        "risk_basis": plan["risk_basis"],
+        "loss_halts_pct": {field: plan["config"]["risk"][field] for field in HALT_FIELDS},
+        "quantile_method": "nearest rank: sorted values[ceil(n * p) - 1], no interpolation",
+        "pnl_quantile": plan["pnl_quantile"],
+        "drawdown_quantile": plan["drawdown_quantile"],
+        "amount_currency": plan["amount_currency"],
+        "scenarios": scenarios,
+    }
+
+
+def run_ensemble(plan: dict, out: Path, *, research_dsn: str) -> dict:
+    """計画を先に保存する。強制停止時にも未着手・実行中の試行を残す。"""
+    child_env = {**os.environ, plan["config"]["storage"]["dsn_env"]: research_dsn}
+    out.mkdir(parents=True, exist_ok=False)
+    _write_json(out / "plan.json", plan)
+    trials = [dict(trial, status="planned") for trial in plan["trials"]]
+    baseline = None
+
+    def checkpoint() -> dict:
+        summary = summarize(plan, trials)
+        _write_json(out / "results.json", {"trials": trials, "common_inputs": baseline})
+        _write_json(out / "summary.json", summary)
+        return summary
+
+    checkpoint()
+    for trial in trials:
+        trial_out = Path(trial["out"])
+        trial_out.mkdir()
+        trial["status"] = "running"
+        checkpoint()
+        print(f"{trial['scenario']} seed={trial['seed']}", file=sys.stderr, flush=True)
+        try:
+            # 長期 replay の stderr はファイルへ流し、メモリへ蓄積しない。
+            with (trial_out / "stdout.json").open("w", encoding="utf-8") as stdout, (
+                trial_out / "stderr.log"
+            ).open("w", encoding="utf-8") as stderr:
+                result = subprocess.run(
+                    trial["command"], stdout=stdout, stderr=stderr, check=False, env=child_env,
+                )
+            trial["returncode"] = result.returncode
+            if result.returncode != 0:
+                raise ValueError(f"research exited with code {result.returncode}; see stderr.log")
+            common, metrics = _validate_trial(trial, plan["expected_manifest"], baseline)
+            if git_state() != plan["git_state"]:
+                raise ValueError("git state changed during the ensemble")
+            if baseline is None:
+                baseline = common
+            trial.update(status="succeeded", metrics=metrics)
+        except (OSError, TypeError, ValueError) as error:
+            trial.update(status="failed", error=str(error))
+        except KeyboardInterrupt:
+            trial.update(status="failed", error="interrupted")
+            checkpoint()
+            raise
+        checkpoint()
+    return checkpoint()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env", default="backtest", choices=ENVIRONMENTS)
+    parser.add_argument("--symbol", default=None)
+    parser.add_argument("--dsn-env", required=True, help="研究用 DB の DSN を持つ環境変数名")
+    parser.add_argument("--strategy", required=True, choices=sorted(STRATEGIES))
+    parser.add_argument("--from", dest="start", required=True, type=broker_label)
+    parser.add_argument("--to", dest="end", required=True, type=broker_label)
+    parser.add_argument("--seeds", nargs="+", required=True, type=int)
+    parser.add_argument("--scenarios", nargs="+", required=True, choices=sorted(STRESS_SCENARIOS))
+    parser.add_argument("--param", action="append", default=[], type=parse_param_override)
+    parser.add_argument("--warmup-days", type=warmup_days, default=None)
+    parser.add_argument("--pnl-quantile", type=_probability, default=Decimal("0.05"))
+    parser.add_argument("--drawdown-quantile", type=_probability, default=Decimal("0.95"))
+    parser.add_argument("--purpose", required=True, help="実験の目的（事前に固定して保存）")
+    parser.add_argument("--risk-basis", required=True, help="使用する Risk 設定の根拠")
+    parser.add_argument("--risk-mode", choices=("research", "operational-limits"), default="research")
+    parser.add_argument("--out", default="reports/execution-ensembles")
+    args = parser.parse_args()
+    if args.start >= args.end:
+        parser.error("--from must be earlier than --to")
+    if len(set(args.seeds)) != len(args.seeds) or len(set(args.scenarios)) != len(args.scenarios):
+        parser.error("seeds and scenarios must each be unique")
+    if not args.purpose.strip() or not args.risk_basis.strip():
+        parser.error("--purpose and --risk-basis must not be blank")
+    if args.pnl_quantile > Decimal("0.5") or args.drawdown_quantile < Decimal("0.5"):
+        parser.error("lower PnL quantile must be <= 0.5; upper drawdown quantile must be >= 0.5")
+
+    research_dsn = os.environ.get(args.dsn_env)
+    if not research_dsn:
+        parser.error(f"research DSN environment variable {args.dsn_env!r} is not set")
+    config = load_config(args.env)
+    if args.strategy not in config.strategies:
+        parser.error(f"config has no strategy {args.strategy!r}")
+    config = with_param_overrides(config, args.strategy, dict(args.param))
+    symbol = args.symbol or config.market.primary_instruments[0]
+    strategy_config = config.strategies[args.strategy]
+    if symbol != "USDJPY" or symbol not in strategy_config.instruments:
+        parser.error("research requires the USDJPY dataset spec and a matching strategy instrument")
+    if args.risk_mode == "operational-limits" and (
+        not config.risk.trading_enabled
+        or any(not 0 < getattr(config.risk, field) < 100 for field in HALT_FIELDS)
+    ):
+        parser.error("operational-limits requires enabled trading and loss halts strictly between 0 and 100%")
+    strategy = STRATEGIES[args.strategy]
+    warmup = timedelta(days=args.warmup_days) if args.warmup_days is not None else strategy.warmup(
+        strategy_config
+    )
+    repro = git_state()
+    if repro["git_commit"] == "unknown" or repro["git_dirty"] is None:
+        parser.error("git state is unavailable; reproducibility cannot be verified")
+    expected = {
+        **repro,
+        "environment": args.env,
+        "symbol": symbol,
+        "strategy_id": strategy.strategy_id,
+        "strategy_version": strategy.strategy_version,
+        "engine_version": ENGINE_VERSION,
+        "param_overrides": dict(args.param),
+        "resolved_parameters": dict(strategy_config.params_for(symbol).values),
+        "period_from": args.start.isoformat(),
+        "period_to": args.end.isoformat(),
+        "warmup_days": warmup / timedelta(days=1),
+        "broker_server_ahead_of_ny_hours": config.market.broker_server_ahead_of_ny_hours,
+        "config_sha256": hashlib.sha256(config.model_dump_json().encode()).hexdigest(),
+        "python_version": sys.version.split()[0],
+    }
+    out = Path(args.out).resolve() / str(uuid4())
+    command = [
+        sys.executable, "-m", "trading.backtest.research", "--env", args.env,
+        "--symbol", symbol, "--strategy", args.strategy,
+        "--from", args.start.isoformat(), "--to", args.end.isoformat(),
+    ]
+    if args.warmup_days is not None:
+        command += ["--warmup-days", str(args.warmup_days)]
+    for key, value in args.param:
+        command += ["--param", f"{key}={value}"]
+    trials = []
+    for scenario in args.scenarios:
+        for seed in args.seeds:
+            trial_out = out / f"{len(trials) + 1:04d}-{scenario}-seed-{seed}"
+            trials.append({
+                "scenario": scenario, "seed": seed, "out": str(trial_out),
+                "command": [*command, "--scenario", scenario, "--seed", str(seed), "--out", str(trial_out)],
+            })
+    plan = {
+        "schema_version": 1,
+        "dsn_source_env": args.dsn_env,
+        "created_at": datetime.now(UTC).isoformat(),
+        "purpose": args.purpose,
+        "risk_basis": args.risk_basis,
+        "risk_mode": args.risk_mode,
+        "interpretation": INTERPRETATION,
+        "amount_currency": synthetic_usdjpy_spec(symbol).quote_currency.value,
+        "git_state": repro,
+        "expected_manifest": expected,
+        "config": config.model_dump(mode="json"),
+        "cost_models": {
+            name: asdict(replace(STRESS_SCENARIOS[name], latency_ms=config.simulator.latency_ms))
+            for name in args.scenarios
+        },
+        "seeds": args.seeds,
+        "scenarios": args.scenarios,
+        "pnl_quantile": str(args.pnl_quantile),
+        "drawdown_quantile": str(args.drawdown_quantile),
+        "trials": trials,
+    }
+    summary = run_ensemble(plan, out, research_dsn=research_dsn)
+    print(json.dumps({"ensemble_dir": str(out), **summary}, ensure_ascii=False, indent=2))
+    if summary["status"] != "complete":
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

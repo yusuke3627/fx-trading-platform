@@ -270,15 +270,18 @@ shasum -a 256 tmp/feature-screen/h6a_bars_1h.csv   # 上表の sha256 と一致�
   確認期間の 1 件（2026-01-23 の金曜 23 時）は、再開後が手元の tick の欠損（2026-01-23〜04-08）に当たって値付けできないので除いた
 - 往復損益は、LONG が「決済時の bid − 建てたときの ask」、SHORT が「建てたときの bid − 決済時の ask」を pip に直したもの。遅延と滑りは入れていない
 - quote は、Mac の研究 DB（`trading_research`、VPS から同期した USDJPY の MT5 tick）で、その時刻（broker ラベル軸、`event_time` と同じ軸）以後の最初の tick。同じ `event_time` の tick は `id` の小さい順とする（リポジトリの読み出しと同じ順序）
+- あとから同期・取り込みした tick で結果が変わらないよう、集計時点の研究 DB の最大 `id`（170,446,166。この時点の USDJPY の tick は 112,661,150 本、最後は 2026-09-23T17:47 の broker ラベル）以下の行に固定した
 
 照会は次の形で、必要な時刻の配列をまとめて渡した。探す幅は 1 時間とし、休場明けの決済だけ 4 日とした。
+集計に使ったスクリプトと出力の JSON は `tmp/feature-screen/hypothesis-t-cost/` にある（リポジトリには入れていない）。
 
 ```sql
 SELECT b.at, q.bid, q.ask, q.event_time
 FROM unnest(%s::timestamptz[]) AS b(at)
 CROSS JOIN LATERAL (
     SELECT id, bid, ask, event_time FROM market_ticks
-    WHERE symbol = 'USDJPY' AND event_time >= b.at AND event_time < b.at + %s::interval
+    WHERE symbol = 'USDJPY' AND id <= 170446166
+      AND event_time >= b.at AND event_time < b.at + %s::interval
     ORDER BY event_time, id LIMIT 1
 ) q
 ```

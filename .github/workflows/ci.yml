@@ -76,5 +76,7 @@ jobs:
       - name: Verify the database is reachable
         run: python -c "import os, psycopg; psycopg.connect(os.environ['TRADING_DB_DSN']).close()"
 
-      - name: Run integration tests
-        run: pytest tests/integration -q
+      # The test job installs '.[dev]' only, so unit tests that need the db extra
+      # (psycopg) skip there. Running the whole suite here is what executes them.
+      - name: Run tests with the db extra (integration included)
+        run: pytest -q

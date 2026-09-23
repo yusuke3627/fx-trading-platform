@@ -111,9 +111,10 @@ class FailedSpikeReversalStrategy(Strategy):
         if atr is None or atr <= 0:
             return None
 
-        ticks = list(ctx.market.ticks(symbol, window_seconds * 3))
+        ticks = ctx.market.ticks(symbol, window_seconds * 3)
         if len(ticks) < 10:
             return None
+        # 保存済み tick は読取間にも増えるため、判定対象の窓と同じ末尾を使う。
         last = ticks[-1]
         if not spread_gate.allows(
             spread=last.spread,
@@ -122,8 +123,8 @@ class FailedSpikeReversalStrategy(Strategy):
         ):
             return None
 
-        mids = [float(t.mid) for t in ticks]
-        momentum = ctx.indicators.tick_momentum(symbol, window_seconds / 2)
+        mids = [t.mid_float for t in ticks]
+        momentum = ctx.indicators.tick_momentum(symbol, window_seconds / 2, ticks=ticks)
         if momentum is None:
             return None
 

@@ -6,12 +6,12 @@ forbidden because Backtest/Live and cross-strategy results would diverge.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 
 from trading.data.market import MarketDataService
 from trading.data.market.clock import broker_label_to_known
-from trading.domain.market import Bar
+from trading.domain.market import Bar, Tick
 from trading.indicators import market_structure as ms
 from trading.indicators.atr import atr as _atr
 from trading.indicators.ema import ema as _ema
@@ -90,8 +90,12 @@ class IndicatorService:
             lambda bars: rate_of_change([float(b.close) for b in bars], lookback),
         )
 
-    def tick_momentum(self, symbol: str, window_seconds: float) -> float | None:
-        return tick_momentum(self._market.ticks(symbol, window_seconds), window_seconds)
+    def tick_momentum(
+        self, symbol: str, window_seconds: float, *, ticks: Sequence[Tick] | None = None,
+    ) -> float | None:
+        if ticks is None:
+            ticks = self._market.ticks(symbol, window_seconds)
+        return tick_momentum(ticks, window_seconds)
 
     def realized_volatility(self, symbol: str, timeframe: str, window: int) -> float | None:
         return self._memoized(

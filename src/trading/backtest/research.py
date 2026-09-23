@@ -68,10 +68,9 @@ from trading.backtest.rollover import swap_dataset_fingerprint
 from trading.backtest.run import git_state, synthetic_usdjpy_spec
 from trading.config import AppConfig, load_config
 from trading.data.features import ReplayFeatureTimeline, StoredFeatureSource
-from trading.data.market.bars import BarBuilder
 from trading.data.market.clock import broker_label_to_known
 from trading.data.policy.risk_windows import central_bank_calendar
-from trading.domain.market import Tick
+from trading.domain.market import Bar, Tick
 from trading.intelligence.features import InMemoryFeatureStore
 from trading.intelligence.intervention import InterventionRiskConfig
 from trading.strategy.base import StrategyConfig
@@ -272,36 +271,14 @@ def with_progress(
 BAR_CSV_HEADER = "start,open,high,low,close,tick_volume\n"
 
 
-def capture_bars(
-    ticks: Iterator[Tick],
-    builders: Sequence[BarBuilder],
-    files: Sequence[TextIO],
-) -> Iterator[Tick]:
-    """Write the candles the replay reconstructs, one CSV per timeframe.
-
-    The stored bar series begins where the bar service was first run, not
-    where the tick archive does, so asking what a past replay's candles looked
-    like otherwise costs a second pass over tens of millions of ticks. The
-    replay folds them anyway; writing each one down as it closes turns the
-    next such question into a file read.
-
-    Timestamps are the broker labels the candles are bucketed on, the axis
-    --from/--to are given in.
-    """
-    for tick in ticks:
-        for builder, out in zip(builders, files, strict=True):
-            bar = builder.on_tick(tick)
-            if bar is not None:
-                out.write(
-                    f"{bar.start.isoformat()},{bar.open},{bar.high},"
-                    f"{bar.low},{bar.close},{bar.tick_volume}\n"
-                )
-                # Closed bars are rare enough for this to cost nothing, and
-                # both things the file is for — reading it while the run is
-                # still going, and keeping what a run that died got to —
-                # need the row on disk rather than in a buffer.
-                out.flush()
-        yield tick
+def write_bar(bar: Bar, out: TextIO) -> None:
+    """エンジンが確定させた足を broker ラベル軸の CSV に記録する。"""
+    out.write(
+        f"{bar.start.isoformat()},{bar.open},{bar.high},"
+        f"{bar.low},{bar.close},{bar.tick_volume}\n"
+    )
+    # 実行途中の参照と、中断した run の記録を維持する。
+    out.flush()
 
 
 def warmup_days(value: str) -> float:
@@ -527,31 +504,28 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     timeframes = strategy_config.timeframes.all()
     with ExitStack() as stack:
-        files = [
-            stack.enter_context(
+        files = {
+            timeframe: stack.enter_context(
                 (run_dir / f"bars_{timeframe}.csv").open("w", encoding="utf-8")
             )
             for timeframe in timeframes
-        ]
-        for out in files:
+        }
+        for out in files.values():
             out.write(BAR_CSV_HEADER)
         result = engine.run_stream(
-            capture_bars(
-                with_progress(
-                    covered_reconstructed_stream(
-                        repository.stream_between(symbol, read_from, args.end),
-                        read_from,
-                        args.start,
-                        args.end,
-                        anchor,
-                        digest,
-                    ),
-                    timeline.store,
-                    sys.stderr,
+            with_progress(
+                covered_reconstructed_stream(
+                    repository.stream_between(symbol, read_from, args.end),
+                    read_from,
+                    args.start,
+                    args.end,
+                    anchor,
+                    digest,
                 ),
-                [BarBuilder(symbol, timeframe) for timeframe in timeframes],
-                files,
-            )
+                timeline.store,
+                sys.stderr,
+            ),
+            on_bar=lambda bar: write_bar(bar, files[bar.timeframe]),
         )
 
     manifest = {

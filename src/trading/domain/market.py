@@ -1,8 +1,11 @@
 """Market data primitives."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal
+from functools import cached_property
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict
 
@@ -40,6 +43,15 @@ class Tick(BaseModel):
     @property
     def mid(self) -> Decimal:
         return (self.bid + self.ask) / 2
+
+    @cached_property
+    def mid_float(self) -> float:
+        return float(self.mid)
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        copied = super().model_copy(update=update, deep=deep)
+        copied.__dict__.pop("mid_float", None)
+        return copied
 
     @property
     def spread(self) -> Decimal:

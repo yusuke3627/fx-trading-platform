@@ -1,0 +1,52 @@
+{
+  "schema_version": "feature_screen_v1",
+  "population_description": "VPS の研究リプレイ H6 腕 A（run d4eab292-48b0-4e96-ac83-cd014dd86223、dataset_hash 938a54fb…）が書き出した USDJPY の 1 時間 bid 足。broker ラベル軸。2026-01-23〜2026-04-08 は tick 欠損",
+  "basis": "replay_bars",
+  "instrument": {
+    "symbol": "USDJPY",
+    "base_currency": "USD",
+    "quote_currency": "JPY",
+    "digits": 3,
+    "pip_size": "0.01",
+    "contract_size": "1000",
+    "volume_min": "1000",
+    "volume_step": "1000",
+    "volume_max": "1000000",
+    "stop_level_points": 0,
+    "accepted_filling_modes": [
+      "IMMEDIATE_OR_CANCEL"
+    ]
+  },
+  "timeframe": "1h",
+  "explore": {
+    "start": "2024-08-01T00:00:00+00:00",
+    "end": "2025-08-01T00:00:00+00:00"
+  },
+  "confirm": {
+    "start": "2025-08-01T00:00:00+00:00",
+    "end": "2026-08-29T00:00:00+00:00"
+  },
+  "max_gap_hours": 96,
+  "indicator_bars": 200,
+  "atr_period": 14,
+  "normalization_window": 240,
+  "entry_z": 1.0,
+  "features": [
+    {
+      "id": "same_slot_mean_return_60",
+      "kind": "same_slot_mean_return",
+      "occurrences": 60
+    }
+  ],
+  "horizons": [
+    1
+  ],
+  "round_trip_cost_pips": "0.97",
+  "cost_rationale": "約定あたりの実測執行コスト。H4（8,798 約定）0.979 pips、H6 腕 A（222 約定）0.965 pips の間の値",
+  "quantiles": 5,
+  "min_samples": 200,
+  "min_month_samples": 20,
+  "staircase_min": 0.9,
+  "month_sign_min": 0.6,
+  "confidence": 0.95
+}

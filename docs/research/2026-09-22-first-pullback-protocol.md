@@ -2,6 +2,7 @@
 
 > 2026-09-24 追記: 本測定は行わないと判断した（[判断の記録](2026-09-24-first-pullback-not-measured.md)）。
 > 以下の戦略コードは main に入れず、ブランチ `feat/issue-222-first-pullback`（`1c234e3`）に残している。
+> ブランチを消しても `git fetch origin pull/223/head` で取得できる。末尾の短期確認の一時 CLI と成果物（`/tmp/fx-first-pullback-pilot-20260922/`）は、すでに残っていない。
 
 Issue #222（親 #157 候補2）の研究専用条件。`breakout_first_pullback` v0.1.0 は `RESEARCH_ONLY`、すべての環境で既定無効とする。H6の棄却は維持する。以下は損益の測定前に固定した初期条件で、収益性や実運用への昇格を意味しない。
 

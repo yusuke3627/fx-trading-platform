@@ -10,10 +10,10 @@ import sys
 from collections import defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from statistics import NormalDist, fmean, pstdev, stdev
+from statistics import NormalDist, fmean, mean, pstdev, stdev
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -68,8 +68,21 @@ class MomentumAtr(Feature):
     lookback: int = Field(ge=1, strict=True)
 
 
+class SqueezeRangePosition(Feature):
+    kind: Literal["squeeze_range_position"]
+    lookback: int = Field(ge=1, strict=True)
+    width_window: int = Field(ge=1, strict=True)
+    max_width_share: float = Field(gt=0, lt=1)
+
+
+class SameSlotMeanReturn(Feature):
+    kind: Literal["same_slot_mean_return"]
+    occurrences: int = Field(ge=1, strict=True)
+
+
 FeatureSpec = Annotated[
-    RangePosition | EmaSlopeAtr | DistanceFromEmaAtr | MomentumAtr,
+    RangePosition | EmaSlopeAtr | DistanceFromEmaAtr | MomentumAtr
+    | SqueezeRangePosition | SameSlotMeanReturn,
     Field(discriminator="kind"),
 ]
 PositiveInt = Annotated[int, Field(ge=1, strict=True)]
@@ -116,7 +129,13 @@ class Plan(Record):
             if not math.isfinite(float(value)) or float(value) == 0:
                 raise ValueError(f"{name} が統計計算の数値範囲を超えています")
         for feature in self.features:
-            if isinstance(feature, RangePosition):
+            if isinstance(feature, SameSlotMeanReturn):
+                if TIMEFRAME_SECONDS[self.timeframe] >= 86400:
+                    raise ValueError(f"{feature.id}: timeframe は 1 日未満にしてください")
+                continue
+            if isinstance(feature, SqueezeRangePosition):
+                required = feature.lookback + feature.width_window + 1
+            elif isinstance(feature, RangePosition):
                 required = feature.lookback + 1
             elif isinstance(feature, MomentumAtr):
                 required = max(feature.lookback + 1, self.atr_period + 1)
@@ -191,15 +210,49 @@ def feature_values(
     bars: Sequence[Bar], plan: Plan, segments: Sequence[tuple[int, int]],
 ) -> dict[str, list[float | None]]:
     values: dict[str, list[float | None]] = {f.id: [None] * len(bars) for f in plan.features}
-    needs_atr = any(not isinstance(f, RangePosition) for f in plan.features)
+    needs_atr = any(isinstance(f, (MomentumAtr, EmaSlopeAtr, DistanceFromEmaAtr))
+                    for f in plan.features)
+    step = timedelta(seconds=TIMEFRAME_SECONDS[plan.timeframe])
     for start, end in segments:
-        for t in range(start + plan.indicator_bars - 1, end):
-            window = bars[t - plan.indicator_bars + 1:t + 1]
-            atr_t = atr(window, plan.atr_period) if needs_atr else None
+        widths: dict[str, deque[Decimal]] = {
+            f.id: deque(maxlen=f.width_window)
+            for f in plan.features if isinstance(f, SqueezeRangePosition)
+        }
+        slot_returns: dict[str, dict[time, deque[float]]] = {
+            f.id: {} for f in plan.features if isinstance(f, SameSlotMeanReturn)
+        }
+        for t in range(start, end):
+            ready = t >= start + plan.indicator_bars - 1
+            window = bars[t - plan.indicator_bars + 1:t + 1] if ready and needs_atr else []
+            atr_t = atr(window, plan.atr_period) if ready and needs_atr else None
             emas: dict[int, list[float]] = {}
             for feature in plan.features:
                 raw = None
-                if isinstance(feature, RangePosition):
+                if isinstance(feature, SqueezeRangePosition):
+                    if t - start >= feature.lookback:
+                        past = bars[t - feature.lookback:t]
+                        high, low = max(b.high for b in past), min(b.low for b in past)
+                        width = high - low
+                        history = widths[feature.id]
+                        if ready and len(history) == feature.width_window and width > 0:
+                            share = sum(w < width for w in history) / feature.width_window
+                            if share <= feature.max_width_share:
+                                raw = float((2 * bars[t].close - high - low) / width)
+                        history.append(width)
+                elif isinstance(feature, SameSlotMeanReturn):
+                    slots = slot_returns[feature.id]
+                    if t > start and bars[t].start - bars[t - 1].start == step:
+                        return_pips = float(
+                            (bars[t].close - bars[t - 1].close) / plan.instrument.pip_size,
+                        )
+                        returns = slots.setdefault(
+                            bars[t].start.time(), deque(maxlen=feature.occurrences),
+                        )
+                        returns.append(return_pips)
+                    past_returns = slots.get((bars[t].start + step).time())
+                    if ready and past_returns is not None and len(past_returns) == feature.occurrences:
+                        raw = mean(past_returns)
+                elif ready and isinstance(feature, RangePosition):
                     past = bars[t - feature.lookback:t]
                     high, low = max(b.high for b in past), min(b.low for b in past)
                     if high != low:

@@ -33,7 +33,7 @@ from trading.backtest.feature_screen import (
     verdict,
 )
 from trading.backtest.research import BAR_CSV_HEADER, write_bar
-from trading.domain.market import Bar
+from trading.domain.market import TIMEFRAME_SECONDS, Bar
 from trading.indicators import DEFAULT_BAR_COUNT
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
@@ -42,6 +42,11 @@ FEATURES = (
     {"id": "slope", "kind": "ema_slope_atr", "ema_period": 2, "slope_lookback": 2},
     {"id": "distance", "kind": "distance_from_ema_atr", "ema_period": 2},
     {"id": "momentum", "kind": "momentum_atr", "lookback": 2},
+)
+NEW_FEATURES = (
+    {"id": "squeeze", "kind": "squeeze_range_position", "lookback": 2,
+     "width_window": 3, "max_width_share": 0.5},
+    {"id": "slot", "kind": "same_slot_mean_return", "occurrences": 2},
 )
 
 
@@ -126,12 +131,12 @@ def test_features_use_existing_atr_ema_and_exclude_current_range():
 
 
 def test_pit_future_rewrite_does_not_change_earlier_features_or_z():
-    p = plan(features=FEATURES)
-    bars = synthetic_bars(count=180)
-    k = 110
+    p = plan(features=FEATURES + NEW_FEATURES)
+    bars = synthetic_bars(count=240)
+    k = 180
     changed = bars[:k] + [b.model_copy(update={
-        "open": b.open * 2, "high": b.high * 2, "low": b.low * 2, "close": b.close * 2,
-    }) for b in bars[k:]]
+        "open": b.open * i, "high": b.high * i, "low": b.low * i, "close": b.close * i,
+    }) for i, b in enumerate(bars[k:], start=2)]
     segments = [(0, len(bars))]
     original = feature_values(bars, p, segments)
     rewritten = feature_values(changed, p, segments)
@@ -143,6 +148,131 @@ def test_pit_future_rewrite_does_not_change_earlier_features_or_z():
         z_after = normalize(after, p.normalization_window, segments)
         assert any(z is not None for z in z_before[:k])
         assert z_before[:k] == z_after[:k]
+
+
+def test_squeeze_uses_previous_ranges_and_filters_wide_ranges():
+    p = plan(features=[NEW_FEATURES[0]], indicator_bars=6)
+    bars = [make_bar(START + timedelta(hours=i), Decimal(close), Decimal(spread))
+            for i, (close, spread) in enumerate([
+                (100, 5), (100, 4), (100, 3), (100, 1), (100, 1), (104, 4), (100, 0),
+            ])]
+    values = feature_values(bars, p, [(0, len(bars))])["squeeze"]
+    # W_2..W_5 = 10, 8, 6, 2。足 5 の直前レンジは [99,101]。
+    assert values[:5] == [None] * 5
+    assert values[5] == pytest.approx(4)
+    # W_6 = 9 は直前の幅 8, 6, 2 よりすべて大きい。
+    assert values[6] is None
+
+
+@pytest.mark.parametrize("threshold,expected", [(0.25, 2), (0.249, None)])
+def test_squeeze_tied_widths_are_not_smaller_and_threshold_is_inclusive(threshold, expected):
+    p = plan(features=[NEW_FEATURES[0] | {
+        "lookback": 1, "width_window": 4, "max_width_share": threshold,
+    }], indicator_bars=6)
+    bars = [make_bar(START + timedelta(hours=i), Decimal(100), Decimal(spread))
+            for i, spread in enumerate([1, 2, 3, 2, 2])]
+    bars.append(make_bar(START + timedelta(hours=5), Decimal(104)))
+    # 直前の幅 [2,4,6,4] のうち W_5=4 より小さいのは 1/4。
+    assert feature_values(bars, p, [(0, 6)])["squeeze"][-1] == expected
+
+
+def test_squeeze_zero_width_is_missing_without_atr_requirement():
+    p = plan(features=[NEW_FEATURES[0] | {"lookback": 1, "width_window": 1}],
+             indicator_bars=3, atr_period=100)
+    bars = [make_bar(START + timedelta(hours=i), Decimal(100), Decimal(0)) for i in range(6)]
+    assert feature_values(bars, p, [(0, 6)])["squeeze"] == [None] * 6
+    bars[1] = make_bar(bars[1].start, Decimal(100), Decimal(1))
+    bars[2] = make_bar(bars[2].start, Decimal(100), Decimal("0.5"))
+    bars[3] = make_bar(bars[3].start, Decimal(102), Decimal(0))
+    assert feature_values(bars, p, [(0, 6)])["squeeze"][3] == pytest.approx(4)
+
+
+@pytest.mark.parametrize("timeframe", ["15m", "1h", "4h"])
+def test_same_slot_uses_latest_occurrences_before_warmup_and_needs_no_next_bar(timeframe):
+    step = timedelta(seconds=TIMEFRAME_SECONDS[timeframe])
+    per_day = 86400 // TIMEFRAME_SECONDS[timeframe]
+    p = plan(features=[NEW_FEATURES[1]], timeframe=timeframe,
+             indicator_bars=2 * per_day + 1,
+             instrument=usdjpy_spec(symbol="TEST_PAIR", pip_size=Decimal("0.0001")))
+    close = Decimal("100.00000000000001")
+    bars = []
+    for i in range(3 * per_day + 1):
+        change = {1: 1, per_day + 1: 3, 2 * per_day + 1: 7}.get(i, 90)
+        close += Decimal(change) * p.instrument.pip_size
+        bars.append(make_bar(START + i * step, close).model_copy(update={
+            "timeframe": timeframe, "known_at": START + (i + 1) * step,
+        }))
+    values = feature_values(bars, p, [(0, len(bars))])["slot"]
+    assert values[:2 * per_day] == [None] * (2 * per_day)
+    assert values[2 * per_day] == pytest.approx(2)
+    assert values[-1] == pytest.approx(5)
+    scarce = plan(features=[NEW_FEATURES[1] | {"occurrences": 4}],
+                  timeframe=timeframe, indicator_bars=1)
+    assert all(v is None for v in feature_values(bars, scarce, [(0, len(bars))])["slot"])
+
+
+def test_same_slot_excludes_missing_bars_and_weekend_returns_within_segment():
+    p = plan(features=[NEW_FEATURES[1]], indicator_bars=1)
+    hours = [0, 23, 24, 46, 48, 71, 72, 120, 143, 144, 167]
+    close = Decimal(100)
+    bars = []
+    for hour in hours:
+        close += Decimal({24: 2, 72: 6, 144: 10}.get(hour, 1000)) * p.instrument.pip_size
+        bars.append(make_bar(START + timedelta(hours=hour), close))
+    segments = split_segments(bars, p.max_gap_hours)
+    assert segments == [(0, len(bars))]
+    values = feature_values(bars, p, segments)["slot"]
+    # 48 時間目と 120 時間目の差は欠損をまたぐので、0 時の履歴に入らない。
+    assert values[hours.index(71)] is None
+    assert values[hours.index(143)] == pytest.approx(4)
+    assert values[hours.index(167)] == pytest.approx(8)
+
+
+def test_same_slot_finite_mean_does_not_overflow_during_summation():
+    p = plan(features=[NEW_FEATURES[1]], indicator_bars=1,
+             instrument=usdjpy_spec(symbol="TEST_PAIR", pip_size=Decimal("0.1")))
+    bars = [make_bar(START + timedelta(hours=i),
+                     Decimal("1e307") if i in (1, 25) else Decimal(1)) for i in range(49)]
+    assert feature_values(bars, p, [(0, len(bars))])["slot"][-1] == pytest.approx(1e308)
+
+
+@pytest.mark.parametrize("kind", ["squeeze", "slot"])
+def test_cli_rejects_nonfinite_new_feature_values(tmp_path, capsys, kind):
+    if kind == "squeeze":
+        p = plan(features=[NEW_FEATURES[0] | {"lookback": 1, "width_window": 1}],
+                 indicator_bars=3)
+        bars = [
+            make_bar(START, Decimal("3e-308"), Decimal("2e-308")),
+            make_bar(START + timedelta(hours=1), Decimal("2e-308"), Decimal("1e-308")),
+            make_bar(START + timedelta(hours=2), Decimal(100)),
+        ]
+    else:
+        p = plan(features=[NEW_FEATURES[1] | {"occurrences": 1}], indicator_bars=1,
+                 instrument=usdjpy_spec(symbol="TEST_PAIR", pip_size=Decimal("1e-308")))
+        bars = [make_bar(START + timedelta(hours=i), Decimal(10) if i else Decimal(1))
+                for i in range(25)]
+    plan_path, bars_path = cli_inputs(tmp_path, p, bars)
+    output = tmp_path / "output"
+    assert main(cli_args(plan_path, bars_path, output)) == 2
+    assert "特徴量が数値範囲を超えています" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_new_features_reset_history_at_long_gap():
+    p = plan(features=NEW_FEATURES, indicator_bars=6)
+    bars = synthetic_bars(count=300)
+    bars[150:] = [b.model_copy(update={"start": b.start + timedelta(days=5)}) for b in bars[150:]]
+    segments = split_segments(bars, p.max_gap_hours)
+    assert segments == [(0, 150), (150, 300)]
+    values = feature_values(bars, p, segments)
+    restarted = feature_values(bars[150:], p, [(0, 150)])
+    for feature in p.features:
+        assert any(v is not None for v in values[feature.id][:150])
+        assert values[feature.id][150:] == restarted[feature.id]
+    assert values["squeeze"][150:155] == [None] * 5
+    assert any(v is not None for v in values["squeeze"][155:])
+    assert values["slot"][150:198] == [None] * 48
+    assert values["slot"][198] is not None
 
 
 def test_z_uses_only_previous_valid_values_and_resets_at_segment():
@@ -376,11 +506,36 @@ def test_plan_rejects_invalid_boundaries(overrides):
     ({"id": "m", "kind": "momentum_atr", "lookback": 9}, 10),
     ({"id": "d", "kind": "distance_from_ema_atr", "ema_period": 8}, 8),
     ({"id": "s", "kind": "ema_slope_atr", "ema_period": 8, "slope_lookback": 4}, 12),
+    (NEW_FEATURES[0], 6),
 ])
 def test_indicator_window_matches_existing_api_minimum(feature, required):
     assert plan(features=[feature], indicator_bars=required).indicator_bars == required
     with pytest.raises(ValidationError, match="indicator_bars"):
         plan(features=[feature], indicator_bars=required - 1)
+
+
+@pytest.mark.parametrize("feature,overrides", [
+    (NEW_FEATURES[0], {"lookback": 0}),
+    (NEW_FEATURES[0], {"lookback": True}),
+    (NEW_FEATURES[0], {"width_window": 0}),
+    (NEW_FEATURES[0], {"width_window": 1.5}),
+    (NEW_FEATURES[0], {"max_width_share": 0}),
+    (NEW_FEATURES[0], {"max_width_share": 1}),
+    (NEW_FEATURES[0], {"max_width_share": float("nan")}),
+    (NEW_FEATURES[0], {"max_width_share": float("inf")}),
+    (NEW_FEATURES[1], {"occurrences": 0}),
+    (NEW_FEATURES[1], {"occurrences": True}),
+    (NEW_FEATURES[1], {"occurrences": 1.5}),
+])
+def test_new_feature_parameters_reject_invalid_boundaries(feature, overrides):
+    with pytest.raises(ValidationError):
+        plan(features=[feature | overrides])
+
+
+def test_same_slot_rejects_daily_timeframe_but_squeeze_accepts_it():
+    with pytest.raises(ValidationError, match="timeframe.*1 日未満"):
+        plan(features=[NEW_FEATURES[1]], timeframe="1d")
+    assert plan(features=[NEW_FEATURES[0]], timeframe="1d").timeframe == "1d"
 
 
 def test_plan_is_frozen_and_defaults_follow_existing_indicator_window():
@@ -453,8 +608,9 @@ def test_cli_rejects_overflow_when_finite_prices_are_converted_to_pips(tmp_path,
     assert "pips 換算" in capsys.readouterr().err
 
 
-def test_cli_writes_exact_inputs_hashes_and_reports_and_refuses_overwrite(tmp_path):
-    p = plan(basis="simulated", features=FEATURES)
+@pytest.mark.parametrize("features", [FEATURES, NEW_FEATURES, FEATURES + NEW_FEATURES])
+def test_cli_writes_exact_inputs_hashes_and_reports_and_refuses_overwrite(tmp_path, features):
+    p = plan(basis="simulated", features=features)
     bars = synthetic_bars(count=250)
     plan_path, bars_path = cli_inputs(tmp_path, p, bars)
     raw_plan = plan_path.read_bytes()
@@ -473,8 +629,10 @@ def test_cli_writes_exact_inputs_hashes_and_reports_and_refuses_overwrite(tmp_pa
     assert report["bars"]["last_start"] == str(bars[-1].start)
     assert report["bars"]["segments"][0]["bar_count"] == 250
     assert "git_commit" in report["git"]
-    assert len(report["cells"]) == 8
-    assert len(report["ic_decay"]) == 4
+    assert len(report["cells"]) == len(features) * len(p.horizons)
+    assert {c["feature_id"] for c in report["cells"]} == {f["id"] for f in features}
+    assert all(c["explore"]["n"] > 0 for c in report["cells"])
+    assert len(report["ic_decay"]) == len(features)
     assert report["ic_decay"][0]["horizons"][0]["explore"] == report["cells"][0]["explore"]["ic"]
     markdown = (output / "report.md").read_text()
     for phrase in ("収益性・将来の再現性は示しません", "simulated", "合成データ", "探索期間", "確認期間",

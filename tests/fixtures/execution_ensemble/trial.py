@@ -17,13 +17,13 @@ parser.add_argument("--ignore-term", action="store_true")
 args = parser.parse_args()
 if args.ignore_term:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-plan = json.loads((args.out.parent / "plan.json").read_text())
+plan = json.loads((args.out.parent / "plan.json").read_text(encoding="utf-8"))
 trial = next(trial for trial in plan["trials"] if trial["out"] == str(args.out))
 assert os.environ[plan["config"]["storage"]["dsn_env"]] == "synthetic-only"
-assert json.loads((args.out.parent / "results.json").read_text())["trials"][
+assert json.loads((args.out.parent / "results.json").read_text(encoding="utf-8"))["trials"][
     plan["trials"].index(trial)
 ]["status"] == "running"
-(args.out / "started.tmp").write_text(json.dumps({"pid": os.getpid(), "time": time.monotonic_ns()}))
+(args.out / "started.tmp").write_text(json.dumps({"pid": os.getpid(), "time": time.perf_counter_ns()}), encoding="utf-8")
 (args.out / "started.tmp").replace(args.out / "started.json")
 if args.wait_for:
     deadline = time.monotonic() + 30
@@ -50,8 +50,8 @@ else:
     }
     if args.invalid_metrics:
         metrics["net_pnl"] = "NaN"
-    (run_dir / "manifest.json").write_text(json.dumps(manifest))
-    (run_dir / "summary.json").write_text(json.dumps({"symbol": "USDJPY", "metrics": metrics}))
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps({"symbol": "USDJPY", "metrics": metrics}), encoding="utf-8")
     print(json.dumps({"run_dir": str(run_dir)}))
-(args.out / "finished.json").write_text(json.dumps({"time": time.monotonic_ns()}))
+(args.out / "finished.json").write_text(json.dumps({"time": time.perf_counter_ns()}), encoding="utf-8")
 raise SystemExit(args.exit_code)

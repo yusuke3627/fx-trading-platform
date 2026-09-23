@@ -9,12 +9,14 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from threading import Event, Lock, current_thread, main_thread
+from typing import TextIO
 from uuid import uuid4
 
 from trading.backtest.costs import STRESS_SCENARIOS
@@ -46,6 +48,149 @@ INTERPRETATION = (
     "scenario 間は混合しない。期末の未決済ポジションは既存エンジンの Bid/Ask 時価評価を使い、"
     "強制決済費用と期間終了後のリスクを含まない。"
 )
+_CREATE_SUSPENDED = 0x00000004
+
+
+class _WindowsJob:
+    """親の強制終了時にも研究の子を終了させる、継承不可のジョブ。"""
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", ctypes.c_ulonglong * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        class ThreadEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        self._thread_entry_type = ThreadEntry32
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        self._kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ]
+        self._kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        self._kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
+        self._kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        self._kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        self._kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)]
+        self._kernel32.Thread32First.restype = wintypes.BOOL
+        self._kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)]
+        self._kernel32.Thread32Next.restype = wintypes.BOOL
+        self._kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self._kernel32.OpenThread.restype = wintypes.HANDLE
+        self._kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        self._kernel32.ResumeThread.restype = wintypes.DWORD
+        self._handle = self._kernel32.CreateJobObjectW(None, None)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = ExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not self._kernel32.SetInformationJobObject(
+            self._handle, 9, ctypes.byref(limits), ctypes.sizeof(limits),
+        ):
+            error = ctypes.WinError(ctypes.get_last_error())
+            if not self._kernel32.CloseHandle(self._handle):
+                raise ctypes.WinError(ctypes.get_last_error()) from error
+            raise error
+        # 成功した生の HANDLE は CloseHandle せず、親プロセス終了まで OS に保持させる。
+        # 子へは継承しないため、強制終了でも最後のハンドルが閉じられる。
+
+    def assign(self, process: subprocess.Popen) -> None:
+        import ctypes
+
+        if not self._kernel32.AssignProcessToJobObject(self._handle, int(process._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def resume(self, process: subprocess.Popen) -> None:
+        import ctypes
+
+        # Popen が閉じた主スレッドのハンドルを、停止中の子の PID から取得し直す。
+        snapshot = self._kernel32.CreateToolhelp32Snapshot(0x00000004, 0)  # TH32CS_SNAPTHREAD
+        if snapshot == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = self._thread_entry_type()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = self._kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if entry.th32OwnerProcessID == process.pid:
+                    thread = self._kernel32.OpenThread(
+                        0x0002, False, entry.th32ThreadID,  # THREAD_SUSPEND_RESUME
+                    )
+                    if not thread:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    try:
+                        count = self._kernel32.ResumeThread(thread)
+                        if count == 0xFFFFFFFF:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                        if count != 1:
+                            raise OSError(f"unexpected initial thread suspend count: {count}")
+                    finally:
+                        if not self._kernel32.CloseHandle(thread):
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    return
+                entry.dwSize = ctypes.sizeof(entry)
+                found = self._kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+            error = ctypes.get_last_error()
+            if error != 18:  # ERROR_NO_MORE_FILES
+                raise ctypes.WinError(error)
+            raise OSError(f"no thread found for suspended process {process.pid}")
+        finally:
+            if not self._kernel32.CloseHandle(snapshot):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _start_trial(
+    command: list[str], *, stdout: TextIO, stderr: TextIO,
+    env: dict[str, str], job: _WindowsJob | None,
+) -> subprocess.Popen:
+    options = {"creationflags": _CREATE_SUSPENDED} if job is not None else {}
+    process = subprocess.Popen(
+        command, stdout=stdout, stderr=stderr, env=env, **options,
+    )
+    try:
+        if job is not None:
+            job.assign(process)
+            job.resume(process)
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    return process
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -54,7 +199,14 @@ def _write_json(path: Path, payload: dict) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
-    temporary.replace(path)
+    for attempt in range(6):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.5)
 
 
 def _read_json(path: Path) -> dict:
@@ -226,6 +378,7 @@ def run_ensemble(plan: dict, out: Path, *, research_dsn: str, max_parallel: int 
     _write_json(out / "plan.json", plan)
     trials = [dict(trial, status="planned") for trial in plan["trials"]]
     baseline = None
+    job = _WindowsJob() if sys.platform == "win32" else None
 
     def checkpoint() -> dict:
         summary = summarize(plan, trials)
@@ -265,8 +418,8 @@ def run_ensemble(plan: dict, out: Path, *, research_dsn: str, max_parallel: int 
                 with process_lock:
                     if stopping.is_set():
                         return None
-                    process = subprocess.Popen(
-                        trial["command"], stdout=stdout, stderr=stderr, env=child_env,
+                    process = _start_trial(
+                        trial["command"], stdout=stdout, stderr=stderr, env=child_env, job=job,
                     )
                     processes[index] = process
                 return process.wait()
@@ -363,10 +516,15 @@ def run_ensemble(plan: dict, out: Path, *, research_dsn: str, max_parallel: int 
             with (trial_out / "stdout.json").open("w", encoding="utf-8") as stdout, (
                 trial_out / "stderr.log"
             ).open("w", encoding="utf-8") as stderr:
-                result = subprocess.run(
-                    trial["command"], stdout=stdout, stderr=stderr, check=False, env=child_env,
+                process = _start_trial(
+                    trial["command"], stdout=stdout, stderr=stderr, env=child_env, job=job,
                 )
-            trial["returncode"] = result.returncode
+                try:
+                    trial["returncode"] = process.wait()
+                except BaseException:
+                    process.kill()
+                    process.wait()
+                    raise
             record_success(trial)
         except (OSError, TypeError, ValueError) as error:
             trial.update(status="failed", error=str(error))
@@ -392,8 +550,12 @@ def main() -> None:
         "--max-parallel", type=_positive_int, default=1, metavar="N",
         help="同時実行する試行数（既定: 1、逐次）。完了時間は ceil(試行数 / N) 波で決まるので、"
              "波数が減らない N は資源競合を増やすだけになる（6 試行なら 4・5 は 3 と同じ 2 波）。"
-             "実効向上は波数ぶんには届かない。H6 の記録（4 腕を 8 時間 2 分で完了）と"
-             "単独換算からは、このホストの 4 並列で約 2 倍だった。小さい N から実測して上げる。"
+             "Windows VPS 実測（2026 年 7 月、range_edge_reversal、1 本 416 万 tick）では、"
+             "4 並列で 3.43 倍、1 本あたりの所要時間は約 16%% 増えた。"
+             "live 収集と同居するホストで並列実行すると、収集の取り込みが遅れる。"
+             "研究の子を Idle 優先度にしても改善しなかった。"
+             "PostgreSQL 側の競合が疑われるが、原因は未特定。"
+             "小さい N から実測して上げる。"
              "live 収集や MT5 と同居する場合はコア数未満にし、"
              "研究対象の過去区間へのバックフィルを同時に実行しない。",
     )
@@ -495,6 +657,7 @@ def main() -> None:
         "trials": trials,
     }
     summary = run_ensemble(plan, out, research_dsn=research_dsn, max_parallel=args.max_parallel)
+    sys.stdout.reconfigure(encoding="utf-8")
     print(json.dumps({"ensemble_dir": str(out), **summary}, ensure_ascii=False, indent=2))
     if summary["status"] != "complete":
         raise SystemExit(1)

@@ -199,6 +199,8 @@ def test_no_fills_and_open_positions_remain_explicit_samples(monkeypatch, tmp_pa
     ["--risk-mode", "operational-limits"], ["--purpose", " "],
     ["--from", "2027-01-05T00:00:00+00:00"],
     ["--dsn-env", "ENSEMBLE_MISSING_DSN"],
+    ["--max-parallel", "0"], ["--max-parallel", "-1"],
+    ["--max-parallel", "1.5"], ["--max-parallel", "many"],
 ])
 def test_invalid_plan_never_starts_a_trial(monkeypatch, tmp_path, extra):
     calls = fake_research(monkeypatch)

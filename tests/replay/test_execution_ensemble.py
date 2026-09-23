@@ -90,7 +90,7 @@ def test_process_launch_applies_platform_policy_to_every_trial(
     def launch(*args, **kwargs):
         if args[0][:2] != [sys.executable, str(FIXTURE / "trial.py")]:
             return popen(*args, **kwargs)
-        assert kwargs.pop("creationflags") == (0x40 if windows else 0)
+        assert "creationflags" not in kwargs
         child = popen(*args, **kwargs)
         children.append(child)
         return child
@@ -100,7 +100,6 @@ def test_process_launch_applies_platform_policy_to_every_trial(
     ))
     monkeypatch.setattr(ensemble, "_WindowsJob", create_job)
     monkeypatch.setattr(ensemble.subprocess, "Popen", launch)
-    monkeypatch.setattr(ensemble.subprocess, "IDLE_PRIORITY_CLASS", 0x40, raising=False)
     summary = ensemble.run_ensemble(
         plan, out, research_dsn="synthetic-only", max_parallel=max_parallel,
     )
@@ -112,15 +111,13 @@ def test_process_launch_applies_platform_policy_to_every_trial(
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object の強制終了を実機で検証")
 @pytest.mark.parametrize("max_parallel", [1, 2])
-def test_windows_forced_parent_exit_kills_idle_children(tmp_path, max_parallel):
+def test_windows_forced_parent_exit_kills_children(tmp_path, max_parallel):
     import ctypes
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetPriorityClass.argtypes = [wintypes.HANDLE]
-    kernel32.GetPriorityClass.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -168,8 +165,6 @@ ensemble.run_ensemble(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")),
             assert handle, ctypes.WinError(ctypes.get_last_error())
             handles.append(handle)
             assert kernel32.WaitForSingleObject(handle, 0) == 258  # WAIT_TIMEOUT: 生存中
-        for handle in handles[1:]:
-            assert kernel32.GetPriorityClass(handle) == subprocess.IDLE_PRIORITY_CLASS
         assert kernel32.TerminateProcess(handles[0], 1)
         assert kernel32.WaitForSingleObject(handles[0], 5000) == 0
         for handle in handles[1:]:

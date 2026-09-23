@@ -117,9 +117,8 @@ def _start_trial(
     command: list[str], *, stdout: TextIO, stderr: TextIO,
     env: dict[str, str], job: _WindowsJob | None,
 ) -> subprocess.Popen:
-    flags = subprocess.IDLE_PRIORITY_CLASS if job is not None else 0
     process = subprocess.Popen(
-        command, stdout=stdout, stderr=stderr, env=env, creationflags=flags,
+        command, stdout=stdout, stderr=stderr, env=env,
     )
     try:
         if job is not None:
@@ -490,7 +489,9 @@ def main() -> None:
              "波数が減らない N は資源競合を増やすだけになる（6 試行なら 4・5 は 3 と同じ 2 波）。"
              "Windows VPS 実測（2026 年 7 月、range_edge_reversal、1 本 416 万 tick）では、"
              "4 並列で 3.43 倍、1 本あたりの所要時間は約 16%% 増えた。"
-             "同時に live 収集の取り込み遅延も悪化したため、Windows の子は Idle 優先度で起動する。"
+             "live 収集と同居するホストで並列実行すると、収集の取り込みが遅れる。"
+             "研究の子を Idle 優先度にしても改善しなかった。"
+             "PostgreSQL 側の競合が疑われるが、原因は未特定。"
              "小さい N から実測して上げる。"
              "live 収集や MT5 と同居する場合はコア数未満にし、"
              "研究対象の過去区間へのバックフィルを同時に実行しない。",

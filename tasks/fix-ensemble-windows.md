@@ -51,8 +51,10 @@ live 収集の取り込み遅延（`received_at − event_time`、broker は UTC
 | 4 並列中 | 2.4 秒 | 11.5 秒 | 19.2 秒 |
 | 実験後 | 0.21 秒 | 0.23 秒 | 2.2 秒 |
 
-研究が読まない GBPJPY を含む 4 通貨すべてで悪化したので、原因は DB ではなく CPU の取り合い。
-live の収集タスクも研究リプレイも、タスクスケジューラ既定の **BelowNormal** という同じ優先度クラスで動いていた。
+研究が読まない GBPJPY を含む 4 通貨すべてで悪化した。計画時点では「DB ではなく CPU の取り合い」と推論したが、
+これは誤りだった（4 通貨とも同じ PostgreSQL の同じ表へ書くので、DB 側の競合でも全通貨が遅れる）。
+live の収集タスクも研究リプレイも、タスクスケジューラ既定の **BelowNormal** という同じ優先度クラスで動いていたが、
+研究の子を Idle にしても改善しなかった（項目 2）。
 
 ### Windows のプロセス構成（実機で確認）
 
@@ -79,6 +81,12 @@ venv の `.venv\Scripts\python.exe` は**中継役**で、本体の `Python311\p
 - POSIX では何もしない（現在の挙動のまま）
 
 ### 2. 研究リプレイの子を Idle 優先度で起動する（Windows のみ）
+
+**2026-09-23 の VPS 検証で効果がなかったため取り下げ。** `4f3a643` で研究の子を Idle にしても、
+live 収集の取り込み遅延は改善しなかった。優先度指定だけを削除し、ジョブオブジェクトへの割り当ては維持する。
+PostgreSQL 側の競合が疑われるが、原因は未特定。実測値と比較条件は
+[`docs/research/execution-ensemble.md`](../docs/research/execution-ensemble.md) に記載する。
+以下は取り下げ前の計画であり、項目 6 の Idle 起動を対策として説明する指示も取り下げる。
 
 - `subprocess.Popen(..., creationflags=subprocess.IDLE_PRIORITY_CLASS)`。live 収集（BelowNormal）より
   低くして CPU を譲らせる。live 側の設定には触れない

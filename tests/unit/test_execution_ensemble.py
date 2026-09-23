@@ -155,7 +155,6 @@ def test_failed_job_assignment_kills_and_reaps_child(monkeypatch, error):
     job = Mock()
     job.assign.side_effect = error
     monkeypatch.setattr(ensemble.subprocess, "Popen", Mock(return_value=process))
-    monkeypatch.setattr(ensemble.subprocess, "IDLE_PRIORITY_CLASS", 0x40, raising=False)
     with pytest.raises(type(error)) as raised:
         ensemble._start_trial(["synthetic"], stdout=None, stderr=None, env={}, job=job)
     assert raised.value is error

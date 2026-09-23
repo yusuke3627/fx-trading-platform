@@ -90,7 +90,10 @@ def test_process_launch_applies_platform_policy_to_every_trial(
     def launch(*args, **kwargs):
         if args[0][:2] != [sys.executable, str(FIXTURE / "trial.py")]:
             return popen(*args, **kwargs)
-        assert "creationflags" not in kwargs
+        if windows:
+            assert kwargs.pop("creationflags") == 0x00000004  # CREATE_SUSPENDED
+        else:
+            assert "creationflags" not in kwargs
         child = popen(*args, **kwargs)
         children.append(child)
         return child
@@ -107,6 +110,34 @@ def test_process_launch_applies_platform_policy_to_every_trial(
     assert len(children) == 6
     assert create_job.call_count == int(windows)
     assert [call.args[0] for call in job.assign.call_args_list] == (children if windows else [])
+    assert [call.args[0] for call in job.resume.call_args_list] == (children if windows else [])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object の所属を実機で検証")
+def test_windows_child_is_in_job_as_soon_as_start_trial_returns():
+    import ctypes
+    from ctypes import wintypes
+
+    job = ensemble._WindowsJob()
+    kernel32 = job._kernel32
+    kernel32.IsProcessInJob.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL),
+    ]
+    kernel32.IsProcessInJob.restype = wintypes.BOOL
+    with open(os.devnull, "w", encoding="utf-8") as output:
+        child = ensemble._start_trial(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=output, stderr=output, env=dict(os.environ), job=job,
+        )
+        try:
+            in_job = wintypes.BOOL()
+            assert kernel32.IsProcessInJob(
+                int(child._handle), job._handle, ctypes.byref(in_job),
+            ), ctypes.WinError(ctypes.get_last_error())
+            assert in_job.value
+        finally:
+            child.kill()
+            child.wait(timeout=10)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object の強制終了を実機で検証")

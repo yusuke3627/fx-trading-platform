@@ -48,6 +48,7 @@ INTERPRETATION = (
     "scenario 間は混合しない。期末の未決済ポジションは既存エンジンの Bid/Ask 時価評価を使い、"
     "強制決済費用と期間終了後のリスクを含まない。"
 )
+_CREATE_SUSPENDED = 0x00000004
 
 
 class _WindowsJob:
@@ -80,6 +81,18 @@ class _WindowsJob:
                 ("PeakJobMemoryUsed", ctypes.c_size_t),
             ]
 
+        class ThreadEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        self._thread_entry_type = ThreadEntry32
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -91,6 +104,16 @@ class _WindowsJob:
         self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self._kernel32.CloseHandle.restype = wintypes.BOOL
+        self._kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        self._kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        self._kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)]
+        self._kernel32.Thread32First.restype = wintypes.BOOL
+        self._kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry32)]
+        self._kernel32.Thread32Next.restype = wintypes.BOOL
+        self._kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self._kernel32.OpenThread.restype = wintypes.HANDLE
+        self._kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        self._kernel32.ResumeThread.restype = wintypes.DWORD
         self._handle = self._kernel32.CreateJobObjectW(None, None)
         if not self._handle:
             raise ctypes.WinError(ctypes.get_last_error())
@@ -112,17 +135,57 @@ class _WindowsJob:
         if not self._kernel32.AssignProcessToJobObject(self._handle, int(process._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def resume(self, process: subprocess.Popen) -> None:
+        import ctypes
+
+        # Popen が閉じた主スレッドのハンドルを、停止中の子の PID から取得し直す。
+        snapshot = self._kernel32.CreateToolhelp32Snapshot(0x00000004, 0)  # TH32CS_SNAPTHREAD
+        if snapshot == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = self._thread_entry_type()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = self._kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if entry.th32OwnerProcessID == process.pid:
+                    thread = self._kernel32.OpenThread(
+                        0x0002, False, entry.th32ThreadID,  # THREAD_SUSPEND_RESUME
+                    )
+                    if not thread:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    try:
+                        count = self._kernel32.ResumeThread(thread)
+                        if count == 0xFFFFFFFF:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                        if count != 1:
+                            raise OSError(f"unexpected initial thread suspend count: {count}")
+                    finally:
+                        if not self._kernel32.CloseHandle(thread):
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    return
+                entry.dwSize = ctypes.sizeof(entry)
+                found = self._kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+            error = ctypes.get_last_error()
+            if error != 18:  # ERROR_NO_MORE_FILES
+                raise ctypes.WinError(error)
+            raise OSError(f"no thread found for suspended process {process.pid}")
+        finally:
+            if not self._kernel32.CloseHandle(snapshot):
+                raise ctypes.WinError(ctypes.get_last_error())
+
 
 def _start_trial(
     command: list[str], *, stdout: TextIO, stderr: TextIO,
     env: dict[str, str], job: _WindowsJob | None,
 ) -> subprocess.Popen:
+    options = {"creationflags": _CREATE_SUSPENDED} if job is not None else {}
     process = subprocess.Popen(
-        command, stdout=stdout, stderr=stderr, env=env,
+        command, stdout=stdout, stderr=stderr, env=env, **options,
     )
     try:
         if job is not None:
             job.assign(process)
+            job.resume(process)
     except BaseException:
         process.kill()
         process.wait()

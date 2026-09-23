@@ -7,7 +7,7 @@ from ctypes import wintypes
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -88,6 +88,125 @@ def test_windows_job_checks_api_results_and_keeps_successful_handle(monkeypatch,
         kernel32.CloseHandle.assert_not_called()
 
 
+@pytest.mark.parametrize("failure", [
+    None, "snapshot", "first", "next", "missing", "open", "resume", "not_suspended",
+    "still_suspended", "close_thread", "close_snapshot",
+])
+def test_windows_resume_checks_layout_api_results_and_closes_handles(monkeypatch, failure):
+    monkeypatch.setattr(wintypes, "DWORD", ctypes.c_uint32)
+    monkeypatch.setattr(wintypes, "LONG", ctypes.c_int32)
+    monkeypatch.setattr(wintypes, "BOOL", ctypes.c_int32)
+    kernel32 = Mock()
+    job_handle, snapshot, thread = (1 << 40) + 1, (1 << 40) + 2, (1 << 40) + 3
+    kernel32.CreateJobObjectW.return_value = job_handle
+    kernel32.SetInformationJobObject.return_value = True
+    kernel32.CreateToolhelp32Snapshot.return_value = (
+        ctypes.c_void_p(-1).value if failure == "snapshot" else snapshot
+    )
+    kernel32.OpenThread.return_value = None if failure == "open" else thread
+    kernel32.ResumeThread.return_value = {
+        "resume": 0xFFFFFFFF, "not_suspended": 0, "still_suspended": 2,
+    }.get(failure, 1)
+    kernel32.CloseHandle.side_effect = lambda handle: not (
+        (failure == "close_thread" and handle == thread)
+        or (failure == "close_snapshot" and handle == snapshot)
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", Mock(return_value=kernel32), raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 18 if failure == "missing" else 5,
+                        raising=False)
+    monkeypatch.setattr(ctypes, "WinError", lambda code: OSError(code, "synthetic API error"),
+                        raising=False)
+    process = SimpleNamespace(pid=1234)
+    job = ensemble._WindowsJob()
+    entry_type = job._thread_entry_type
+    assert entry_type._fields_ == [
+        ("dwSize", ctypes.c_uint32), ("cntUsage", ctypes.c_uint32),
+        ("th32ThreadID", ctypes.c_uint32), ("th32OwnerProcessID", ctypes.c_uint32),
+        ("tpBasePri", ctypes.c_int32), ("tpDeltaPri", ctypes.c_int32),
+        ("dwFlags", ctypes.c_uint32),
+    ]
+    assert ctypes.sizeof(entry_type) == 28
+    assert [getattr(entry_type, name).offset for name, _ in entry_type._fields_] == [
+        0, 4, 8, 12, 16, 20, 24,
+    ]
+    for name in ("Thread32First", "Thread32Next"):
+        assert getattr(kernel32, name).argtypes == [wintypes.HANDLE, ctypes.POINTER(entry_type)]
+        assert getattr(kernel32, name).restype is wintypes.BOOL
+    assert kernel32.CreateToolhelp32Snapshot.argtypes == [wintypes.DWORD, wintypes.DWORD]
+    assert kernel32.CreateToolhelp32Snapshot.restype is wintypes.HANDLE
+    assert kernel32.OpenThread.argtypes == [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    assert kernel32.OpenThread.restype is wintypes.HANDLE
+    assert kernel32.ResumeThread.argtypes == [wintypes.HANDLE]
+    assert kernel32.ResumeThread.restype is wintypes.DWORD
+
+    def first(handle, pointer):
+        assert handle == snapshot
+        assert pointer._obj.dwSize == 28
+        pointer._obj.th32OwnerProcessID = process.pid + 1
+        pointer._obj.th32ThreadID = 99
+        pointer._obj.dwSize = 16
+        return failure != "first"
+
+    def next_thread(handle, pointer):
+        assert handle == snapshot
+        assert pointer._obj.dwSize == 28
+        pointer._obj.th32OwnerProcessID = process.pid
+        pointer._obj.th32ThreadID = 5678
+        return failure not in {"next", "missing"}
+
+    kernel32.Thread32First.side_effect = first
+    kernel32.Thread32Next.side_effect = next_thread
+    if failure:
+        with pytest.raises(OSError) as raised:
+            job.resume(process)
+        if failure == "missing":
+            assert "no thread found" in str(raised.value)
+        elif failure in {"not_suspended", "still_suspended"}:
+            assert "suspend count" in str(raised.value)
+        else:
+            assert raised.value.errno == 5
+    else:
+        job.resume(process)
+    kernel32.CreateToolhelp32Snapshot.assert_called_once_with(0x00000004, 0)
+    if failure in {"snapshot", "first", "next", "missing"}:
+        kernel32.OpenThread.assert_not_called()
+        kernel32.ResumeThread.assert_not_called()
+    else:
+        kernel32.OpenThread.assert_called_once_with(0x0002, False, 5678)
+        if failure == "open":
+            kernel32.ResumeThread.assert_not_called()
+        else:
+            kernel32.ResumeThread.assert_called_once_with(thread)
+    closed = [snapshot] if failure in {"first", "next", "missing", "open"} else [thread, snapshot]
+    assert kernel32.CloseHandle.call_args_list == (
+        [] if failure == "snapshot" else [call(handle) for handle in closed]
+    )
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_start_trial_assigns_suspended_child_before_resuming(monkeypatch, windows):
+    process = Mock()
+    job = Mock()
+    events = Mock()
+    popen = Mock(return_value=process)
+    events.attach_mock(popen, "spawn")
+    events.attach_mock(job.assign, "assign")
+    events.attach_mock(job.resume, "resume")
+    monkeypatch.setattr(ensemble.subprocess, "Popen", popen)
+    command = ["synthetic"]
+    env = {"SYNTHETIC": "true"}
+    assert ensemble._start_trial(
+        command, stdout=None, stderr=None, env=env, job=job if windows else None,
+    ) is process
+    options = {"creationflags": 0x00000004} if windows else {}
+    expected = [call.spawn(command, stdout=None, stderr=None, env=env, **options)]
+    if windows:
+        expected += [call.assign(process), call.resume(process)]
+    assert events.mock_calls == expected
+    process.kill.assert_not_called()
+    process.wait.assert_not_called()
+
+
 def test_cli_writes_utf8_to_a_redirected_cp932_stream(monkeypatch, tmp_path):
     fake_research(monkeypatch)
     buffer = io.BytesIO()
@@ -149,16 +268,21 @@ def test_write_json_propagates_final_error(monkeypatch, tmp_path, error_type, at
     assert json.loads(path.read_text(encoding="utf-8")) == {"status": "running"}
 
 
-@pytest.mark.parametrize("error", [OSError("assignment failed"), KeyboardInterrupt()])
-def test_failed_job_assignment_kills_and_reaps_child(monkeypatch, error):
+@pytest.mark.parametrize("stage", ["assign", "resume"])
+@pytest.mark.parametrize("error", [OSError("synthetic startup failure"), KeyboardInterrupt()])
+def test_failed_job_setup_kills_and_reaps_child(monkeypatch, error, stage):
     process = Mock()
     job = Mock()
-    job.assign.side_effect = error
+    getattr(job, stage).side_effect = error
     monkeypatch.setattr(ensemble.subprocess, "Popen", Mock(return_value=process))
     with pytest.raises(type(error)) as raised:
         ensemble._start_trial(["synthetic"], stdout=None, stderr=None, env={}, job=job)
     assert raised.value is error
     job.assign.assert_called_once_with(process)
+    if stage == "assign":
+        job.resume.assert_not_called()
+    else:
+        job.resume.assert_called_once_with(process)
     process.kill.assert_called_once_with()
     process.wait.assert_called_once_with()
 

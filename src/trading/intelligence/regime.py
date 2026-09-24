@@ -110,9 +110,10 @@ def default_currency_rules(
 ) -> dict[Currency, dict[RegimeLabel, RegimeRule]]:
     """通貨別ルール。供給されている feature を持つ通貨だけを定義する。
 
-    GBP / EUR は policy score の系列が M2A（#59）の Gate 待ちで、供給が
-    無いままルールだけ置いても永久に発火しない死んだ分岐になる。データが
-    繋がった時点で BOE / ECB の score を同じ形で足す。
+    GBP / EUR は policy score の供給が無い（BOE / ECB の声明採点は M6 以降の
+    判断で、SYSTEM_SPEC §5.5 のとおり未採用）。供給が無いままルールだけ置いても
+    永久に発火しない死んだ分岐になる。採点を採用した時点で BOE / ECB の score を
+    同じ形で足す。
     """
     rules = default_rules(thresholds)
     return {

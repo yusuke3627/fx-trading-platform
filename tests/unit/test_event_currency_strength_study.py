@@ -318,6 +318,7 @@ def test_file_cli_no_db_hashes_and_overwrite_refused(plan, tmp_path, monkeypatch
     events = event_file(plan, "2025-03-07", plan_hash=h7.sha256(plan_path))
     h7.write_json(events_path, events.model_dump(mode="json"))
     write_ticks(ticks, plan, events.stages.explore)
+    write_manifest(ticks, plan_path, events_path)
     common = ["--plan", str(plan_path), "--events", str(events_path), "--ticks", str(ticks),
               "--stage", "explore"]
     output = tmp_path / "report"
@@ -394,6 +395,27 @@ def test_unpaired_event_does_not_enter_decision_statistics(plan, tmp_path, monke
     assert report["statistics"] == h7.pair_statistics(expected_pairs)
     all_events = h7.statistics([values[e.day] for e in stage.events])
     assert report["statistics"]["A"] != all_events["A"]
+
+
+def write_manifest(ticks, plan_path, events_path):
+    h7.write_json(h7.manifest_path(ticks), {
+        "sha256": h7.sha256(ticks), "events_sha256": h7.sha256(events_path),
+        "plan_sha256": h7.sha256(plan_path), "stage": "explore"})
+
+
+@pytest.mark.parametrize("command", ["spreads", "measure"])
+def test_ticks_without_manifest_are_rejected_before_any_output(plan, tmp_path, command):
+    plan_path, events_path, ticks = (tmp_path / n for n in ("plan.json", "events.json", "ticks.csv.gz"))
+    h7.write_json(plan_path, plan.model_dump(mode="json"))
+    events = event_file(plan, "2025-03-07", plan_hash=h7.sha256(plan_path))
+    h7.write_json(events_path, events.model_dump(mode="json"))
+    write_ticks(ticks, plan, events.stages.explore)
+    output = tmp_path / "out"
+    flag = "--output-dir" if command == "measure" else "--output"
+    with pytest.raises(ValueError, match="manifest"):
+        h7.main([command, "--plan", str(plan_path), "--events", str(events_path),
+                 "--ticks", str(ticks), "--stage", "explore", flag, str(output)])
+    assert not output.exists()
 
 
 def test_tick_manifest_mismatch_is_rejected(plan, tmp_path):

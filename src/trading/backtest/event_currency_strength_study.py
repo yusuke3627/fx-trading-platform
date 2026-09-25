@@ -699,16 +699,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         with psycopg.connect(os.environ["TRADING_DB_DSN"]) as conn:
             export_ticks(conn, plan, events, args.stage, args.output, events_hash)
         return 0
-    if args.command == "measure":
-        args.output_dir.mkdir(parents=True, exist_ok=False)
     ticks_hash = sha256(args.ticks)
     sidecar = manifest_path(args.ticks)
-    if sidecar.exists():
-        manifest = json.loads(sidecar.read_text(encoding="utf-8"))
-        expected = {"sha256": ticks_hash, "events_sha256": events_hash,
-                    "plan_sha256": plan_hash, "stage": args.stage}
-        if any(manifest.get(key) != value for key, value in expected.items()):
-            raise ValueError("tick manifest のハッシュまたは段階が一致しません")
+    if not sidecar.exists():
+        raise ValueError("tick manifest がありません。export が書き終えた tick だけを読みます")
+    manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    expected = {"sha256": ticks_hash, "events_sha256": events_hash,
+                "plan_sha256": plan_hash, "stage": args.stage}
+    if any(manifest.get(key) != value for key, value in expected.items()):
+        raise ValueError("tick manifest のハッシュまたは段階が一致しません")
+    if args.command == "measure":
+        args.output_dir.mkdir(parents=True, exist_ok=False)
     stage_events = getattr(events.stages, args.stage)
     quotes = read_quotes(args.ticks, plan, stage_events)
     provenance = {"plan_sha256": plan_hash, "events_sha256": events_hash, "ticks_sha256": ticks_hash}

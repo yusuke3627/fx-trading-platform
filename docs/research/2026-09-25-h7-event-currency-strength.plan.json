@@ -1,0 +1,24 @@
+{
+  "study_version": "h7_event_currency_strength_v1",
+  "symbols": {"usdjpy": "USDJPY", "eurusd": "EURUSD"},
+  "usdjpy_pip_size": "0.01",
+  "series": ["us_cpi_headline_sa", "us_nonfarm_payrolls_sa", "us_retail_sales_advance_sa", "us_real_gdp_growth_saar"],
+  "release_time": "08:30:00",
+  "release_timezone": "America/New_York",
+  "broker_server_ahead_of_ny_hours": 7,
+  "stages": {
+    "explore": {"start": "2024-08-01", "end": "2026-08-28"},
+    "confirm": {"start": "2022-01-01", "end": "2024-07-22"}
+  },
+  "excluded_dates": [
+    {"day": "2022-09-22", "reason": "為替介入の日（介入イベントスタディ・ショック起点で使用済み）"},
+    {"day": "2022-10-21", "reason": "為替介入の日（介入イベントスタディ・ショック起点で使用済み）"},
+    {"day": "2022-10-24", "reason": "為替介入の日（介入イベントスタディ・ショック起点で使用済み）"},
+    {"day": "2024-04-29", "reason": "為替介入の日（介入イベントスタディ・ショック起点で使用済み）"},
+    {"day": "2024-05-01", "reason": "為替介入の日（介入イベントスタディ・ショック起点で使用済み）"},
+    {"day": "2024-07-11", "reason": "為替介入の日（介入イベントスタディ・ショック起点で使用済み）"},
+    {"day": "2024-07-12", "reason": "為替介入の日（介入イベントスタディ・ショック起点で使用済み）"}
+  ],
+  "bootstrap_seed": 20260925,
+  "confirm_extra_cost_pips": "0"
+}

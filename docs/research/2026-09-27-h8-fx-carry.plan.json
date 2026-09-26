@@ -1,0 +1,114 @@
+{
+  "study_version": "h8_fx_carry_v1",
+  "fred_csv_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}",
+  "usd": {
+    "rate_3m_series": "IR3TIB01USM156N",
+    "rate_overnight_series": "IRSTCI01USM156N"
+  },
+  "currencies": [
+    {
+      "code": "JPY",
+      "fx_series": "DEXJPUS",
+      "fx_quote": "foreign_per_usd",
+      "rate_3m_series": "IR3TIB01JPM156N",
+      "rate_overnight_series": "IRSTCI01JPM156N",
+      "first_holding_month": "1986-01",
+      "oanda_symbol": "USDJPY",
+      "oanda_foreign_is_base": false
+    },
+    {
+      "code": "EUR",
+      "fx_series": "DEXUSEU",
+      "fx_quote": "usd_per_foreign",
+      "rate_3m_series": "IR3TIB01DEM156N",
+      "rate_overnight_series": "IRSTCI01DEM156N",
+      "first_holding_month": "1999-01",
+      "oanda_symbol": "EURUSD",
+      "oanda_foreign_is_base": true
+    },
+    {
+      "code": "GBP",
+      "fx_series": "DEXUSUK",
+      "fx_quote": "usd_per_foreign",
+      "rate_3m_series": "IR3TIB01GBM156N",
+      "rate_overnight_series": "IRSTCI01GBM156N",
+      "first_holding_month": "1986-01",
+      "oanda_symbol": "GBPUSD",
+      "oanda_foreign_is_base": true
+    },
+    {
+      "code": "AUD",
+      "fx_series": "DEXUSAL",
+      "fx_quote": "usd_per_foreign",
+      "rate_3m_series": "IR3TIB01AUM156N",
+      "rate_overnight_series": "IRSTCI01AUM156N",
+      "first_holding_month": "1986-01",
+      "oanda_symbol": "AUDUSD",
+      "oanda_foreign_is_base": true
+    },
+    {
+      "code": "NZD",
+      "fx_series": "DEXUSNZ",
+      "fx_quote": "usd_per_foreign",
+      "rate_3m_series": "IR3TIB01NZM156N",
+      "rate_overnight_series": "IRSTCI01NZM156N",
+      "first_holding_month": "1986-01",
+      "oanda_symbol": "NZDUSD",
+      "oanda_foreign_is_base": true
+    },
+    {
+      "code": "CAD",
+      "fx_series": "DEXCAUS",
+      "fx_quote": "foreign_per_usd",
+      "rate_3m_series": "IR3TIB01CAM156N",
+      "rate_overnight_series": "IRSTCI01CAM156N",
+      "first_holding_month": "1986-01",
+      "oanda_symbol": "USDCAD",
+      "oanda_foreign_is_base": false
+    },
+    {
+      "code": "CHF",
+      "fx_series": "DEXSZUS",
+      "fx_quote": "foreign_per_usd",
+      "rate_3m_series": "IR3TIB01CHM156N",
+      "rate_overnight_series": "IRSTCI01CHM156N",
+      "first_holding_month": "1986-01",
+      "oanda_symbol": "USDCHF",
+      "oanda_foreign_is_base": false
+    }
+  ],
+  "full": {
+    "start": "1986-01",
+    "end": "2026-08"
+  },
+  "post": {
+    "start": "2013-01",
+    "end": "2026-08"
+  },
+  "pre": {
+    "start": "1986-01",
+    "end": "2012-12"
+  },
+  "signal_lag_months": 3,
+  "k_divisor": 3,
+  "gross_per_side": 0.5,
+  "transaction_cost_bp": 3,
+  "day_count": 365,
+  "bootstrap_samples": 10000,
+  "bootstrap_block_months": 6,
+  "bootstrap_seed": 20260927,
+  "one_sided_level": 0.95,
+  "max_undefined_bootstrap_fraction": 0.01,
+  "reject_sharpe": 0.3,
+  "sensitivity": {
+    "wedge_multipliers": [
+      0,
+      2
+    ],
+    "transaction_cost_multipliers": [
+      0,
+      2
+    ]
+  },
+  "snapshot_max_gap_minutes": 10
+}

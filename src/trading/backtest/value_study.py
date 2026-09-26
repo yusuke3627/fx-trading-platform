@@ -15,6 +15,7 @@ from itertools import pairwise
 from pathlib import Path
 from statistics import fmean
 from typing import Annotated, Literal
+from urllib.request import Request, urlopen
 
 from pydantic import AwareDatetime, Field, model_validator
 
@@ -257,8 +258,17 @@ class Manifest(h8.Record):
     sources: dict[str, SourceManifest]
 
 
+USER_AGENT = "fx-trading-platform-research/1.0"
+
+
+def download(url: str) -> bytes:
+    # OECD と英国統計局は、urllib の既定の User-Agent を 403 で拒否する。
+    with urlopen(Request(url, headers={"User-Agent": USER_AGENT}), timeout=60) as response:
+        return response.read()
+
+
 def fetch(
-    plan_path: Path, output: Path, *, retrieve: Callable[[str], bytes] = h8.download,
+    plan_path: Path, output: Path, *, retrieve: Callable[[str], bytes] = download,
 ) -> None:
     plan, plan_hash = read_plan(plan_path)
     output.mkdir(parents=True, exist_ok=False)

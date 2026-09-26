@@ -198,6 +198,28 @@ def test_fetch_preserves_bytes_manifest_and_refuses_overwrite(tmp_path, plan, cp
         h9.fetch(path, directory, retrieve=lambda _: pytest.fail("取得してはいけない"))
 
 
+def test_download_sends_user_agent(monkeypatch):
+    requests = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response(b"body")
+
+    monkeypatch.setattr(h9, "urlopen", fake_urlopen)
+    assert h9.download("https://example.invalid/cpi.csv") == b"body"
+    request, timeout = requests[0]
+    assert request.full_url == "https://example.invalid/cpi.csv"
+    assert request.get_header("User-agent") == h9.USER_AGENT
+    assert timeout == 60
+
+
 def test_fetch_invalid_response_has_no_manifest(tmp_path, plan):
     path = tmp_path / "plan.json"
     path.write_text(plan.model_dump_json())

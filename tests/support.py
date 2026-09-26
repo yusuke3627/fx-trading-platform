@@ -606,3 +606,51 @@ def long_failed_breakout_bars() -> tuple[list, list]:
         make_bar("149.10", "149.45", "149.05", "149.20", timeframe="5m"),
     ]
     return entry_bars, setup_bars
+
+
+def carry_plan(**overrides):
+    """H8 の定義検証に使う架空の7通貨と短い期間。"""
+    from trading.backtest.carry_study import Plan
+
+    values = {
+        "study_version": "test_h8", "bootstrap_seed": 17, "bootstrap_samples": 100,
+        "bootstrap_block_months": 2,
+        "usd": {"rate_3m_series": "USD3", "rate_overnight_series": "USDO"},
+        "currencies": [
+            {"code": code, "fx_series": f"FX{code}",
+             "fx_quote": "usd_per_foreign" if i % 2 else "foreign_per_usd",
+             "rate_3m_series": f"R3{code}", "rate_overnight_series": f"RO{code}",
+             "first_holding_month": "2020-01",
+             "oanda_symbol": f"TEST_{code}", "oanda_foreign_is_base": bool(i % 2)}
+            for i, code in enumerate(("AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"))
+        ],
+        "full": {"start": "2020-01", "end": "2020-06"},
+        "pre": {"start": "2020-01", "end": "2020-03"},
+        "post": {"start": "2020-04", "end": "2020-06"},
+    }
+    values.update(overrides)
+    return Plan.model_validate(values)
+
+
+def carry_data(plan):
+    """月ごとの架空レート。逆数系列を混ぜ、純リターンを非定数にする。"""
+    from datetime import date
+
+    from trading.backtest.carry_study import Period, months, series_names, shift_month
+
+    data = {series: {} for series in series_names(plan)}
+    for month in months(Period(start=shift_month(plan.full.start, -plan.signal_lag_months),
+                               end=plan.full.end)):
+        day = date.fromisoformat(month + "-01")
+        data[plan.usd.rate_3m_series][day] = Decimal(2)
+        for i, currency in enumerate(plan.currencies):
+            data[currency.rate_3m_series][day] = Decimal(i)
+    for index, month in enumerate(months(Period(start=plan.full.start,
+                                              end=shift_month(plan.full.end, 1)))):
+        day = date.fromisoformat(month + "-01")
+        for i, currency in enumerate(plan.currencies):
+            price = Decimal(1) + Decimal(index * index * (i + 1)) / 1000
+            data[currency.fx_series][day] = (
+                price if currency.fx_quote == "usd_per_foreign" else Decimal(1) / price
+            )
+    return data

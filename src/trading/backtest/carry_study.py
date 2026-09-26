@@ -463,6 +463,7 @@ def target_weights(plan: Plan, data: Data, currencies: Sequence[Currency], month
 def monthly_returns(
     plan: Plan, data: Data, wedges: WedgeFile, *, wedge_multiplier: float = 1,
     transaction_cost_multiplier: float = 1,
+    weights_for: Callable[[str, Sequence[Currency]], dict[str, float]] | None = None,
 ) -> list[MonthlyReturn]:
     by_code = {p.code: p for p in wedges.pairs}
     result: list[MonthlyReturn] = []
@@ -472,7 +473,8 @@ def monthly_returns(
         end = common_date(data, active, shift_month(month, 1))
         if result and result[-1].end != start:
             raise ValueError(f"{month}: 前月の終わりと当月の開始日が異なります")
-        weights = target_weights(plan, data, active, month)
+        weights = (target_weights(plan, data, active, month) if weights_for is None
+                   else weights_for(month, active))
         before = {c.code: 0.0 for c in plan.currencies}
         if result:
             previous = result[-1]
@@ -597,8 +599,11 @@ def secondary(rows: Sequence[MonthlyReturn], plan: Plan) -> dict:
     }
 
 
-def measure(plan: Plan, data: Data, wedges: WedgeFile) -> dict:
-    rows = monthly_returns(plan, data, wedges)
+def measure(
+    plan: Plan, data: Data, wedges: WedgeFile, *,
+    weights_for: Callable[[str, Sequence[Currency]], dict[str, float]] | None = None,
+) -> dict:
+    rows = monthly_returns(plan, data, wedges, weights_for=weights_for)
     rng = random.Random(plan.bootstrap_seed)
     periods = {}
     for name in ("full", "post", "pre"):
@@ -612,7 +617,8 @@ def measure(plan: Plan, data: Data, wedges: WedgeFile) -> dict:
         ("transaction_cost", plan.sensitivity.transaction_cost_multipliers),
     ):
         for multiplier in multipliers:
-            changed = monthly_returns(plan, data, wedges, **{f"{component}_multiplier": multiplier})
+            changed = monthly_returns(plan, data, wedges, weights_for=weights_for,
+                                      **{f"{component}_multiplier": multiplier})
             sensitivities.append({"component": component, "multiplier": multiplier,
                                   **{name: sharpe([r.net for r in period_rows(changed, getattr(plan, name))])
                                      for name in ("full", "post")}})
@@ -621,9 +627,9 @@ def measure(plan: Plan, data: Data, wedges: WedgeFile) -> dict:
             "sensitivity": sensitivities, "monthly": monthly}
 
 
-def render_markdown(report: dict) -> str:
+def render_markdown(report: dict, *, title: str = "H8 キャリー研究") -> str:
     decision = report["decision"]
-    lines = ["# H8 キャリー研究", "", f"判定: **{decision['verdict']}**。{decision['reason']}。", "",
+    lines = [f"# {title}", "", f"判定: **{decision['verdict']}**。{decision['reason']}。", "",
              "片側区間は純リターンの循環ブロック・ブートストラップ。副統計は判定に使わない。", "",
              "| 期間 | 月数 | 純 Sharpe | 片側下限 | 片側上限 | 未定義の抽出回数 |",
              "| --- | ---: | ---: | ---: | ---: | ---: |"]

@@ -654,3 +654,57 @@ def carry_data(plan):
                 price if currency.fx_quote == "usd_per_foreign" else Decimal(1) / price
             )
     return data
+
+
+def value_plan(**overrides):
+    """H9 の境界を確かめる短い期間と架空の取得元。"""
+    from trading.backtest.value_study import Plan
+
+    sources = [
+        {"name": "usd", "format": "fred", "series": "TEST_USD"},
+        {"name": "jpy_old", "format": "oecd", "ref_area": "TEST_JP", "freq": "M"},
+        {"name": "jpy_new", "format": "stat_jp"},
+        {"name": "eur", "format": "eurostat", "geo": "TEST_DE", "unit": "I25",
+         "coicop18": "TOTAL"},
+        {"name": "rpi", "format": "ons", "cdid": "TEST_RPI"},
+        {"name": "cpi", "format": "ons", "cdid": "TEST_CPI"},
+        {"name": "aud", "format": "oecd", "ref_area": "TEST_AU", "freq": "Q"},
+        {"name": "nzd", "format": "oecd", "ref_area": "TEST_NZ", "freq": "Q"},
+        {"name": "cad", "format": "oecd", "ref_area": "TEST_CA", "freq": "M"},
+        {"name": "chf", "format": "snb", "cube": "test_cube", "d0": "TEST_INDEX"},
+    ]
+    values = {
+        "study_version": "test_h9", "bootstrap_seed": 29,
+        "carry": {f"{name}_sha256": "a" * 64
+                  for name in ("plan", "manifest", "wedges", "report")},
+        "full": {"start": "2020-01", "end": "2020-06"},
+        "pre": {"start": "2020-01", "end": "2020-03"},
+        "post": {"start": "2020-04", "end": "2020-06"},
+        "first_holding_months": {code: "2020-04" if code == "EUR" else "2020-01"
+                                 for code in ("JPY", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF")},
+        "cpi_lag_months": 2, "cpi_max_lag_months": 4, "change_months": 60,
+        "fx_average_first_offset": 66, "fx_average_last_offset": 54,
+        "sources": [s | {"url": f"https://example.invalid/{s['name']}.csv"} for s in sources],
+        "price_sources": {"USD": ["usd"], "JPY": ["jpy_old", "jpy_new"], "EUR": ["eur"],
+                          "GBP": ["rpi", "cpi"], "AUD": ["aud"], "NZD": ["nzd"],
+                          "CAD": ["cad"], "CHF": ["chf"]},
+        "jpy_link_month": "2020-01", "gbp_cpi_first_month": "1996-01",
+        "jpy_revision_windows": [{"start": f"{year}-01", "end": f"{year + 1}-06",
+                                  "substitute": f"{year - 1}-12"}
+                                 for year in range(1980, 2021, 5)],
+    }
+    values.update(overrides)
+    return Plan.model_validate(values)
+
+
+def value_cpi_data(plan):
+    """月次と四半期の架空の物価。日本の2系列は接続前後の値を含む。"""
+    from trading.backtest.carry_study import Period, months, shift_month
+
+    period = Period(start=shift_month(plan.full.start, -plan.change_months - 24),
+                    end=plan.full.end)
+    return {source.name: {
+        month: Decimal(100) + Decimal(index * (i + 1)) / 100
+        for index, month in enumerate(months(period))
+        if getattr(source, "freq", "M") == "M" or int(month[-2:]) % 3 == 0
+    } for i, source in enumerate(plan.sources)}

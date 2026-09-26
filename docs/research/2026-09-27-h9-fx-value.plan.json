@@ -1,0 +1,182 @@
+{
+  "study_version": "h9_fx_value_v1",
+  "bootstrap_seed": 20260928,
+  "carry": {
+    "plan_sha256": "dc84a65e13f148e75321858a4cb4e7ccbc2012bff133bb654a882a7498ef8e31",
+    "manifest_sha256": "b4dbb44cab81ef48c5019214142cfc420caef7df42afbdcc22a31ee8e954aa7b",
+    "wedges_sha256": "cfab468c280cc066b81fddb1fd25fe2fd9cd27b845b88ea3c7d5b28a48800a68",
+    "report_sha256": "0d38cd75d46d15e00c75097e455816ebe97e6c9a973d6aab1d8ab0d88758261e"
+  },
+  "full": {
+    "start": "1986-01",
+    "end": "2026-08"
+  },
+  "post": {
+    "start": "2013-07",
+    "end": "2026-08"
+  },
+  "pre": {
+    "start": "1986-01",
+    "end": "2013-06"
+  },
+  "first_holding_months": {
+    "JPY": "1986-01",
+    "EUR": "2004-07",
+    "GBP": "1986-01",
+    "AUD": "1986-01",
+    "NZD": "1986-01",
+    "CAD": "1986-01",
+    "CHF": "1986-01"
+  },
+  "cpi_lag_months": 2,
+  "cpi_max_lag_months": 4,
+  "change_months": 60,
+  "fx_average_first_offset": 66,
+  "fx_average_last_offset": 54,
+  "combination_weight": 0.5,
+  "sources": [
+    {
+      "name": "CPIAUCNS",
+      "format": "fred",
+      "series": "CPIAUCNS",
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCNS"
+    },
+    {
+      "name": "OECD_JPN_M",
+      "format": "oecd",
+      "ref_area": "JPN",
+      "freq": "M",
+      "url": "https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/JPN.M.N.CPI.IX._T.N._Z?startPeriod=1978-01&dimensionAtObservation=AllDimensions&format=csvfile"
+    },
+    {
+      "name": "STAT_JP_2020",
+      "format": "stat_jp",
+      "url": "https://www.stat.go.jp/data/cpi/2020/csv/zmi2020aa.csv"
+    },
+    {
+      "name": "EUROSTAT_DE_HICP",
+      "format": "eurostat",
+      "geo": "DE",
+      "unit": "I25",
+      "coicop18": "TOTAL",
+      "url": "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/prc_hicp_minr/M.I25.TOTAL.DE?format=SDMX-CSV&startPeriod=1990-01"
+    },
+    {
+      "name": "ONS_CDKO",
+      "format": "ons",
+      "cdid": "CDKO",
+      "url": "https://www.ons.gov.uk/generator?format=csv&uri=/economy/inflationandpriceindices/timeseries/cdko/mm23"
+    },
+    {
+      "name": "ONS_D7BT",
+      "format": "ons",
+      "cdid": "D7BT",
+      "url": "https://www.ons.gov.uk/generator?format=csv&uri=/economy/inflationandpriceindices/timeseries/d7bt/mm23"
+    },
+    {
+      "name": "OECD_AUS_Q",
+      "format": "oecd",
+      "ref_area": "AUS",
+      "freq": "Q",
+      "url": "https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/AUS.Q.N.CPI.IX._T.N._Z?startPeriod=1978-01&dimensionAtObservation=AllDimensions&format=csvfile"
+    },
+    {
+      "name": "OECD_NZL_Q",
+      "format": "oecd",
+      "ref_area": "NZL",
+      "freq": "Q",
+      "url": "https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/NZL.Q.N.CPI.IX._T.N._Z?startPeriod=1978-01&dimensionAtObservation=AllDimensions&format=csvfile"
+    },
+    {
+      "name": "OECD_CAN_M",
+      "format": "oecd",
+      "ref_area": "CAN",
+      "freq": "M",
+      "url": "https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/CAN.M.N.CPI.IX._T.N._Z?startPeriod=1978-01&dimensionAtObservation=AllDimensions&format=csvfile"
+    },
+    {
+      "name": "SNB_PLKOPR",
+      "format": "snb",
+      "cube": "plkopr",
+      "d0": "LD2010100",
+      "url": "https://data.snb.ch/api/cube/plkopr/data/csv/en"
+    }
+  ],
+  "price_sources": {
+    "USD": [
+      "CPIAUCNS"
+    ],
+    "JPY": [
+      "OECD_JPN_M",
+      "STAT_JP_2020"
+    ],
+    "EUR": [
+      "EUROSTAT_DE_HICP"
+    ],
+    "GBP": [
+      "ONS_CDKO",
+      "ONS_D7BT"
+    ],
+    "AUD": [
+      "OECD_AUS_Q"
+    ],
+    "NZD": [
+      "OECD_NZL_Q"
+    ],
+    "CAD": [
+      "OECD_CAN_M"
+    ],
+    "CHF": [
+      "SNB_PLKOPR"
+    ]
+  },
+  "jpy_link_month": "2020-01",
+  "gbp_cpi_first_month": "1996-01",
+  "jpy_revision_windows": [
+    {
+      "start": "1980-01",
+      "end": "1981-06",
+      "substitute": "1979-12"
+    },
+    {
+      "start": "1985-01",
+      "end": "1986-06",
+      "substitute": "1984-12"
+    },
+    {
+      "start": "1990-01",
+      "end": "1991-06",
+      "substitute": "1989-12"
+    },
+    {
+      "start": "1995-01",
+      "end": "1996-06",
+      "substitute": "1994-12"
+    },
+    {
+      "start": "2000-01",
+      "end": "2001-06",
+      "substitute": "1999-12"
+    },
+    {
+      "start": "2005-01",
+      "end": "2006-06",
+      "substitute": "2004-12"
+    },
+    {
+      "start": "2010-01",
+      "end": "2011-06",
+      "substitute": "2009-12"
+    },
+    {
+      "start": "2015-01",
+      "end": "2016-06",
+      "substitute": "2014-12"
+    },
+    {
+      "start": "2020-01",
+      "end": "2021-06",
+      "substitute": "2019-12"
+    }
+  ]
+}

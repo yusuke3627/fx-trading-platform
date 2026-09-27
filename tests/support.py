@@ -708,3 +708,71 @@ def value_cpi_data(plan):
         for index, month in enumerate(months(period))
         if getattr(source, "freq", "M") == "M" or int(month[-2:]) % 3 == 0
     } for i, source in enumerate(plan.sources)}
+
+
+def tokyo_fix_plan(**overrides):
+    """H10 の検証用に短い期間と架空の取得元を設定する。"""
+    from trading.backtest.tokyo_fix_study import Plan
+
+    values = {
+        "study_version": "test_h10", "bootstrap_seed": 31, "bootstrap_samples": 100,
+        "one_sided_level": 0.95, "reject_threshold_bp": 0.5, "cost_multipliers": [0, 2],
+        "trim_fraction": 0.01, "secondary_block_months": 6,
+        "annualization_days": 365.25, "extreme_days": 5,
+        "symbol": "USDJPY", "pip_size": "0.01",
+        "holiday_csv_url": "https://example.invalid/holidays.csv",
+        "bank_closed_days": ["12-31", "01-02", "01-03"],
+        "gotobi_days": [5, 10, 15, 20, 25, 30],
+        "entry": "09:30:00", "exit": "09:52:00", "paper_entry": "09:50:00",
+        "paper_switch": "09:55:00", "paper_exit": "10:00:00", "quote_window_seconds": 60,
+        "fetch_range": {"start": "2020-01-01", "end": "2020-03-31"},
+        "calibration": {"start": "2020-01-01", "end": "2020-01-31"},
+        "main": {"start": "2020-02-01", "end": "2020-03-31"},
+        "post": {"start": "2020-03-01", "end": "2020-03-31"},
+        "oanda": {"start": "2020-02-01", "end": "2020-03-31", "max_tick_id": 10000,
+                  "source": "MT5", "server_ahead_of_ny_hours": 7},
+    }
+    values.update(overrides)
+    return Plan.model_validate(values)
+
+
+def tokyo_fix_bi5(*records: tuple[int, int, int]) -> bytes:
+    """ミリ秒・ask point・bid point から架空の bi5 を作る。"""
+    import lzma
+    import struct
+
+    return lzma.compress(b"".join(struct.pack(">IIIff", *record, 1.0, 1.0) for record in records),
+                         format=lzma.FORMAT_ALONE)
+
+
+def tokyo_fix_data(plan):
+    """手計算可能な中値と 1 pip のスプレッド。外部データは使わない。"""
+    from datetime import date
+
+    from trading.backtest import tokyo_fix_study as h10
+
+    holiday = ("国民の祝日・休日月日,国民の祝日・休日名称\n"
+               + "".join(f"{year}/1/1,架空休日\n"
+                         for year in range(plan.fetch_range.start.year, plan.fetch_range.end.year + 1)))
+    holidays = {date(year, 1, 1)
+                for year in range(plan.fetch_range.start.year, plan.fetch_range.end.year + 1)}
+    payload = tokyo_fix_bi5(
+        (1800000, 100005, 99995), (3000000, 100015, 100005),
+        (3120000, 100025, 100015), (3300000, 100045, 100035),
+        (3599000, 100035, 100025),
+    )
+    quotes = {}
+    mids = {"entry": "100", "exit": "100.02", "paper_entry": "100.01",
+            "paper_switch": "100.04", "paper_exit": "100.03"}
+    for day in h10.business_days(plan.oanda, holidays, plan):
+        slots = {}
+        for slot, mid in mids.items():
+            start, end = h10.quote_window(day, slot, plan)
+            when = end - timedelta(seconds=1) if slot == "paper_exit" else start
+            slots[slot] = h10.Quote(
+                id="1", event_time=h10.known_to_broker_label(
+                    when, timedelta(hours=plan.oanda.server_ahead_of_ny_hours)),
+                bid=Decimal(mid) - Decimal(".005"), ask=Decimal(mid) + Decimal(".005"),
+            )
+        quotes[day] = slots
+    return holiday.encode("cp932"), payload, quotes

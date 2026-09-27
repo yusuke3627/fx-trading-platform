@@ -87,7 +87,9 @@
   - Q の Plan の sha256 と D の manifest の sha256。Q の `max_tick_id` が Plan と一致すること
 - **Dukascopy の価格**: 日 `d` のファイルを `decode_bi5` で読む（`hour_start` は `d` の 00:00 UTC）。時刻 `T` の価格 `P_T` は、
   `T` 以後で `T + quote_window_seconds` より前の最初の tick の `(bid + ask) / 2`。`paper_exit` だけは `T − quote_window_seconds` 以後で
-  `T` より前の最後の tick。tick の並びは復号した順（時刻の昇順）のままとし、同じ時刻の tick は先に出たものを使う
+  `T` より前の最後の tick。tick の並びは復号した順（時刻の昇順）のままとし、同じ時刻の tick が並ぶときは、最初の tick では
+  先に出たものを、最後の tick では後に出たものを使う（`quotes` の DB の読み方 `ORDER BY event_time, id` と
+  `ORDER BY event_time DESC, id DESC` に向きをそろえる）
 - **主の取引**: `g = (P_exit − P_entry) / P_entry × 10,000`、`c = (s_entry + s_exit) / 2 × pip_size / P_entry × 10,000`、`n = g − c`（bp）。
   `s` は Q の要約のスプレッドの平均（pips）。価格の計算は Decimal で行い、bp に直した後の集計は float でよい
 - **論文の形（副）**: `g_A = (P_switch − P_paper_entry) / P_paper_entry × 10,000 − (P_paper_exit − P_switch) / P_switch × 10,000`、

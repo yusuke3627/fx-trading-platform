@@ -263,7 +263,14 @@ def fetch(
                 sleep(waits[attempt])
 
     try:
-        output.mkdir(parents=True, exist_ok=True)
+        # 再開で、別の Plan のもとで取ったファイルを黙って使わない。
+        marker = output / "plan.sha256"
+        if output.exists():
+            if not marker.exists() or marker.read_text(encoding="ascii") != plan_hash:
+                raise ValueError("再開先の plan.sha256 が Plan と一致しません")
+        else:
+            output.mkdir(parents=True)
+            marker.write_text(plan_hash, encoding="ascii")
         holiday_path = output / "syukujitsu.csv"
         if holiday_path.exists():
             content = holiday_path.read_bytes()

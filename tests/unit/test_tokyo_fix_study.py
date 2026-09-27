@@ -282,6 +282,33 @@ def test_fetch_exact_bytes_missing_empty_resume_and_manifest(inputs):
     h10.fetch(p.path, p.directory, retrieve=lambda _: pytest.fail("再取得しない"), sleep=waits.append)
 
 
+def test_fetch_resume_requires_same_plan(tmp_path):
+    plan = tokyo_fix_plan()
+    holiday, _, _ = tokyo_fix_data(plan)
+    path = tmp_path / "plan.json"
+    path.write_text(plan.model_dump_json())
+    directory = tmp_path / "data"
+    calls = []
+
+    def interrupted(url):
+        calls.append(url)
+        if len(calls) == 1:
+            return holiday
+        raise TimeoutError("架空タイムアウト")
+
+    with pytest.raises(RuntimeError, match="同じコマンドで再開"):
+        h10.fetch(path, directory, retrieve=interrupted, sleep=lambda _: None)
+    assert (directory / "plan.sha256").read_text() == h10.digest(path.read_bytes())
+    other = tmp_path / "other.json"
+    other.write_text(tokyo_fix_plan(study_version="other_h10").model_dump_json())
+    never = lambda _: pytest.fail("取得しない")
+    with pytest.raises(ValueError, match="plan.sha256"):
+        h10.fetch(other, directory, retrieve=never, sleep=lambda _: None)
+    (directory / "plan.sha256").unlink()
+    with pytest.raises(ValueError, match="plan.sha256"):
+        h10.fetch(path, directory, retrieve=never, sleep=lambda _: None)
+
+
 def test_fetch_retries_and_keeps_files_after_exhaustion(tmp_path):
     plan = tokyo_fix_plan()
     holiday, payload, _ = tokyo_fix_data(plan)

@@ -1,5 +1,9 @@
 # VPS の研究データを Mac に複製する
 
+> 2026-09-29 に VPS を削除したので、この同期はもう実行できない。Mac の `trading_research` にある tick
+> （USDJPY・EURUSD・GBPUSD・GBPJPY）は id 200,278,323 までの最終版で、VPS と行数・id の合計が一致することを確かめてある。
+> 経緯は [H1〜H10 のまとめ](research/2026-09-29-h1-h10-summary.md) の「判断」にある。以下は当時の手順の記録。
+
 `python -m trading.storage.research_mirror` は、研究専用 PostgreSQL に
 `market_ticks`、`macro_observations`、`events`、`swap_snapshots` を写す。
 VPS の live 収集設定は変更しない。Mac の既存 `trading` は収集 DB なので使わない。
